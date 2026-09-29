@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Normal permission, granted at install. Lets NetworkMonitor see a
+         connectivity drop immediately instead of waiting out the WebSocket's
+         ping timeout — see NetworkMonitor's own doc. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!--
+        Package visibility for InputBar's gallery tier: targetSdk 30+ hides
+        other apps, so resolveActivity() for ACTION_PICK returns null without
+        this and the picker silently drops to the document tier.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PICK" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <!-- Without this, targetSdk 30+ hides every recognition service and
+             SpeechRecognizer.isRecognitionAvailable() reports false on a device
+             that has one — dictation would silently take the slow server path. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".ConnectOnionApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ConnectOnion"
+        tools:targetApi="31">
+
+        <!--
+            Lets Macrobenchmark and Perfetto attach to a non-debuggable build,
+            which is the only kind whose timings mean anything. android:shell
+            landed in API 29 and minSdk here is 26, so tools:targetApi is
+            required or lint fails the build; older devices ignore the tag.
+        -->
+        <profileable
+            android:shell="true"
+            tools:targetApi="29" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.ConnectOnion.Starting"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|locale|layoutDirection">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Deep link: connectonion://agent/0x... -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="connectonion"
+                    android:host="agent" />
+            </intent-filter>
+
+            <!-- Web link: https://oo-chat.com/0x... -->
+            <!-- No autoVerify: requires server-side assetlinks.json which -->
+            <!-- isn't deployed yet. Users will see "Open with" chooser. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="oo-chat.com" />
+            </intent-filter>
+        </activity>
+
+        <!-- zxing-android-embedded's own manifest declares this activity as
+             landscape by default; override to portrait so the scanner
+             matches the rest of the app instead of forcing a rotation. -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="portrait"
+            tools:replace="screenOrientation" />
+
+        <!-- Output target for ActivityResultContracts.TakePicture() — the
+             camera app writes the captured photo to a content:// Uri this
+             provider hands out, backed by the cache dir declared in
+             res/xml/file_paths.xml. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Asks Play services to keep the photo picker module installed, so
+             Android 11-12 devices get the photo grid instead of PickVisualMedia's
+             SAF document-browser fallback. Not a permission and not required:
+             the picker already works on every supported API level without one. -->
+        <service
+            android:name="com.google.android.gms.metadata.ModuleDependencies"
+            android:enabled="false"
+            android:exported="false"
+            tools:ignore="MissingClass">
+            <intent-filter>
+                <action android:name="com.google.android.gms.metadata.MODULE_DEPENDENCIES" />
+            </intent-filter>
+            <meta-data
+                android:name="photopicker_activity:0:required"
+                android:value="" />
+        </service>
+    </application>
+
+</manifest>

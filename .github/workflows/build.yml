@@ -1,0 +1,159 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One run per branch. Pushing again supersedes the run in flight rather than
+# racing it — without this, successive pushes leave multi-minute jobs queued
+# behind each other and "is main green?" has no single answer. Pull requests
+# are grouped by their head ref for the same reason.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # Not setup-java's `cache: gradle`. That one keys on an exact hash of the
+      # build scripts and skips saving whenever the key hits — "Cache hit
+      # occurred on the primary key ..., not saving cache" — so a run's build
+      # outputs were never written back and org.gradle.caching had nothing to
+      # reuse. This action maintains the build cache itself, writing from the
+      # default branch and reading on PRs.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run ktlint
+        run: ./gradlew :app:ktlintCheck
+
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest
+
+      # testDebugUnitTest and the Roborazzi tasks (verifyRoborazziDebug,
+      # recordRoborazziDebug) reconfigure the same Gradle task instance with a
+      # screenshot-only test filter. Run in one invocation, the filter wins
+      # and only the screenshot classes execute — BUILD SUCCESSFUL, exit 0,
+      # while the rest of the unit suite silently never ran. This step reads
+      # back what actually executed so that collapse can't hide behind a
+      # green run, whether it comes from a merged CI step or a local habit.
+      - name: Verify unit test count did not collapse
+        run: |
+          threshold=800
+          count=$(grep -rho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml \
+            | grep -o '[0-9]*' | awk '{s+=$1} END {print s+0}')
+          echo "Unit tests executed: $count (floor: $threshold)"
+          if [ "$count" -lt "$threshold" ]; then
+            echo "::error::Only $count unit tests executed, expected at least $threshold. This is the signature of testDebugUnitTest being reconfigured by a Roborazzi task (verifyRoborazziDebug/recordRoborazziDebug) in the same gradlew invocation, which narrows it to the screenshot-only filter and silently skips the rest of the suite. Run testDebugUnitTest and any Roborazzi task in separate gradlew invocations."
+            exit 1
+          fi
+
+      # Screenshot baselines are NOT verified here, and that is a known gap
+      # rather than an oversight.
+      #
+      # `verifyRoborazziDebug` would fail today: SettingsScreenshotTest's API_KEY
+      # fixture was changed during the rebrand (a value shaped like a live key was
+      # replaced with a masked one), so the committed baseline PNGs no longer match
+      # what the test renders. Regenerating them needs an Android SDK.
+      #
+      # Nothing else catches this: the baselines are PNGs, and the pre-publication
+      # audit excludes images, so the old fixture string may still exist as pixels
+      # inside them. A green run of this workflow says nothing about the baselines.
+      #
+      # To close it: run `./gradlew :app:recordRoborazziDebug` on a machine with the
+      # SDK, commit the regenerated baselines, then add a `verifyRoborazziDebug`
+      # step here — in its OWN gradlew invocation, for the reason described above.
+
+      - name: Generate JaCoCo coverage report
+        if: always()
+        run: ./gradlew :app:jacocoTestReport
+
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unit-test-results
+          path: app/build/reports/tests/testDebugUnitTest
+
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: jacoco-coverage-report
+          path: app/build/reports/jacoco/jacocoTestReport
+
+  build:
+    # APK assembly is a separate job so a build failure never masks a test
+    # failure in the CI summary, and so it can be triggered on demand
+    # (workflow_dispatch) on its own.
+    #
+    # Deliberately NOT `needs: test`: the two jobs answer different questions
+    # and neither's answer is worth waiting on the other for. Gating build on
+    # test doubled the wall clock for no signal — a PR that breaks the build
+    # wants to hear so immediately, not after the suite finishes.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # Not setup-java's `cache: gradle`. That one keys on an exact hash of the
+      # build scripts and skips saving whenever the key hits — "Cache hit
+      # occurred on the primary key ..., not saving cache" — so a run's build
+      # outputs were never written back and org.gradle.caching had nothing to
+      # reuse. This action maintains the build cache itself, writing from the
+      # default branch and reading on PRs.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      # Skipped on pull requests: release builds run R8 and resource shrinking
+      # (isMinifyEnabled + isShrinkResources), which is the slowest step in the
+      # workflow, and nothing consumes the release artifact during review. Still
+      # runs on pushes to main and on workflow_dispatch, so the artifact exists
+      # wherever anyone actually goes looking for it.
+      - name: Build Release APK
+        if: github.event_name != 'pull_request'
+        run: ./gradlew assembleRelease
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: connectonion-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      # Same condition as the step that produces it — an unconditional upload
+      # would fail on PRs looking for an APK that was never built.
+      - name: Upload Release APK
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: connectonion-release
+          path: app/build/outputs/apk/release/app-release-unsigned.apk

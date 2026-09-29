@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Base theme for the running app. No android:statusBarColor: the app is
+        edge-to-edge, so the bar is transparent and the content behind it is
+        what shows. See values-night/themes.xml for the dark twin.
+    -->
+    <style name="Theme.ConnectOnion" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!--
+        Theme applied to the launcher Activity (AndroidManifest). The
+        androidx.core:core-splashscreen library uses these attributes to
+        render a system-level splash screen during cold start, then
+        seamlessly hands off to postSplashScreenTheme when the first
+        frame is ready.
+    -->
+    <style name="Theme.ConnectOnion.Starting" parent="Theme.ConnectOnion">
+        <item name="android:windowSplashScreenBackground">@color/onion_green</item>
+        <!--
+            Pure-color cold-start splash: a transparent icon replaces the app
+            launcher icon that Android 12+ would otherwise show centered on the
+            background. The icon background is set to the same green so no icon
+            backing shows through. The Compose SplashScreen in ConnectOnionApp.kt
+            then takes over with the animated wordmark.
+        -->
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_transparent</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/onion_green</item>
+        <item name="postSplashScreenTheme">@style/Theme.ConnectOnion</item>
+    </style>
+</resources>

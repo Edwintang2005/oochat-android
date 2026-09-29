@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Brand green used by the XML-level cold-start splash (see themes.xml).
+        Kept in sync with colorScheme.primary in Theme.kt so the splash →
+        Compose handoff is seamless.
+    -->
+    <color name="onion_green">#FF006E1C</color>
+</resources>

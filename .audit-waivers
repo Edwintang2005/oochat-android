@@ -1,0 +1,23 @@
+# Reviewed exceptions to the pre-publication audit.
+#
+# Format:  <path-prefix>  <rule-keyword>  # <reason>
+#
+# BOTH fields are required. A path-only waiver would hide every other rule on
+# that path, which defeats the point of the audit.
+# Waived hits are still printed; they only stop blocking.
+
+app/src/test/         endpoint  # ConnectionConfigTest asserts how a serverUrl is displayed.
+                                # The loopback address is the input to the assertion, not a
+                                # shipped endpoint.
+app/src/androidTest/  endpoint  # Instrumented tests bind a MockWebServer on an ephemeral
+                                # port allocated at run time; nothing is hardcoded into the
+                                # app.
+app/src/test/         Password  # Unit-test credentials are short placeholders or visibly masked.
+app/src/androidTest/  Password  # Instrumented-test credentials are short placeholders.
+
+tools/local-android-setup/install.sh Coursework  # "assignment" describes shell assignment semantics.
+tools/local-android-setup/run.sh     Coursework  # "assignment" describes shell assignment semantics.
+app/src/main/java/ai/openonion/oochat/ui/chat/components/ApprovalModeControls.kt Coursework  # Android's Assignment icon name.
+app/src/main/java/ai/openonion/oochat/ui/chat/ChatViewModel.kt Coursework  # Kotlin reference assignment.
+app/src/main/java/ai/openonion/oochat/data/local/mapper/MessageMapper.kt Coursework  # Kotlin serialization annotation wording.
+app/src/main/java/ai/openonion/oochat/domain/usecase/ConversationHistoryUseCase.kt Coursework  # State assignment wording.

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exposes app-private storage to the camera app via FileProvider, so
+     ActivityResultContracts.TakePicture() has somewhere to write the photo
+     it captures — the contract takes an output Uri, it doesn't return one. -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="camera_photos" path="camera/" />
+</paths>

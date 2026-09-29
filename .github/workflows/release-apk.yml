@@ -1,0 +1,129 @@
+# Publishes an installable APK to a GitHub Release with a stable link instead
+# of a 90-day workflow artifact behind the Actions UI.
+#
+# Tag-driven: pushing a matching semantic-version tag reruns the release gates
+# and publishes exactly that existing tag. A manual run is a dry run and only
+# retains an Actions artifact.
+
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to rehearse (e.g. v0.1.2). Never publishes.'
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate version
+        id: version
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$DISPATCH_VERSION"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
+            echo "::error::'$tag' is not v<major>.<minor>.<patch>[-prerelease]."
+            exit 1
+          }
+          version="${tag#v}"
+          project_version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
+          [ "$project_version" = "$version" ] || {
+            echo "::error::Tag $tag does not match versionName $project_version."
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run pre-publication audit
+        run: ./scripts/audit_repo.sh .
+
+      - name: Run formatting and unit-test gates
+        run: ./gradlew ktlintCheck :app:testDebugUnitTest
+
+      # The debug variant, not release. `assembleRelease` emits
+      # app-release-unsigned.apk, and Android refuses to install an unsigned
+      # APK. Debug is signed with the standard Android debug key, which makes it
+      # installable without shipping a private signing key. This is a
+      # sideloading build, not a Play Store artifact.
+      - name: Build installable APK
+        run: ./gradlew assembleDebug
+
+      - name: Name the artifact after the tag
+        run: |
+          mkdir -p dist
+          filename="openonion-android-${{ steps.version.outputs.tag }}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             "dist/$filename"
+          (cd dist && sha256sum "$filename" > "$filename.sha256")
+
+      - name: Upload dry-run artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: openonion-android-${{ steps.version.outputs.tag }}-dry-run
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish the Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: OpenOnion Android ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            dist/openonion-android-${{ steps.version.outputs.tag }}.apk
+            dist/openonion-android-${{ steps.version.outputs.tag }}.apk.sha256
+          body: |
+            Installable debug-signed APK for sideloading and manual testing.
+
+            - `minSdk` 26 (Android 8.0), `targetSdk` 36
+            - Install: `adb install -r openonion-android-${{ steps.version.outputs.tag }}.apk`,
+              or copy it to the device and open it (allow install from unknown
+              sources when prompted).
+            - Verify the download against the `.sha256` alongside it.
+
+            See `INSTALL.md` in the repository root for the full setup guide,
+            including how to build from source and how to run the test suite.

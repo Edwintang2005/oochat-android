@@ -1,0 +1,47 @@
+name: Pre-publication audit
+
+# Guards the gate between "private repo we are still cleaning" and "public repo a
+# customer clones". It fails on student IDs, course codes, inherited repository
+# URLs, key-shaped strings, and any author in the git history who is not us.
+#
+# It is not a clearance on its own. It cannot read inside binaries, and it cannot
+# recognise a real person's name that has no ID next to it. A green run means
+# nothing it knows how to look for is present — not that the repository is clean.
+#
+# Deliberate exceptions live in .audit-waivers, each with a written reason, and
+# waived hits are still printed in the report.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Scan for inherited traces
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        # Full history: the audit checks every author in it, and a shallow clone
+        # would let an inherited commit pass simply by not being fetched.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Run audit
+        run: |
+          chmod +x scripts/audit_repo.sh
+          ./scripts/audit_repo.sh . | tee audit-report.txt
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: audit-report
+          path: audit-report.txt

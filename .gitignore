@@ -1,0 +1,97 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# AI Tools
+.claude/
+.claude-flow/
+CLAUDE.md
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+vendor/
+__pycache__/
+*.pyc
+*.pyo
+*.class
+venv/
+.venv/
+*.egg-info/
+
+# Build
+dist/
+build/
+target/
+*.log
+/logs/
+
+# Testing / Coverage
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+coverage/
+.nyc_output/
+
+# Database
+*.db
+*.sqlite
+
+# Compiler
+*.o
+*.out
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Misc
+npm-debug.log*
+*.pid
+*.seed
+
+# Android
+*.apk
+*.aar
+*.ap_
+*.aab
+*.dex
+*.class
+bin/
+gen/
+out/
+release/
+.gradle/
+.gradle-cache/
+.android-home/
+local.properties
+proguard/
+.navigation/
+captures/
+*.iml
+*.ipr
+*.iws
+.externalNativeBuild
+.cxx/
+google-services.json
+*.hprof
+secrets.properties
+
+# Release signing — the keystore and its passwords never go in git.
+keystore.properties
+*.jks
+*.keystore

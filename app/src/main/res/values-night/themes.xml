@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Dark twin of the base theme. The window background lives below Compose
+        and is what the system paints for the cold-start frame, the recents
+        thumbnail and any non-Compose dialog window; a Light-only parent made
+        those flash white in dark mode. Theme.ConnectOnion.Starting inherits
+        this automatically under -night since its parent is a style reference.
+
+        This follows the *system* dark setting, not the in-app ThemeMode
+        override — Theme.kt's full-size Surface still covers that divergence.
+    -->
+    <style name="Theme.ConnectOnion" parent="android:Theme.Material.NoActionBar" />
+</resources>
