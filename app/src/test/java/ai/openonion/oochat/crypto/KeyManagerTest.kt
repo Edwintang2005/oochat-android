@@ -1,5 +1,6 @@
 package ai.openonion.oochat.crypto
 
+import ai.openonion.oochat.knownIssue
 import android.app.Application
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -8,20 +9,19 @@ import org.junit.Test
 
 /**
  * Unit tests for [KeyManager.canonicalJson] — the only part of
- * [KeyManager]'s crypto logic this project's plain-JVM test setup can
- * actually exercise.
+ * [KeyManager]'s crypto logic that runs as constructed in production on a
+ * plain JVM.
  *
  * [KeyManager.generate]/[KeyManager.sign] depend on `com.goterl.lazysodium`,
  * whose native `libsodium` binary is compiled per-Android-ABI and cannot be
  * loaded by a host JVM (`java.lang.UnsatisfiedLinkError`, confirmed by
  * actually running such a test against this dependency in this project —
- * not a theoretical limitation). Covering Ed25519 keypair generation and
- * signing for real would need either Robolectric with a host-native
- * libsodium build, or an instrumented test running on a device/emulator —
- * neither exists in this project yet. `sodium` was changed from an eager
- * field to `by lazy` specifically so *constructing* `KeyManager` (needed to
- * reach `canonicalJson`, which touches neither `sodium` nor `prefs`)
- * doesn't itself trigger the native load.
+ * not a theoretical limitation). [SodiumEd25519] loads it `by lazy`
+ * specifically so *constructing* `KeyManager` (needed to reach
+ * `canonicalJson`, which touches neither libsodium nor `prefs`) doesn't itself
+ * trigger the native load. The generation and signing paths are covered
+ * against an RFC 8032 stand-in instead — see [KeyManagerMnemonicTest] and
+ * [IdentityVectorsTest].
  *
  * `canonicalJson` is still worth testing on its own: it's the function that
  * makes Ed25519 signatures verifiable against the server's independently
@@ -163,5 +163,17 @@ class KeyManagerTest {
         }.message.orEmpty()
 
         assertTrue("unhelpful rejection message: $message", message.contains("hexadecimal", ignoreCase = true))
+    }
+
+    @Test
+    fun `known issue - a hex key whose halves do not belong together is accepted`() {
+        // The second half of a libsodium secret key is the public key the first
+        // half derives. Importing a key where it is not gives an address the
+        // key cannot sign for, so every CONNECT fails verification.
+        val mismatched = "aa".repeat(32) + "bb".repeat(32)
+
+        knownIssue("keysFromHex takes the public key from the last 32 bytes without checking it against the seed") {
+            assertThrows(IllegalArgumentException::class.java) { keyManager.keysFromHex(mismatched) }
+        }
     }
 }

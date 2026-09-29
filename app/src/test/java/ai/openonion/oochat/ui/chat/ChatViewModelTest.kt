@@ -30,6 +30,7 @@ import ai.openonion.oochat.domain.model.isInProgress
 import ai.openonion.oochat.domain.model.stableAssistantId
 import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCaseContract
 import ai.openonion.oochat.domain.usecase.ConversationHistoryUseCase
+import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.OFFLINE_GRACE_MS
 import ai.openonion.oochat.network.RecognizerReadiness
@@ -2852,6 +2853,34 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun `known issue - an agent saved as relay-mode on a self-hosted relay is dialled as a direct agent`() =
+        runTest(testDispatcher) {
+            // What discovery saves for every agent found on a relay the user
+            // typed in: connectionMode "relay", serverUrl = that relay.
+            val address = validHexAddress()
+            agentRepo.createAgent(
+                AgentProfile(
+                    id = "agent-1",
+                    address = address,
+                    name = "Found On My Relay",
+                    serverUrl = "https://relay.example.com",
+                    createdAt = 0L,
+                    connectionMode = "relay"
+                )
+            )
+
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+
+            knownIssue(
+                "the saved connectionMode is never read; any non-default server URL is dialled direct, " +
+                    "so a relay-mode agent is reached at <relay>/ws instead of through the relay"
+            ) {
+                assertNull(connectUseCase.lastConnectDirectUrl)
+            }
+        }
+
+    @Test
     fun `connectToAgent does not forward a default-relay serverUrl as directUrl`() = runTest(testDispatcher) {
         val address = validHexAddress()
         agentRepo.createAgent(
@@ -2879,7 +2908,8 @@ class ChatViewModelTest {
                 address = address,
                 name = "Custom Server Agent",
                 serverUrl = "https://custom.example.com",
-                createdAt = 0L
+                createdAt = 0L,
+                connectionMode = "direct"
             )
         )
 

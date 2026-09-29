@@ -3,6 +3,7 @@ package ai.openonion.oochat.network
 import ai.openonion.oochat.crypto.KeyManager
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.domain.model.ChatItem
+import ai.openonion.oochat.knownIssue
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +26,10 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
@@ -100,7 +105,11 @@ class AgentConnectionRobolectricTest {
         @Volatile var lastListener: WebSocketListener? = null
         @Volatile var lastWebSocket: FakeWebSocket? = null
 
+        /** Every request a socket was opened for, in order — the URL the app actually dialled. */
+        val requests = CopyOnWriteArrayList<Request>()
+
         override fun create(request: Request, listener: WebSocketListener): WebSocket {
+            requests += request
             val ws = FakeWebSocket()
             lastWebSocket = ws
             lastListener = listener
@@ -1675,6 +1684,219 @@ class AgentConnectionRobolectricTest {
             terminal is ConnectionEvent.ConnectionError &&
                 terminal.message.contains("Agent not connected")
         )
+    }
+
+    // ── direct (/ws) vs relay (/ws/input) ─────────────────────────────
+    //
+    // Two ways to reach an agent. Through the relay, the socket is the relay's
+    // shared /ws/input and every frame has to say which agent it is for; direct,
+    // the socket *is* the agent's /ws and naming it is meaningless. A frame
+    // routed the wrong way is not an error anyone sees — the relay just never
+    // delivers it — so the endpoint and the `to` field are pinned here.
+    //
+    // OkHttp stores ws/wss schemes as http/https on the Request, so a dialled
+    // `wss://host/ws` reads back as `https://host/ws`.
+
+    private val agent = "0x" + "c5".repeat(32)
+
+    /** A connection whose signer records the canonical payloads it was asked to sign. */
+    private fun recordingConnection(
+        relayUrl: String = AgentConnection.DEFAULT_RELAY,
+        signed: MutableList<String>
+    ) = AgentConnection(
+        keyManager,
+        relayUrl = relayUrl,
+        webSocketFactory = factory,
+        signer = { _, canonical -> signed += canonical; "fake-signature" }
+    )
+
+    private fun dialled(): String = factory.requests.last().url.toString()
+
+    /** Opens the socket, which is what sends CONNECT, and returns that frame. */
+    private fun openAndReadConnect(): JsonObject {
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+        val frame = factory.lastWebSocket!!.sentMessages.single { it.contains("\"type\":\"CONNECT\"") }
+        return Json.parseToJsonElement(frame).jsonObject
+    }
+
+    private fun sendAndReadInput(conn: AgentConnection, address: String): JsonObject {
+        simulateConnected()
+        factory.lastWebSocket!!.sentMessages.clear()
+        conn.sendMessage("hello", address)
+        return Json.parseToJsonElement(factory.lastWebSocket!!.sentMessages.single()).jsonObject
+    }
+
+    @Test
+    fun `a relay connection dials the default relay's shared input socket over TLS`() {
+        connection.connect(agent)
+
+        assertEquals("https://oo.openonion.ai/ws/input", dialled())
+    }
+
+    @Test
+    fun `a relay configured over plain http is dialled without TLS`() {
+        val conn = AgentConnection(keyManager, relayUrl = "http://relay.test:8080", webSocketFactory = factory, signer = { _, _ -> "s" })
+        conn.connect(agent)
+
+        assertEquals("http://relay.test:8080/ws/input", dialled())
+        conn.teardown()
+    }
+
+    @Test
+    fun `a direct https agent is dialled at its own ws endpoint over TLS`() {
+        connection.connect(agent, directUrl = "https://agent.example.com")
+
+        assertEquals("https://agent.example.com/ws", dialled())
+    }
+
+    @Test
+    fun `a direct http agent is dialled at its own ws endpoint without TLS`() {
+        connection.connect(agent, directUrl = "http://192.168.1.20:8000")
+
+        assertEquals("http://192.168.1.20:8000/ws", dialled())
+    }
+
+    @Test
+    fun `a relay CONNECT names its agent in the signed payload and on the envelope`() {
+        val signed = mutableListOf<String>()
+        val conn = recordingConnection(signed = signed)
+        conn.connect(agent)
+
+        val connect = openAndReadConnect()
+        val payload = connect["payload"]!!.jsonObject
+        val timestamp = payload["timestamp"]!!.jsonPrimitive.content
+
+        assertEquals(agent, payload["to"]?.jsonPrimitive?.content)
+        assertEquals(agent, connect["to"]?.jsonPrimitive?.content)
+        assertEquals(timestamp, connect["timestamp"]?.jsonPrimitive?.content)
+        assertEquals(keyManager.load()!!.address, connect["from"]?.jsonPrimitive?.content)
+        assertEquals(
+            "the relay verifies the signature over exactly these bytes",
+            """{"timestamp":$timestamp,"to":"$agent"}""",
+            signed.single()
+        )
+        conn.teardown()
+    }
+
+    @Test
+    fun `a direct CONNECT names no agent anywhere, signed or not`() {
+        val signed = mutableListOf<String>()
+        val conn = recordingConnection(signed = signed)
+        conn.connect(agent, directUrl = "https://agent.example.com")
+
+        val connect = openAndReadConnect()
+        val payload = connect["payload"]!!.jsonObject
+        val timestamp = payload["timestamp"]!!.jsonPrimitive.content
+
+        assertFalse("payload: $payload", payload.containsKey("to"))
+        assertFalse("envelope: $connect", connect.containsKey("to"))
+        assertEquals("""{"timestamp":$timestamp}""", signed.single())
+        conn.teardown()
+    }
+
+    @Test
+    fun `a relay INPUT is addressed to its agent`() {
+        connection.connect(agent)
+
+        val input = sendAndReadInput(connection, agent)
+
+        assertEquals("INPUT", input["type"]?.jsonPrimitive?.content)
+        assertEquals(agent, input["to"]?.jsonPrimitive?.content)
+        assertEquals("hello", input["prompt"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `a direct INPUT carries no address`() {
+        connection.connect(agent, directUrl = "https://agent.example.com")
+
+        val input = sendAndReadInput(connection, agent)
+
+        assertFalse("input: $input", input.containsKey("to"))
+    }
+
+    @Test
+    fun `switching between relay and direct on one connection re-decides the routing each time`() {
+        connection.connect(agent)
+        assertTrue(sendAndReadInput(connection, agent).containsKey("to"))
+
+        connection.connect(agent, directUrl = "https://agent.example.com")
+        assertEquals("https://agent.example.com/ws", dialled())
+        assertFalse("direct after relay kept the relay's routing", sendAndReadInput(connection, agent).containsKey("to"))
+
+        connection.connect(agent)
+        assertEquals("https://oo.openonion.ai/ws/input", dialled())
+        assertTrue("relay after direct kept the direct routing", sendAndReadInput(connection, agent).containsKey("to"))
+    }
+
+    // Known issues in direct-URL handling: openWebSocket strips only an
+    // http(s) scheme and picks TLS by startsWith("https"), and appends "/ws"
+    // to whatever is left. Both validators accept ws:// and wss:// server URLs.
+
+    @Test
+    fun `known issue - a direct wss URL is dialled at a host called wss`() {
+        connection.connect(agent, directUrl = "wss://agent.example.com")
+
+        knownIssue("a direct wss://host URL becomes ws://wss://host/ws, so the app dials the host \"wss\"") {
+            assertEquals("https://agent.example.com/ws", dialled())
+        }
+    }
+
+    @Test
+    fun `known issue - a direct URL typed with a trailing slash dials a double-slash path`() {
+        // Onboarding trims the slash; the Add/Edit Agent form does not.
+        connection.connect(agent, directUrl = "https://agent.example.com/")
+
+        knownIssue("a direct URL ending in / is dialled at //ws") {
+            assertEquals("https://agent.example.com/ws", dialled())
+        }
+    }
+
+    // ── the invite-code gate holds reconnects, on every way a socket ends ──
+    //
+    // While ONBOARD_REQUIRED is unanswered the next move is the user's; a
+    // reconnect behind their back would open a new session and bury the gate
+    // they are typing into. The ladder's first rung waits 2s, so these run on
+    // the virtual clock and advance past every rung — asserting "still one
+    // socket" immediately would pass whether or not anything was suppressed.
+
+    private val gateFrame = """{"type":"ONBOARD_REQUIRED","id":"ob1","methods":["invite_code"]}"""
+
+    @Test
+    fun `a socket that fails while the gate is open is never retried`() = runTest {
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onMessage(factory.lastWebSocket!!, gateFrame)
+
+        factory.lastListener!!.onFailure(factory.lastWebSocket!!, java.io.IOException("connection reset"), null)
+        advanceTimeBy(10 * 60_000L)
+
+        assertEquals("a reconnect was opened while the gate waited on the user", 1, factory.socketCount)
+        conn.teardown()
+    }
+
+    @Test
+    fun `a socket that closes abnormally while the gate is open is never retried`() = runTest {
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onMessage(factory.lastWebSocket!!, gateFrame)
+
+        factory.lastListener!!.onClosed(factory.lastWebSocket!!, 1006, "abnormal closure")
+        advanceTimeBy(10 * 60_000L)
+
+        assertEquals(1, factory.socketCount)
+        conn.teardown()
+    }
+
+    @Test
+    fun `the same failure with no gate open is retried - the control for the two above`() = runTest {
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+
+        factory.lastListener!!.onFailure(factory.lastWebSocket!!, java.io.IOException("connection reset"), null)
+        advanceTimeBy(10 * 60_000L)
+
+        assertTrue("expected the ladder to reopen, saw ${factory.socketCount} socket(s)", factory.socketCount >= 2)
+        conn.teardown()
     }
 
     private companion object {

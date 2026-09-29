@@ -88,4 +88,46 @@ class OutgoingMessagesTest {
             encoded
         )
     }
+
+    /**
+     * The invite-code gate's answer. The server's WS router only recognises
+     * the literal "ONBOARD_SUBMIT" and verifies the signature against
+     * `payload`, so the timestamp lives there and nowhere else — the Python
+     * SDK's `_build_onboard_submit` sends no envelope timestamp either.
+     */
+    @Test
+    fun `an invite-code ONBOARD_SUBMIT carries the code inside the signed payload only`() {
+        val encoded = json.encodeToString(
+            OnboardSubmitMessage.serializer(),
+            OnboardSubmitMessage(
+                payload = OnboardSubmitPayload(timestamp = 1_760_000_000L, inviteCode = "BETA2024"),
+                from = "0xme",
+                signature = "sig"
+            )
+        )
+
+        assertEquals(
+            """{"type":"ONBOARD_SUBMIT","payload":{"timestamp":1760000000,"invite_code":"BETA2024"},"from":"0xme","signature":"sig"}""",
+            encoded
+        )
+    }
+
+    @Test
+    fun `a payment ONBOARD_SUBMIT carries the amount and no invite code`() {
+        val encoded = json.encodeToString(
+            OnboardSubmitMessage.serializer(),
+            OnboardSubmitMessage(
+                payload = OnboardSubmitPayload(timestamp = 1_760_000_000L, payment = 10.0),
+                from = "0xme",
+                signature = "sig"
+            )
+        )
+
+        // 10.0, not 10: the relay re-encodes the payload it received before
+        // verifying, and the app signed 10.0 (see IdentityVectorsTest).
+        assertEquals(
+            """{"type":"ONBOARD_SUBMIT","payload":{"timestamp":1760000000,"payment":10.0},"from":"0xme","signature":"sig"}""",
+            encoded
+        )
+    }
 }

@@ -7,9 +7,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import cash.z.ecc.android.bip39.Mnemonics
 import cash.z.ecc.android.bip39.toSeed
-import com.goterl.lazysodium.LazySodiumAndroid
-import com.goterl.lazysodium.SodiumAndroid
-import com.goterl.lazysodium.interfaces.Sign
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -27,13 +24,16 @@ import kotlinx.serialization.json.buildJsonObject
  * Implements [IdentityManager] so [ai.openonion.oochat.ui.settings.SettingsViewModel]
  * can depend on the narrower interface and be unit-tested with an in-memory fake.
  */
-class KeyManager(private val context: Context) : IdentityManager {
-    // by lazy (not eager) so constructing KeyManager doesn't unconditionally
-    // load the native libsodium .so — only generate()/sign() (which
-    // actually need it) trigger the load. This lets canonicalJson(), which
-    // touches neither sodium nor prefs, be exercised in a plain JVM unit
-    // test (see KeyManagerTest) without an Android device/emulator.
-    private val sodium by lazy { LazySodiumAndroid(SodiumAndroid()) }
+class KeyManager internal constructor(
+    private val context: Context,
+    // libsodium in production, loaded only when generate()/sign() first need
+    // it — so canonicalJson(), which touches neither sodium nor prefs, still
+    // runs in a plain JVM unit test (see KeyManagerTest). Tests that need the
+    // mnemonic paths substitute an RFC 8032 implementation; see [Ed25519].
+    private val ed25519: Ed25519
+) : IdentityManager {
+    constructor(context: Context) : this(context, SodiumEd25519())
+
     // Routed through SafePreferencesWrapper (already used by every other
     // encrypted-storage class in the app) instead of calling
     // EncryptedSharedPreferences.create() directly: besides the fallback
@@ -83,9 +83,7 @@ class KeyManager(private val context: Context) : IdentityManager {
      * Generate a new Ed25519 keypair.
      */
     fun generate(): AddressData {
-        val keyPair = sodium.cryptoSignKeypair()
-        val publicKey = keyPair.publicKey.asBytes
-        val privateKey = keyPair.secretKey.asBytes
+        val (publicKey, privateKey) = ed25519.keypair()
 
         val address = "0x" + publicKey.toHex()
         val shortAddress = "${address.take(6)}...${address.takeLast(4)}"
@@ -159,11 +157,7 @@ class KeyManager(private val context: Context) : IdentityManager {
      * derived from the same seed by the web client's tweetnacl.
      */
     private fun keysFromSeed(seed: ByteArray): AddressData {
-        val publicKey = ByteArray(Sign.ED25519_PUBLICKEYBYTES)
-        val secretKey = ByteArray(Sign.ED25519_SECRETKEYBYTES)
-        check(sodium.cryptoSignSeedKeypair(publicKey, secretKey, seed)) {
-            "Failed to derive Ed25519 keypair from seed"
-        }
+        val (publicKey, secretKey) = ed25519.keypairFromSeed(seed)
         val address = "0x" + publicKey.toHex()
         return AddressData(
             address = address,
@@ -287,17 +281,7 @@ class KeyManager(private val context: Context) : IdentityManager {
      * Returns hex-encoded signature.
      */
     fun sign(keys: AddressData, message: String): String {
-        val messageBytes = message.toByteArray(Charsets.UTF_8)
-        val signatureBytes = ByteArray(Sign.ED25519_BYTES)
-
-        sodium.cryptoSignDetached(
-            signatureBytes,
-            messageBytes,
-            messageBytes.size.toLong(),
-            keys.privateKey
-        )
-
-        return signatureBytes.toHex()
+        return ed25519.sign(message.toByteArray(Charsets.UTF_8), keys.privateKey).toHex()
     }
 
     /**

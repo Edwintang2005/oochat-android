@@ -31,7 +31,8 @@ import org.robolectric.annotation.Config
  * [KeyManager.exportBackup] either) — all of those call the native
  * `com.goterl.lazysodium` binary, which cannot load on a host JVM regardless
  * of Robolectric (see [KeyManagerTest]'s doc comment for the confirmed
- * `UnsatisfiedLinkError`).
+ * `UnsatisfiedLinkError`). Those paths are covered in [KeyManagerMnemonicTest],
+ * with an RFC 8032 stand-in injected in libsodium's place.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])

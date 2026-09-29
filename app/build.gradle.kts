@@ -230,6 +230,11 @@ dependencies {
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.27.0")
     testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.27.0")
     testImplementation("androidx.test:core:1.5.0")
+    // RFC 8032 Ed25519 for the JVM, standing in for libsodium's Android-only
+    // .so in the identity tests (crypto/BouncyCastleEd25519). Robolectric
+    // already brings this exact version; declared so the tests do not hang off
+    // a transitive dependency.
+    testImplementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     // Lets Compose semantics assertions (assertHeightIsAtLeast,
     // assertTouchHeightIsEqualTo, etc.) run on the JVM under Robolectric
     // instead of only on-device — see TouchTargetComposeTest.
@@ -324,6 +329,73 @@ tasks.register<JacocoReport>("jacocoTestReport") {
     executionData.setFrom(fileTree(layout.buildDirectory.get()) {
         include("outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec")
     })
+}
+
+// The regression suite: the tests that hold the features users rely on, grouped
+// by feature. `./gradlew :app:testDebugUnitTest -Pregression` runs these and
+// nothing else; without the flag the task is untouched and runs everything, so
+// CI's unit-test count check is unaffected. A class listed here is in the suite
+// whole — keep feature coverage in these classes, or add the new class here.
+val regressionSuite = mapOf(
+    "add agent by 0x address" to listOf(
+        "ui.agent.AgentViewModelTest",
+        "ui.agent.AgentFormNamingTest",
+        "ui.agent.AgentFormScreenComposeTest",
+        "ui.agent.components.EmbeddedDiscoveryPanelComposeTest",
+        "network.AgentDiscoveryServiceTest",
+        "data.repository.AgentRepositoryImplTest",
+        "data.repository.AgentDiscoveryRepositoryImplTest",
+        "data.local.mapper.AgentMapperTest",
+    ),
+    "direct (/ws) and relay (/ws/input)" to listOf(
+        "network.AgentConnectionRobolectricTest",
+        "network.AgentConnectionTest",
+        "network.ProtocolParserTest",
+        "data.local.ConnectionConfigTest",
+        "ConstantsTest",
+        "data.repository.EncryptedPreferencesConnectionConfigRepositoryTest",
+        "ui.loading.LoadingViewModelTest",
+    ),
+    "Ed25519 identity" to listOf(
+        "crypto.IdentityVectorsTest",
+        "crypto.KeyManagerMnemonicTest",
+        "crypto.KeyManagerPersistenceTest",
+        "crypto.KeyManagerTest",
+        "ui.settings.SettingsViewModelTest",
+    ),
+    "onboarding gate" to listOf(
+        "ui.chat.components.OnboardCardsComposeTest",
+        "domain.model.ChatEventReducerTest",
+        "data.protocol.OutgoingMessagesTest",
+        "data.repository.ConnectionRepositoryImplTest",
+        "domain.usecase.ConnectToAgentUseCaseTest",
+        "ui.onboarding.OnboardingViewModelTest",
+    ),
+    "slash-command palette" to listOf(
+        "ui.chat.components.SlashCommandMatcherTest",
+        "ui.chat.components.SlashCommandPaletteComposeTest",
+    ),
+    "dictation" to listOf(
+        "ui.chat.components.DictationMergeTest",
+        "ui.chat.components.InputBarDictationComposeTest",
+        "ui.chat.ChatViewModelTest",
+        "network.SpeechRecognizerIntentTest",
+        "network.SpeechRecognitionLevelTest",
+        "network.VoiceTranscriptionInstructionTest",
+        "network.VoiceTranscriptionServiceTest",
+        "data.local.VoiceRecorderStoreTest",
+    ),
+    "low-balance bar" to listOf(
+        "ui.chat.components.LowBalanceBarComposeTest",
+    ),
+)
+val regressionOnly = providers.gradleProperty("regression").isPresent
+tasks.withType<Test>().configureEach {
+    if (regressionOnly) {
+        filter {
+            regressionSuite.values.flatten().distinct().forEach { includeTestsMatching("ai.openonion.oochat.$it") }
+        }
+    }
 }
 
 // Roborazzi drives the whole testDebugUnitTest task, so a bare

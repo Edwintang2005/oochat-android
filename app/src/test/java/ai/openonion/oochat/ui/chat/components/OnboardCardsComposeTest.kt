@@ -366,4 +366,29 @@ class OnboardCardsComposeTest {
         composeRule.onNodeWithText("Verified — Continuing your request").assertExists()
         composeRule.onNodeWithText(ONBOARD_NO_RESPONSE).assertDoesNotExist()
     }
+
+    @Test
+    fun `submitting with no live connection says so at once, not after a spinner`() {
+        var submitted: String? = null
+        setGate(RecordingKeyboard(), liveConnection = { false }) { _, code, _ -> submitted = code }
+
+        submitCode("code-123")
+
+        composeRule.onNodeWithText(ONBOARD_CONNECTION_LOST).assertExists()
+        composeRule.onNodeWithText("Verifying…").assertDoesNotExist()
+        // Still handed up: the caller owns the "not connected" decision, and
+        // ChatViewModel.respondToOnboard reports it in its own words.
+        assertEquals("code-123", submitted)
+    }
+
+    @Test
+    fun `the success card carries the agent's own welcome`() {
+        composeRule.setContent {
+            ConnectOnionTheme {
+                OnboardSuccessCard(ChatItem.OnboardSuccess(id = "ob1", level = "contact", message = "Welcome aboard"))
+            }
+        }
+
+        composeRule.onNodeWithText("Verified — Welcome aboard").assertExists()
+    }
 }

@@ -1,5 +1,6 @@
 package ai.openonion.oochat
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -54,5 +55,18 @@ class ConstantsTest {
     fun `returns false for null and blank`() {
         assertFalse(Constants.isDefaultServerUrl(null))
         assertFalse(Constants.isDefaultServerUrl(""))
+    }
+
+    @Test
+    fun `matches plain ws variant`() {
+        assertTrue(Constants.isDefaultServerUrl("ws://oo.openonion.ai"))
+    }
+
+    @Test
+    fun `the default server is the ConnectOnion relay over https`() {
+        // The relay every relay-mode connection dials, and the first entry in
+        // DEFAULT_SERVER_URLS - a change here moves every user at once.
+        assertEquals("https://oo.openonion.ai", Constants.DEFAULT_SERVER_URL)
+        assertTrue(Constants.isDefaultServerUrl(Constants.DEFAULT_SERVER_URL))
     }
 }
