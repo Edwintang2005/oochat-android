@@ -38,6 +38,7 @@ import ai.openonion.oochat.network.SpeechRecognitionEvent
 import ai.openonion.oochat.network.SpeechRecognitionService
 import ai.openonion.oochat.network.VoiceTranscriptionService
 import ai.openonion.oochat.ui.chat.components.VoiceInputPhase
+import ai.openonion.oochat.ui.chat.components.VoiceInputState
 import android.app.Application
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -49,6 +50,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -369,10 +371,12 @@ class ChatViewModelTest {
             durationSeconds = 3f,
             file = File.createTempFile("fake-voice", ".m4a")
         )
+        /** Set by a test to make the recorder fail to open, as a busy or denied mic does. */
+        var startSucceeds = true
         override suspend fun startRecording(): Boolean {
             startCalls++
             onStartRecording()
-            return true
+            return startSucceeds
         }
         override suspend fun stopRecording(): RecordedVoice? {
             stopCalls++
@@ -1572,6 +1576,70 @@ class ChatViewModelTest {
 
             assertEquals("hello from voice", vm.voiceInput.value.transcript)
             assertEquals(VoiceInputPhase.IDLE, vm.voiceInput.value.phase)
+            assertTrue(connectUseCase.sentMessages.isEmpty())
+        }
+
+    // What the fallback path does when it cannot finish. Each ends with an
+    // idle composer and nothing sent - dictation never sends on its own, and a
+    // failed one must not either.
+
+    /** One whole dictation on the recorder + server-transcription path. */
+    private fun TestScope.dictateOnFallbackPath() {
+        speechRecognition.reportedReadiness = RecognizerReadiness.UNAVAILABLE
+        vm.startVoiceRecording()
+        testScheduler.runCurrent()
+        vm.finishVoiceInput()
+        testScheduler.runCurrent()
+    }
+
+    @Test
+    fun `a recorder that cannot open says so and sends nothing`() =
+        runTest(testDispatcher) {
+            speechRecognition.reportedReadiness = RecognizerReadiness.UNAVAILABLE
+            voiceRecorderStore.startSucceeds = false
+
+            vm.startVoiceRecording()
+            testScheduler.runCurrent()
+
+            assertEquals("Couldn't start recording.", vm.voiceInput.value.error)
+            assertEquals(VoiceInputPhase.IDLE, vm.voiceInput.value.phase)
+            assertEquals(0, voiceTranscriptionService.transcribeCalls)
+            assertTrue(connectUseCase.sentMessages.isEmpty())
+        }
+
+    @Test
+    fun `a failed server transcription says so, leaves the composer alone, and sends nothing`() =
+        runTest(testDispatcher) {
+            voiceTranscriptionService.nextTranscript = null
+
+            dictateOnFallbackPath()
+
+            assertEquals("Couldn't transcribe that. Try again.", vm.voiceInput.value.error)
+            assertEquals("", vm.voiceInput.value.transcript)
+            assertEquals(VoiceInputPhase.IDLE, vm.voiceInput.value.phase)
+            assertTrue(connectUseCase.sentMessages.isEmpty())
+        }
+
+    @Test
+    fun `a blank server transcription is reported as a failure, not as an empty success`() =
+        runTest(testDispatcher) {
+            voiceTranscriptionService.nextTranscript = "   "
+
+            dictateOnFallbackPath()
+
+            assertEquals("Couldn't transcribe that. Try again.", vm.voiceInput.value.error)
+            assertTrue(connectUseCase.sentMessages.isEmpty())
+        }
+
+    @Test
+    fun `a recording too short to keep ends the dictation quietly, without a server call`() =
+        runTest(testDispatcher) {
+            voiceRecorderStore.nextRecording = null
+
+            dictateOnFallbackPath()
+
+            assertEquals(VoiceInputState(), vm.voiceInput.value)
+            assertEquals(0, voiceTranscriptionService.transcribeCalls)
             assertTrue(connectUseCase.sentMessages.isEmpty())
         }
 
@@ -2841,7 +2909,8 @@ class ChatViewModelTest {
                 address = address,
                 name = "Custom Server Agent",
                 serverUrl = "https://custom.example.com",
-                createdAt = 0L
+                createdAt = 0L,
+                connectionMode = "direct"
             )
         )
 
@@ -2908,8 +2977,7 @@ class ChatViewModelTest {
                 address = address,
                 name = "Custom Server Agent",
                 serverUrl = "https://custom.example.com",
-                createdAt = 0L,
-                connectionMode = "direct"
+                createdAt = 0L
             )
         )
 

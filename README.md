@@ -98,6 +98,10 @@ cd oochat-android
 ./gradlew :app:jacocoTestReport     # coverage
 ```
 
+The regression suite (the core features, plus tests that flag known issues) runs
+on its own with `./gradlew :app:testDebugUnitTest -Pregression`; see
+[docs/regression-suite.md](docs/regression-suite.md).
+
 Instrumented and Compose UI tests need a device attached:
 
 ```bash

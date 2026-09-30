@@ -11,6 +11,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
@@ -57,7 +58,7 @@ class InputBarDictationComposeTest {
             .grantPermissions(Manifest.permission.RECORD_AUDIO)
     }
 
-    private fun bar() {
+    private fun bar(onVoiceTranscriptConsumed: () -> Unit = {}, onSend: () -> Unit = {}) {
         composeRule.setContent {
             var voice by remember { mutableStateOf(VoiceInputState()) }
             setVoice = { voice = it }
@@ -68,7 +69,8 @@ class InputBarDictationComposeTest {
                         isSending = false,
                         voiceInput = voice,
                         onStartVoiceRecording = { setVoice(VoiceInputState(phase = VoiceInputPhase.LISTENING)) },
-                        onSend = { _, _, _ -> }
+                        onVoiceTranscriptConsumed = onVoiceTranscriptConsumed,
+                        onSend = { _, _, _ -> onSend() }
                     )
                 }
             }
@@ -415,5 +417,22 @@ class InputBarDictationComposeTest {
         final("book a tabel for two")
 
         composeRule.onNodeWithText("book a table").assertIsDisplayed()
+    }
+
+    @Test
+    fun `a finished dictation lights Send and is handed over once, but nothing is sent`() {
+        // The README's promise: the transcript lands in the field, editable,
+        // and only the user's own tap sends it.
+        var sends = 0
+        var consumed = 0
+        bar(onVoiceTranscriptConsumed = { consumed++ }, onSend = { sends++ })
+        startDictating()
+        partial("book a table")
+        final("book a table for two")
+
+        composeRule.onNode(hasSetTextAction()).assertTextEquals("book a table for two")
+        composeRule.onNodeWithContentDescription("Send").assertIsEnabled()
+        assertEquals("the composer must take a finished transcript exactly once", 1, consumed)
+        assertEquals("dictation must never send on its own", 0, sends)
     }
 }

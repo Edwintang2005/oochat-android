@@ -1,6 +1,7 @@
 package ai.openonion.oochat.ui.chat.components
 
 import ai.openonion.oochat.domain.model.AgentSkill
+import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.ui.theme.ConnectOnionTheme
 import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.getValue
@@ -9,10 +10,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -42,16 +45,22 @@ class SlashCommandPaletteComposeTest {
         AgentSkill("pdf")
     )
 
-    private fun bar(skills: List<AgentSkill> = this.skills, isAgentWorking: Boolean = false) {
+    /** [isConnected] is read inside composition, so a test can drop the connection mid-way. */
+    private fun bar(
+        skills: List<AgentSkill> = this.skills,
+        isAgentWorking: Boolean = false,
+        isConnected: () -> Boolean = { true },
+        onSend: (String) -> Unit = {}
+    ) {
         composeRule.setContent {
             ConnectOnionTheme {
                 Column {
                     InputBar(
-                        isConnected = true,
+                        isConnected = isConnected(),
                         isSending = false,
                         isAgentWorking = isAgentWorking,
                         skills = skills,
-                        onSend = { _, _, _ -> }
+                        onSend = { text, _, _ -> onSend(text) }
                     )
                 }
             }
@@ -217,5 +226,47 @@ class SlashCommandPaletteComposeTest {
         working = true
 
         composeRule.onNodeWithText("/pdf").assertIsDisplayed()
+    }
+
+    @Test
+    fun `a completed command goes out as the plain text in the field`() {
+        // The palette is a typing aid, not a separate channel: what the agent
+        // receives is an ordinary INPUT whose prompt starts with the command.
+        var sent: String? = null
+        bar(onSend = { sent = it })
+        type("/web")
+        composeRule.onNodeWithText("/web-scraping").performClick()
+        type("https://example.com")
+
+        composeRule.onNodeWithContentDescription("Send").performClick()
+
+        assertEquals("/web-scraping https://example.com", sent)
+    }
+
+    @Test
+    fun `a connection that drops takes the palette down with the field`() {
+        var connected by mutableStateOf(true)
+        bar(isConnected = { connected })
+        type("/")
+        composeRule.onNodeWithText("/pdf").assertIsDisplayed()
+
+        connected = false
+
+        // Picking a command into a field that can no longer send would be a
+        // dead end; the palette goes with the field it completes.
+        composeRule.onNodeWithText("/pdf").assertDoesNotExist()
+    }
+
+    @Test
+    fun `known issue - two skills with the same name take the composer down when the palette opens`() {
+        // Reachable in production: the directory path passes duplicate names
+        // through (see ConnectionRepositoryImplTest), and the palette's
+        // LazyColumn keys its rows on the name.
+        bar(skills = listOf(AgentSkill("explain", "First"), AgentSkill("explain", "Second")))
+
+        knownIssue("duplicate skill names crash the palette's LazyColumn (row key = name)") {
+            type("/")
+            composeRule.onNodeWithText("/explain").assertIsDisplayed()
+        }
     }
 }
