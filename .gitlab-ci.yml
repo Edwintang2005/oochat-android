@@ -131,11 +131,10 @@ instrumented-tests-compile:
 assemble-debug:
   stage: build
   # Not gated on the tests, as on GitHub: a broken build should say so at once.
+  # Unlike GitHub's, this job keeps no APK: the 26 MB debug APK is over CSE
+  # GitLab's artifact size limit (the upload fails with 413). It proves the app
+  # builds; build the APK locally to install it.
   needs: []
   timeout: 30m
   script:
     - ./gradlew :app:assembleDebug
-  artifacts:
-    expire_in: 2 weeks
-    paths:
-      - app/build/outputs/apk/debug/app-debug.apk
