@@ -3,18 +3,19 @@
 # Runs the same checks as .github/workflows/build.yml, plus the doc-link check.
 # Nothing ran on GitLab before this file existed.
 #
-# UNSW CSE runners execute jobs with udocker (rootless, no Docker-in-Docker, no
-# KVM), and the image has to contain git and bash. Two consequences:
+# Jobs run on CSE's shared runner fleet: a Docker executor on 2 vCPU / 4 GB
+# machines with no swap and no KVM, and a job limit of about 15 minutes. So:
 #   - Instrumented tests (app/src/androidTest) cannot run here - an emulator
 #     needs KVM - so they are compiled but not executed, as on GitHub.
-#   - If the group's runner only takes tagged jobs, add its tag under
-#     `default: tags:` below.
+#   - Gradle is resized to fit 4 GB (see before_script). gradle.properties is
+#     sized for GitHub's 7 GB runners; on these machines it let three JVMs claim
+#     more memory than exists, and the first pipeline froze mid-build.
 #
 # Screenshot baselines are not verified, for the same reason as on GitHub: the
 # committed Roborazzi baselines are stale (see the README).
 
-# Ubuntu 24.04 with git, bash, JDK 21 and the API 36 platform, licences
-# accepted. The build targets Java 17 bytecode, so a newer JDK runs it fine.
+# Ubuntu 24.04 with JDK 21 and the API 36 platform, licences accepted. The
+# build targets Java 17 bytecode, so a newer JDK runs it fine.
 # Pinned by tag; pin by digest instead if a moving tag ever breaks the build.
 image: ghcr.io/cirruslabs/android-sdk:36
 
@@ -44,6 +45,22 @@ default:
   interruptible: true
   before_script:
     - chmod +x gradlew
+    # Overrides gradle.properties for CI only: Gradle home settings win over the
+    # project's. 1.5 GB for Gradle, Kotlin compiled inside that JVM rather than
+    # in a second daemon, at most two workers.
+    - mkdir -p "$GRADLE_USER_HOME/init.d"
+    - |
+      cat > "$GRADLE_USER_HOME/gradle.properties" <<'EOF'
+      org.gradle.jvmargs=-Xmx1536m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8
+      kotlin.compiler.execution.strategy=in-process
+      org.gradle.workers.max=2
+      EOF
+    # Caps the test JVM and prints each test class as it finishes.
+    - cp .gitlab/ci.init.gradle.kts "$GRADLE_USER_HOME/init.d/"
+    # A machine that runs out of memory freezes without a word, so log what is
+    # left every 30 seconds; the last line before a stall says why.
+    - echo "[machine] $(nproc) CPUs, $(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo) MB RAM"
+    - (while sleep 30; do echo "[memory] $(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo) MB available"; done) &
   cache:
     # Dependencies change when a build script does; key on those.
     key:
@@ -70,6 +87,8 @@ doc-links:
 
 unit-tests:
   stage: test
+  # Longer than the project default; the runner caps it if it allows less.
+  timeout: 30m
   script:
     - ./gradlew :app:testDebugUnitTest
     # testDebugUnitTest and the Roborazzi tasks reconfigure the same Gradle
@@ -113,6 +132,7 @@ assemble-debug:
   stage: build
   # Not gated on the tests, as on GitHub: a broken build should say so at once.
   needs: []
+  timeout: 30m
   script:
     - ./gradlew :app:assembleDebug
   artifacts:
