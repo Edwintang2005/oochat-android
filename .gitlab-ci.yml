@@ -1,0 +1,121 @@
+# GitLab CI for the team's copy of this repository.
+#
+# Runs the same checks as .github/workflows/build.yml, plus the doc-link check.
+# Nothing ran on GitLab before this file existed.
+#
+# UNSW CSE runners execute jobs with udocker (rootless, no Docker-in-Docker, no
+# KVM), and the image has to contain git and bash. Two consequences:
+#   - Instrumented tests (app/src/androidTest) cannot run here - an emulator
+#     needs KVM - so they are compiled but not executed, as on GitHub.
+#   - If the group's runner only takes tagged jobs, add its tag under
+#     `default: tags:` below.
+#
+# Screenshot baselines are not verified, for the same reason as on GitHub: the
+# committed Roborazzi baselines are stale (see the README).
+
+# Ubuntu 24.04 with git, bash, JDK 21 and the API 36 platform, licences
+# accepted. The build targets Java 17 bytecode, so a newer JDK runs it fine.
+# Pinned by tag; pin by digest instead if a moving tag ever breaks the build.
+image: ghcr.io/cirruslabs/android-sdk:36
+
+variables:
+  # Inside the project directory, so the cache below can keep it between jobs.
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle-home"
+  # One build per job: a daemon would outlive the job and hold its memory.
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  GIT_DEPTH: "20"
+
+# One pipeline per change: merge requests, and pushes to branches without an
+# open merge request (otherwise a push to an MR branch runs twice).
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+stages:
+  - check
+  - test
+  - build
+
+default:
+  # A newer push supersedes a running pipeline instead of queueing behind it.
+  interruptible: true
+  before_script:
+    - chmod +x gradlew
+  cache:
+    # Dependencies change when a build script does; key on those.
+    key:
+      files:
+        - build.gradle.kts
+        - app/build.gradle.kts
+    paths:
+      - .gradle-home/caches/
+      - .gradle-home/wrapper/
+    policy: pull-push
+
+ktlint:
+  stage: check
+  script:
+    - ./gradlew :app:ktlintCheck
+
+doc-links:
+  stage: check
+  # Plain Python over `git ls-files`; needs neither Gradle nor its cache.
+  cache: []
+  before_script: []
+  script:
+    - python3 tools/check-doc-links.py
+
+unit-tests:
+  stage: test
+  script:
+    - ./gradlew :app:testDebugUnitTest
+    # testDebugUnitTest and the Roborazzi tasks reconfigure the same Gradle
+    # task with a screenshot-only filter; run in one invocation, the filter wins
+    # and most of the suite silently never runs. Same guard as GitHub's.
+    - |
+      threshold=800
+      count=$(grep -rho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml \
+        | grep -o '[0-9]*' | awk '{s+=$1} END {print s+0}')
+      echo "Unit tests executed: $count (floor: $threshold)"
+      if [ "$count" -lt "$threshold" ]; then
+        echo "Only $count unit tests executed, expected at least $threshold - see the comment above this check."
+        exit 1
+      fi
+    # Known issues are reported as skipped, which a green pipeline hides; list
+    # them so every run shows what is still open (docs/regression-suite.md).
+    # Each reason ends "(ExceptionClass: message)"; only that tail is dropped,
+    # since the descriptions have parentheses of their own.
+    - |
+      issues=$(grep -rhoE 'KNOWN ISSUE: .*' app/build/test-results/testDebugUnitTest/*.xml \
+        | sed -E 's/ \([A-Za-z]+: .*$//' | sort -u || true)
+      echo "Known issues still open:"
+      echo "${issues:-  none}"
+    - ./gradlew :app:jacocoTestReport
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    reports:
+      # Shows failures, and skipped known issues, in the merge request.
+      junit: app/build/test-results/testDebugUnitTest/*.xml
+    paths:
+      - app/build/reports/tests/testDebugUnitTest/
+      - app/build/reports/jacoco/jacocoTestReport/
+
+instrumented-tests-compile:
+  stage: test
+  script:
+    - ./gradlew :app:compileDebugAndroidTestKotlin
+
+assemble-debug:
+  stage: build
+  # Not gated on the tests, as on GitHub: a broken build should say so at once.
+  needs: []
+  script:
+    - ./gradlew :app:assembleDebug
+  artifacts:
+    expire_in: 2 weeks
+    paths:
+      - app/build/outputs/apk/debug/app-debug.apk
