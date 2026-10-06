@@ -7,7 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Wire-shape tests for [ApprovalResponse]. Uses the same [Json] config as
+ * Wire-shape tests for outgoing frames. Uses the same [Json] config as
  * [ai.openonion.oochat.network.AgentConnection]'s send path
  * (encodeDefaults = true, explicitNulls = false) — AgentConnection itself
  * can't be unit-tested (needs a real Android Keystore, see
@@ -127,6 +127,52 @@ class OutgoingMessagesTest {
         // verifying, and the app signed 10.0 (see IdentityVectorsTest).
         assertEquals(
             """{"type":"ONBOARD_SUBMIT","payload":{"timestamp":1760000000,"payment":10.0},"from":"0xme","signature":"sig"}""",
+            encoded
+        )
+    }
+
+    /**
+     * W16AAPPLE-11. The Host's connect.py reads `data.get("protocol")` off the
+     * CONNECT envelope and rejects anything but `name == "oip"` and a matching
+     * `version`; connectonion-react's OIP_PROTOCOL is the reference value.
+     */
+    @Test
+    fun `a relay CONNECT declares the OIP descriptor at the envelope's top level`() {
+        val encoded = json.encodeToString(
+            ConnectMessage.serializer(),
+            ConnectMessage(
+                payload = ConnectPayload(timestamp = 1_760_000_000L, to = "0xagent"),
+                from = "0xme",
+                signature = "sig",
+                timestamp = 1_760_000_000L,
+                to = "0xagent",
+                sessionId = "sess-42"
+            )
+        )
+
+        assertEquals(
+            """{"type":"CONNECT","protocol":{"name":"oip","version":"0.1","min_version":"0.1","max_version":"0.1"},""" +
+                """"payload":{"timestamp":1760000000,"to":"0xagent"},"from":"0xme","signature":"sig",""" +
+                """"timestamp":1760000000,"to":"0xagent","session_id":"sess-42"}""",
+            encoded
+        )
+    }
+
+    @Test
+    fun `a direct CONNECT for a new session still declares the OIP descriptor`() {
+        val encoded = json.encodeToString(
+            ConnectMessage.serializer(),
+            ConnectMessage(
+                payload = ConnectPayload(timestamp = 1_760_000_000L),
+                from = "0xme",
+                signature = "sig",
+                timestamp = 1_760_000_000L
+            )
+        )
+
+        assertEquals(
+            """{"type":"CONNECT","protocol":{"name":"oip","version":"0.1","min_version":"0.1","max_version":"0.1"},""" +
+                """"payload":{"timestamp":1760000000},"from":"0xme","signature":"sig","timestamp":1760000000}""",
             encoded
         )
     }

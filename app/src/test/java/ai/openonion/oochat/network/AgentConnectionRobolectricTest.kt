@@ -1,6 +1,8 @@
 package ai.openonion.oochat.network
 
 import ai.openonion.oochat.crypto.KeyManager
+import ai.openonion.oochat.data.protocol.OipProtocol
+import ai.openonion.oochat.data.protocol.ProtocolDescriptor
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.knownIssue
@@ -609,6 +611,74 @@ class AgentConnectionRobolectricTest {
             payloadTs,
             envelopeTs
         )
+    }
+
+    // ── W16AAPPLE-11: OIP protocol descriptor ─────────────────────────
+
+    private fun sentConnect(): JsonObject {
+        val frame = factory.lastWebSocket!!.sentMessages.lastOrNull { it.contains("\"type\":\"CONNECT\"") }
+            ?: error("no CONNECT was sent")
+        return Json.parseToJsonElement(frame).jsonObject
+    }
+
+    private fun assertDeclaresOip(connect: JsonObject) {
+        val protocol = connect["protocol"]?.jsonObject ?: error("CONNECT has no protocol descriptor: $connect")
+        assertEquals(
+            Json.decodeFromJsonElement(ProtocolDescriptor.serializer(), protocol),
+            OipProtocol.DESCRIPTOR
+        )
+        assertEquals("oip", protocol["name"]?.jsonPrimitive?.content)
+        assertEquals("0.1", protocol["version"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `the CONNECT sent when the socket opens declares the OIP protocol descriptor`() {
+        connection.connect("0xAGENT")
+        factory.lastListener?.onOpen(factory.lastWebSocket!!, fakeResponse())
+
+        assertDeclaresOip(sentConnect())
+    }
+
+    @Test
+    fun `the CONNECT resent after onboarding still declares the OIP protocol descriptor`() {
+        connection.connect("0xAGENT")
+        factory.lastListener?.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"ONBOARD_REQUIRED","id":"ob1","methods":["invite_code"]}"""
+        )
+        factory.lastListener?.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"ONBOARD_SUCCESS","id":"ob1","level":"contact","message":"ok"}"""
+        )
+
+        assertDeclaresOip(sentConnect())
+    }
+
+    @Test
+    fun `the OIP descriptor is not part of the signed CONNECT payload`() {
+        // The Host verifies the signature over `payload` alone and reads
+        // `protocol` off the envelope, so the descriptor must not change the
+        // bytes the client signs.
+        val signed = CopyOnWriteArrayList<String>()
+        val conn = AgentConnection(
+            keyManager,
+            webSocketFactory = factory,
+            signer = { _, canonical -> signed += canonical; "fake-signature" }
+        )
+        try {
+            conn.connect("0xAGENT")
+            factory.lastListener?.onOpen(factory.lastWebSocket!!, fakeResponse())
+
+            val canonical = signed.singleOrNull() ?: error("expected one signed CONNECT payload, saw $signed")
+            assertFalse("protocol must stay on the envelope: $canonical", canonical.contains("protocol"))
+            assertEquals(
+                "the envelope's payload must be exactly what was signed",
+                Json.parseToJsonElement(canonical),
+                sentConnect()["payload"]
+            )
+        } finally {
+            conn.teardown()
+        }
     }
 
     @Test

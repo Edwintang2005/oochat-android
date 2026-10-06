@@ -47,6 +47,7 @@ They are `@Serializable` Kotlin data classes and are encoded with
 | Field | Meaning |
 | --- | --- |
 | `type` | Always `"CONNECT"`. |
+| `protocol` | The OIP protocol descriptor, `OipProtocol.DESCRIPTOR`. See below. |
 | `payload` | `ConnectPayload(timestamp, to)`; this is the signed payload. |
 | `from` | The local Ed25519 address. |
 | `signature` | Hex Ed25519 signature over the canonical payload JSON. |
@@ -59,6 +60,36 @@ They are `@Serializable` Kotlin data classes and are encoded with
 `KeyManager.canonicalJson()` followed by `KeyManager.sign()` to create the
 signature. Keeping one timestamp for the signed payload and envelope avoids a
 signature mismatch.
+
+#### Protocol descriptor
+
+Every `CONNECT`, including the one re-sent after an onboarding gate, declares
+the OIP version the client speaks:
+
+```json
+"protocol": {"name": "oip", "version": "0.1", "min_version": "0.1", "max_version": "0.1"}
+```
+
+The descriptor is defined once, in
+`app/src/main/java/ai/openonion/oochat/data/protocol/OipProtocol.kt`, and
+matches `OIP_PROTOCOL` in `connectonion-react`'s `src/connect/protocol.ts`.
+It sits at the top level of the envelope and is not signed. The Host reads
+`data.get("protocol")` from the envelope and verifies the signature over
+`payload` alone, so adding the descriptor does not change the signed bytes.
+
+The Host compares only `name` and `version`, in `supports_oip()` in
+`connectonion/network/host/protocol.py`. It accepts a `CONNECT` with no
+descriptor only during the rolling compatibility window. That window covers
+1.7.x and may close no earlier than 1.8.0a1 (2026-09-15). If the Host does not
+support the declared version, it answers with a non-retryable
+`{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol","retryable":false,"protocol":{…}}`.
+The client does not yet handle that rejection specially; W16AAPPLE-12 tracks
+that work.
+
+Covered by `OutgoingMessagesTest`, which checks the serialised `CONNECT`
+frame, and by `AgentConnectionRobolectricTest`, which checks the frame sent
+when the socket opens, the frame re-sent after onboarding, and that the
+descriptor is not part of the signed payload.
 
 When reconnecting, `ConnectionRepositoryImpl` restores the saved
 `SessionState` through `SessionStore`, calls `AgentConnection.setSession()`,
