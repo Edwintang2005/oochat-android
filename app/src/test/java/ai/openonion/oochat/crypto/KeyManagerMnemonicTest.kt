@@ -178,14 +178,15 @@ class KeyManagerMnemonicTest {
     // ── signing with the stored identity ──────────────────────────────
 
     @Test
-    fun `a signature is 64 bytes of lower-case hex and repeatable`() {
+    fun `a signature is 64 bytes of hex and repeatable`() {
         val keys = keyManager.importFromPhraseOrHex(phrase12)
         val loaded = keyManager.load()
         assertNotNull(loaded)
 
         val signature = keyManager.sign(keys, """{"timestamp":1760000000}""")
 
-        assertTrue(signature, Regex("^[0-9a-f]{128}$").matches(signature))
+        // The relay parses it with bytes.fromhex, so either case would verify.
+        assertTrue(signature, Regex("^[0-9a-fA-F]{128}$").matches(signature))
         assertEquals(
             "the identity read back from storage must sign identically",
             signature,

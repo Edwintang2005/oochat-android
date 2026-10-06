@@ -123,6 +123,9 @@ class ConnectionConfigTest {
         }
     }
 
+    // Holds only because ConnectionConfig cannot record which mode Setup was
+    // in: a custom *relay* saved from Setup is dialled direct too. Revisit with
+    // W16AAPPLE-56 (saved connectionMode is ignored).
     @Test
     fun customServerUrlConnectsDirectToThatUrl() {
         val target = ConnectionConfig(serverUrl = "https://agent.example.com", agentAddress = agent).toConnectTarget()

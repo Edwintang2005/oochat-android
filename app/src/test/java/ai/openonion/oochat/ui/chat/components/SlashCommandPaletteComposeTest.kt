@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -244,7 +246,7 @@ class SlashCommandPaletteComposeTest {
     }
 
     @Test
-    fun `a connection that drops takes the palette down with the field`() {
+    fun `the palette is offered only while the field it completes takes input`() {
         var connected by mutableStateOf(true)
         bar(isConnected = { connected })
         type("/")
@@ -252,9 +254,18 @@ class SlashCommandPaletteComposeTest {
 
         connected = false
 
-        // Picking a command into a field that can no longer send would be a
-        // dead end; the palette goes with the field it completes.
-        composeRule.onNodeWithText("/pdf").assertDoesNotExist()
+        // Whether the composer should stay usable offline is an open question
+        // (the user guide describes queuing offline messages). Either way, a
+        // command picked into a field that takes no input is a dead end, so
+        // the palette must follow the field rather than the connection.
+        // Found by its editable text: a disabled field stops offering SetText.
+        val field = composeRule.onNode(SemanticsMatcher.keyIsDefined(SemanticsProperties.EditableText))
+        val fieldTakesInput = SemanticsProperties.Disabled !in field.fetchSemanticsNode().config
+        if (fieldTakesInput) {
+            composeRule.onNodeWithText("/pdf").assertIsDisplayed()
+        } else {
+            composeRule.onNodeWithText("/pdf").assertDoesNotExist()
+        }
     }
 
     @Test

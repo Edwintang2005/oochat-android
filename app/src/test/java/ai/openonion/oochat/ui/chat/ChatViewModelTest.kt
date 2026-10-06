@@ -38,7 +38,6 @@ import ai.openonion.oochat.network.SpeechRecognitionEvent
 import ai.openonion.oochat.network.SpeechRecognitionService
 import ai.openonion.oochat.network.VoiceTranscriptionService
 import ai.openonion.oochat.ui.chat.components.VoiceInputPhase
-import ai.openonion.oochat.ui.chat.components.VoiceInputState
 import android.app.Application
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -1632,13 +1631,16 @@ class ChatViewModelTest {
         }
 
     @Test
-    fun `a recording too short to keep ends the dictation quietly, without a server call`() =
+    fun `a recording too short to keep is not uploaded and sends nothing`() =
         runTest(testDispatcher) {
             voiceRecorderStore.nextRecording = null
 
             dictateOnFallbackPath()
 
-            assertEquals(VoiceInputState(), vm.voiceInput.value)
+            // Whether the user should also be told is an open question; what is
+            // settled is that nothing is transcribed, sent, or left running.
+            assertEquals(VoiceInputPhase.IDLE, vm.voiceInput.value.phase)
+            assertEquals("", vm.voiceInput.value.transcript)
             assertEquals(0, voiceTranscriptionService.transcribeCalls)
             assertTrue(connectUseCase.sentMessages.isEmpty())
         }

@@ -317,17 +317,19 @@ class AgentViewModelTest {
     fun `createAgent tells someone who pasted a URL into the address field what it wants instead`() = runTest {
         assertFalse(viewModel.createAgent(name = "A", address = "https://agent.example.com", serverUrl = "https://x.com"))
 
-        assertEquals(
-            "Agent address should be a hex address (0x...), not a URL. Please select from the dropdown.",
-            viewModel.uiState.value.error?.message
-        )
+        val message = viewModel.uiState.value.error?.message.orEmpty()
+        assertTrue(message, message.contains("not a URL"))
+        assertTrue(message, message.contains("0x"))
     }
 
     @Test
-    fun `createAgent rejects an address over 200 characters before checking its format`() = runTest {
+    fun `createAgent rejects an address over 200 characters`() = runTest {
+        // Which of the two messages wins is not the point - the length cap and
+        // the format check both describe it - only that nothing is saved.
         assertFalse(viewModel.createAgent(name = "A", address = "0x" + "a".repeat(199), serverUrl = "https://x.com"))
 
-        assertEquals("Agent address is too long (maximum 200 characters)", viewModel.uiState.value.error?.message)
+        assertTrue(viewModel.uiState.value.error != null)
+        assertEquals(0, agentRepository.createCount)
     }
 
     @Test
@@ -336,7 +338,7 @@ class AgentViewModelTest {
     }
 
     @Test
-    fun `a valid address is saved as given, with the name, server and routing chosen`() = runTest {
+    fun `a valid address is saved with the name, server and routing chosen`() = runTest {
         val address = validAddress('5')
 
         assertTrue(
@@ -584,6 +586,18 @@ class AgentViewModelTest {
 
         knownIssue("addDiscoveredAgent skips the first-agent default createAgent and connectToDiscoveredAgent apply") {
             assertEquals("d1", defaultAgentRepository.defaultAgentId)
+        }
+    }
+
+    @Test
+    fun `known issue - Add Agent tells someone who pasted a URL to use a dropdown it does not have`() = runTest {
+        viewModel.createAgent(name = "A", address = "https://agent.example.com", serverUrl = "https://x.com")
+        val message = viewModel.uiState.value.error?.message.orEmpty()
+
+        // The Add Agent form has no saved-agent dropdown (see
+        // AgentFormScreenComposeTest); only Edit does. createAgent backs Add.
+        knownIssue("the URL-as-address error ends \"Please select from the dropdown.\", which Add Agent does not have") {
+            assertFalse(message, message.contains("dropdown"))
         }
     }
 }

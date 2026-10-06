@@ -121,6 +121,8 @@ class IdentityVectorsTest {
 
     @Test
     fun `an address is 0x plus 64 lower-case hex characters, shortened to 6 and 4`() {
+        // The same form the connectonion SDK gives an address ("0x" + hex) and
+        // its short form ("0x3d40...660c" in address.py's own docstring).
         val keys = keyManager.keysFromMnemonic(phrases.first().phrase)
 
         assertEquals(66, keys.address.length)
