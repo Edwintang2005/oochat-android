@@ -592,11 +592,19 @@ object ProtocolParser {
 
     private fun generateId(): String = java.util.UUID.randomUUID().toString()
 
-    /** "oip/0.2" from a Host descriptor, or null when it names no version. */
+    /**
+     * "oip/0.2" from a Host descriptor, or null when it names no version.
+     *
+     * Peer-controlled text bound for app.log and for an error the app words
+     * as its own, so only a short protocol token is echoed; anything else
+     * reads as undeclared. The Host's own compatibility log refuses to copy
+     * these strings for the same reason (protocol.py).
+     */
     private fun describeProtocol(descriptor: JsonElement?): String? {
         val fields = descriptor as? JsonObject ?: return null
         val version = (fields["version"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
         val name = (fields["name"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() } ?: OipProtocol.NAME
+        if (!PROTOCOL_TOKEN.matches(name) || !PROTOCOL_TOKEN.matches(version)) return null
         return "$name/$version"
     }
 
@@ -626,6 +634,9 @@ object ProtocolParser {
 
     /** What the host emits for a skill whose file has no summary — see [toAgentSkills]. */
     private const val NO_DESCRIPTION_PLACEHOLDER = "No description"
+
+    /** A protocol name or version short and plain enough to echo — see [describeProtocol]. */
+    private val PROTOCOL_TOKEN = Regex("[A-Za-z0-9][A-Za-z0-9._+-]{0,31}")
 
     /**
      * Drops the entries of a nested wire list that carry nothing renderable,

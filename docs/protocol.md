@@ -104,15 +104,19 @@ error.
    (`OipProtocol.UNSUPPORTED_VERSION_CODE`) into
    `ConnectionEvent.ProtocolRejected`. The event carries the Host's version
    from the frame's `protocol` descriptor, for example `oip/0.2`, or null if
-   the descriptor is missing or malformed. Every other `ERROR`, including ones
-   with a string `code`, stays a `ConnectionError`.
+   the descriptor is missing or malformed. The name and version are
+   peer-controlled and end up in `app.log` and in the error text, so anything
+   other than a short token (letters, digits, `.`, `_`, `+`, `-`, at most 32
+   characters) also reads as null. Every other `ERROR`, including ones with a
+   string `code`, stays a `ConnectionError`.
 2. `AgentConnection` marks the cycle as rejected, cancels any scheduled
    reconnect, and closes the socket itself. The Host leaves the socket open
    after its `ERROR`, and a later drop would otherwise start the reconnect
-   ladder. While the cycle is rejected, `attemptReconnect()` and `retryNow()`
-   do nothing. That covers socket drops, the network coming back, and the app
-   returning to the foreground. Only a new `connect()`, meaning the user
-   trying again, clears the flag.
+   ladder. While the cycle is rejected, `attemptReconnect()`, `retryNow()` and
+   the socket reopen behind a conversation switch do nothing. That covers
+   socket drops, the network coming back, the app returning to the
+   foreground, and a switch that raced the refusal. Only a new `connect()`,
+   meaning the user trying again, clears the flag.
 3. `ConnectionRepositoryImpl` publishes
    `ConnectionState.Error(retryable = false)` with the message from
    `ServerErrorText.incompatibleProtocol()`, for example: "This agent uses a
@@ -122,10 +126,16 @@ error.
    upgrade can be the `CONNECT` that is refused.
 4. `ConnectToAgentUseCase` does not make its usual second attempt after a
    non-retryable error.
+5. `ChatViewModel` adds the message to the chat once. Its stale-session
+   suppression applies only to retryable errors, so a Host version that
+   happens to read like a stale-session error cannot hide the message.
+   `ConnectionBanner` titles the error "Incompatible version" rather than
+   "Connection failed", and keeps its Reconnect action: nothing recovers on its
+   own, and once the app or the agent is updated, that is the user's way back.
 
 Covered by `ProtocolParserVersionRejectionTest`, by the W16AAPPLE-12 section of
 `AgentConnectionRobolectricTest`, and by `ConnectionRepositoryImplTest`,
-`ConnectToAgentUseCaseTest`, and `ServerErrorTextTest`.
+`ConnectToAgentUseCaseTest`, `ServerErrorTextTest`, `ChatViewModelTest`, and `ConnectionBannerTest`.
 
 When reconnecting, `ConnectionRepositoryImpl` restores the saved
 `SessionState` through `SessionStore`, calls `AgentConnection.setSession()`,

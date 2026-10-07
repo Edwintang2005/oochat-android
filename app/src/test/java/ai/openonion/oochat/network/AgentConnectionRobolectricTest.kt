@@ -8,6 +8,7 @@ import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.knownIssue
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -50,7 +51,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
+import java.io.PrintStream
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Unit tests for [AgentConnection] against a fake [WebSocketFactory] (the
@@ -2052,6 +2056,93 @@ class AgentConnectionRobolectricTest {
         conn.teardown()
     }
 
+    /**
+     * Forwards to [inner], but first runs [onNextDispatch] once from inside
+     * `dispatch` — i.e. inside `launch`, before it has returned the Job its
+     * caller is about to store. A frame on OkHttp's thread can land there.
+     */
+    private class InterposingDispatcher(private val inner: CoroutineDispatcher) : CoroutineDispatcher() {
+        @Volatile var onNextDispatch: (() -> Unit)? = null
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            onNextDispatch?.also { onNextDispatch = null }?.invoke()
+            inner.dispatch(context, block)
+        }
+    }
+
+    @Test
+    fun `a refusal landing while retryNow is launching its reopen does not get a second CONNECT`() = runTest {
+        // The app resumes (retryNow, main thread) just as the rung's CONNECT
+        // is refused (OkHttp thread): retryNow has passed its guard, and the
+        // refusal's cancel of reconnectJob still sees the previous job.
+        val dispatcher = InterposingDispatcher(StandardTestDispatcher(testScheduler))
+        val conn = AgentConnection(
+            keyManager,
+            webSocketFactory = factory,
+            signer = { _, _ -> "fake-signature" },
+            reconnectDispatcher = dispatcher
+        )
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+        simulateConnected("sess-1")
+        factory.lastListener!!.onClosed(factory.lastWebSocket!!, 1006, "abnormal closure")
+        conn.retryNow()
+        runCurrent()
+        assertEquals("test setup: retryNow must have opened the rung", 2, factory.socketCount)
+        val rung = factory.lastWebSocket!!
+        val rungListener = factory.lastListener!!
+        rungListener.onOpen(rung, fakeResponse())
+
+        dispatcher.onNextDispatch = { rungListener.onMessage(rung, versionRejection) }
+        conn.retryNow()
+        runCurrent()
+
+        assertEquals(1000, rung.closeCode)
+        assertEquals("no CONNECT may follow the refusal", 2, factory.socketCount)
+        conn.teardown()
+    }
+
+    @Test
+    fun `a refusal landing while a conversation switch reopens does not get a second CONNECT`() = runTest {
+        // switchSession runs on the repository's IO thread and checks for a
+        // live socket before reopening; the refusal can land on OkHttp's
+        // thread in between. Modelled by delivering it from switchSession's
+        // own log line, which Robolectric writes synchronously.
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        val listener = factory.lastListener!!
+        listener.onOpen(ws, fakeResponse())
+
+        var delivered = false
+        val logged = StringBuilder()
+        val previousStream = ShadowLog.stream
+        ShadowLog.stream = PrintStream(object : java.io.OutputStream() {
+            override fun write(b: Int) {
+                logged.append(b.toChar())
+                if (!delivered && logged.contains("Switching session")) {
+                    delivered = true
+                    listener.onMessage(ws, versionRejection)
+                }
+            }
+        })
+        try {
+            conn.switchSession(SessionState(sessionId = "sess-2"))
+        } finally {
+            ShadowLog.stream = previousStream
+        }
+        advanceTimeBy(10 * 60_000L)
+
+        assertTrue("test setup: the refusal must land inside switchSession", delivered)
+        assertEquals("no CONNECT may follow the refusal", 1, factory.socketCount)
+        assertTrue(
+            "nothing may replace the refusal as the last word: $seen",
+            seen.last() is ConnectionEvent.ProtocolRejected
+        )
+        conn.teardown()
+    }
+
     @Test
     fun `the user connecting again after a refusal gets a fresh attempt`() = runTest {
         // "No automatic reconnect" — a deliberate retry is still the user's to make.
@@ -2063,6 +2154,25 @@ class AgentConnectionRobolectricTest {
         runCurrent()
 
         assertEquals(2, factory.socketCount)
+        conn.teardown()
+    }
+
+    @Test
+    fun `a refusal does not outlive the cycle it ended - the next connect gets its ladder back`() = runTest {
+        // The stand-down is per cycle. connect() opens a socket whether or not
+        // it clears the flag, so the test above cannot tell; if it stayed set,
+        // the user's retry would connect once and never recover from a drop.
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onMessage(factory.lastWebSocket!!, versionRejection)
+        conn.connect("0xAGENT")
+        runCurrent()
+        assertEquals("test setup: the retry opened a socket", 2, factory.socketCount)
+
+        factory.lastListener!!.onFailure(factory.lastWebSocket!!, java.io.IOException("connection reset"), null)
+        advanceTimeBy(AgentConnection.reconnectBackoffMs(1) + 1)
+
+        assertEquals("the new cycle's ladder must run", 3, factory.socketCount)
         conn.teardown()
     }
 

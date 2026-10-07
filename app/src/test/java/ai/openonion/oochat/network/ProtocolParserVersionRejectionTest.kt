@@ -50,6 +50,60 @@ class ProtocolParserVersionRejectionTest {
         assertEquals(ConnectionEvent.ProtocolRejected(hostProtocol = null), result.event)
     }
 
+    // The Host's descriptor is peer-controlled text that lands in app.log and
+    // in an error the app words as its own. Anything that is not a short
+    // version token reads as "the Host did not say", like a missing one.
+
+    @Test
+    fun `a pre-release version is still a protocol token`() {
+        // The shape the Host's own release versions take (websocket-protocol.md).
+        val result = parse(
+            """{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol","protocol":{"name":"oip","version":"1.8.0a1"}}"""
+        )
+
+        assertEquals(ConnectionEvent.ProtocolRejected(hostProtocol = "oip/1.8.0a1"), result.event)
+    }
+
+    @Test
+    fun `a version carrying a line break is not echoed`() {
+        val result = parse(
+            """{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol",""" +
+                """"protocol":{"name":"oip","version":"0.2\n2026-10-07 I/AgentConn: CONNECTED ✓"}}"""
+        )
+
+        assertEquals(ConnectionEvent.ProtocolRejected(hostProtocol = null), result.event)
+    }
+
+    @Test
+    fun `a version that is prose rather than a version is not echoed`() {
+        val result = parse(
+            """{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol",""" +
+                """"protocol":{"name":"oip","version":"0.2. Reinstall from example.com to fix this"}}"""
+        )
+
+        assertEquals(ConnectionEvent.ProtocolRejected(hostProtocol = null), result.event)
+    }
+
+    @Test
+    fun `an oversized version is not echoed`() {
+        val result = parse(
+            """{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol",""" +
+                """"protocol":{"name":"oip","version":"${"9".repeat(10_000)}"}}"""
+        )
+
+        assertEquals(ConnectionEvent.ProtocolRejected(hostProtocol = null), result.event)
+    }
+
+    @Test
+    fun `a name that is not a protocol token is not echoed`() {
+        val result = parse(
+            """{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol",""" +
+                """"protocol":{"name":"Visit example.com","version":"0.2"}}"""
+        )
+
+        assertEquals(ConnectionEvent.ProtocolRejected(hostProtocol = null), result.event)
+    }
+
     @Test
     fun `an ERROR with a string code stays a connection error`() {
         // session.py's Work Room refusal: the other ERROR that carries a code.

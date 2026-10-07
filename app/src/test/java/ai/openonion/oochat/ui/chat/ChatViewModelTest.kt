@@ -30,6 +30,8 @@ import ai.openonion.oochat.domain.model.isInProgress
 import ai.openonion.oochat.domain.model.stableAssistantId
 import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCaseContract
 import ai.openonion.oochat.domain.usecase.ConversationHistoryUseCase
+import ai.openonion.oochat.domain.usecase.ServerErrorText
+import ai.openonion.oochat.domain.usecase.StaleSessionDetector
 import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.OFFLINE_GRACE_MS
@@ -2439,6 +2441,21 @@ class ChatViewModelTest {
             "Stale-session errors must not become a visible chat item",
             vm.uiState.value.chatItems.none { it is ChatItem.Thinking && it.status == ThinkingStatus.ERROR }
         )
+    }
+
+    @Test
+    fun `a refused protocol version reaches the chat once even when the Host's words look like a stale session`() = runTest(testDispatcher) {
+        // W16AAPPLE-12: the message embeds the Host's own version text. A Host
+        // that words it "session-already" must not trip the stale-session
+        // suppression above and leave the user with no error at all.
+        val message = ServerErrorText.incompatibleProtocol(hostProtocol = "oip/session-already", clientProtocol = "oip/0.1")
+        assertTrue("test setup: the detector must be fooled by this text", StaleSessionDetector.isStaleSessionError(message))
+
+        connectUseCase.forceState(ConnectionState.Error(message = message, retryable = false))
+        testScheduler.runCurrent()
+
+        val shown = vm.uiState.value.chatItems.filterIsInstance<ChatItem.Thinking>().filter { it.status == ThinkingStatus.ERROR }
+        assertEquals(listOf(message), shown.map { it.content })
     }
 
     @Test

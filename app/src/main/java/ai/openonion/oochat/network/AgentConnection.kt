@@ -169,8 +169,9 @@ class AgentConnection(
 
     // True once the Host has refused this client's OIP version (W16AAPPLE-12).
     // Terminal for the cycle: every reconnect would send the same descriptor
-    // and be refused the same way, so [attemptReconnect] and [retryNow] stand
-    // down. Reset only by [connect], i.e. by the user trying again.
+    // and be refused the same way, so [attemptReconnect], [retryNow] and
+    // [reopenSocket] stand down. Reset only by [connect], i.e. by the user
+    // trying again.
     @Volatile private var protocolRejected = false
 
     // Every session id this connection has been on, however it got there —
@@ -278,7 +279,14 @@ class AgentConnection(
      * Closing first is deliberate: this server keeps the old socket open
      * after ERROR, so without it two sockets would race the same agent.
      */
+    @Synchronized
     private fun reopenSocket(reason: String) {
+        // The caller saw a live socket, but a version refusal can have landed
+        // on OkHttp's thread since; reopening would send the refused CONNECT
+        // again, and Reconnecting would replace the error the user is reading.
+        // @Synchronized: the same lock as stopAfterProtocolRejection, so the
+        // two cannot interleave.
+        if (protocolRejected) return
         isConnectionReady = false
         val addr = agentAddress
         val direct = directUrl
@@ -687,8 +695,16 @@ class AgentConnection(
         reconnectAttempts = 0
         reconnectJob = reconnectScope.launch {
             runCatchingCancellable {
-                retireSocket("Reconnecting")
-                openWebSocket(agentAddress, directUrl)
+                // Re-checked under stopAfterProtocolRejection's lock: retryNow
+                // runs on the main thread and the refusal lands on OkHttp's, so
+                // it can arrive after the guard above but before this job exists
+                // to be cancelled, and would be answered with one more CONNECT.
+                synchronized(this@AgentConnection) {
+                    if (!protocolRejected) {
+                        retireSocket("Reconnecting")
+                        openWebSocket(agentAddress, directUrl)
+                    }
+                }
             }.onFailure { e ->
                 FileLogger.e(LogTags.AGENT_CONN, "Immediate reconnect failed: ${e.message}")
                 attemptReconnect()

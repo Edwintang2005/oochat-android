@@ -627,8 +627,12 @@ open class ChatViewModel @JvmOverloads constructor(
                         // not a server-sent ERROR frame (those route to
                         // ChatEvent.ConnectionErrorOccurred instead).
                         // Stale-session errors auto-recovery is invisible, so
-                        // skip persisting the transient error.
-                        if (!StaleSessionDetector.isStaleSessionError(state.message)) {
+                        // skip persisting the transient error. Only a retryable
+                        // one can be that: a non-retryable error is final and is
+                        // the one thing the user must see, and its text can carry
+                        // the Host's own words (the OIP version rejection), which
+                        // must not be able to match the detector and hide it.
+                        if (!state.retryable || !StaleSessionDetector.isStaleSessionError(state.message)) {
                             if (!failRunningThinking(content = state.message)) {
                                 appendStandaloneError(state.message)
                             }
