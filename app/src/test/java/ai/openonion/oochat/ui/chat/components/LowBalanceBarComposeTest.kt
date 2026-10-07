@@ -1,8 +1,13 @@
 package ai.openonion.oochat.ui.chat.components
 
+import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.ui.theme.ConnectOnionTheme
+import android.app.Application
+import android.content.Intent
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -10,8 +15,10 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.util.Locale
 
 /**
  * The top-up control, ported from the reference web client's `TopUp` /
@@ -70,6 +77,13 @@ class LowBalanceBarComposeTest {
         composeRule.onNodeWithText("Add credits").assertDoesNotExist()
     }
 
+    @Test
+    fun `a blank address counts as no address`() {
+        setBar(balanceUsd = 0.2, agentAddress = "  ")
+
+        composeRule.onNodeWithText("Add credits").assertDoesNotExist()
+    }
+
     // ── What it says ─────────────────────────────────────────────────
 
     @Test
@@ -78,6 +92,13 @@ class LowBalanceBarComposeTest {
 
         composeRule.onNodeWithText("Out of credits", substring = true).assertExists()
         composeRule.onNodeWithText("$0.00", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun `an overdrawn balance reads as out of credits too`() {
+        setBar(balanceUsd = -0.35)
+
+        composeRule.onNodeWithText("Out of credits", substring = true).assertExists()
     }
 
     @Test
@@ -97,5 +118,31 @@ class LowBalanceBarComposeTest {
             "https://o.openonion.ai/purchase?key=$address",
             agentPurchaseUrl(address)
         )
+    }
+
+    @Test
+    fun `tapping the bar opens the purchase page for this agent in a browser`() {
+        setBar(balanceUsd = 0.42)
+
+        composeRule.onNodeWithText("Add credits").performClick()
+
+        val started = Shadows.shadowOf(ApplicationProvider.getApplicationContext<Application>()).nextStartedActivity
+        assertEquals(Intent.ACTION_VIEW, started?.action)
+        assertEquals(agentPurchaseUrl(address), started?.data?.toString())
+    }
+
+    @Test
+    fun `known issue - the figure follows the phone's locale, not the dollar sign in front of it`() {
+        val original = Locale.getDefault()
+        Locale.setDefault(Locale.GERMANY)
+        try {
+            setBar(balanceUsd = 0.42)
+
+            knownIssue("\"%.2f\".format uses the default locale, so a German phone reads \"$0,42\"") {
+                composeRule.onNodeWithText("$0.42", substring = true).assertExists()
+            }
+        } finally {
+            Locale.setDefault(original)
+        }
     }
 }

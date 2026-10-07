@@ -2,6 +2,7 @@ package ai.openonion.oochat.ui.onboarding
 
 import ai.openonion.oochat.data.local.ConnectionConfig
 import ai.openonion.oochat.data.repository.ConnectionConfigRepository
+import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.ui.agent.components.AgentFormState
 import android.app.Application
 import kotlinx.coroutines.CompletableDeferred
@@ -150,6 +151,22 @@ class OnboardingViewModelTest {
         assertEquals("0xabc123", saved.agentAddress)
         assertEquals("my-key", saved.apiKey)
         assertNull(vm.errorMessage.value)
+    }
+
+    @Test
+    fun `known issue - Setup accepts an agent address the Add Agent form rejects`() = runTest(testDispatcher) {
+        val vm = createVm()
+        var saved = false
+
+        vm.connect(AgentFormState(serverUrl = "https://oo.openonion.ai", agentAddress = "0xabc123"), onSaved = { saved = true })
+        testScheduler.runCurrent()
+
+        // AgentViewModel's doc says the two "agree on what's a valid agent";
+        // only AgentViewModel checks 0x + 64 hex, so Setup saves an address
+        // that can never be dialled.
+        knownIssue("OnboardingViewModel.validate has no 0x + 64 hex check") {
+            assertFalse("a 0x address that is not 64 hex must not be saved", saved)
+        }
     }
 
     @Test

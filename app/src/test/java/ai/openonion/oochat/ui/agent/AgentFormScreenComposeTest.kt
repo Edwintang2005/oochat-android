@@ -8,6 +8,9 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -37,13 +40,13 @@ class AgentFormScreenComposeTest {
         createdAt = 0L
     )
 
-    private fun setScreen(existingAgent: AgentProfile?) {
+    private fun setScreen(existingAgent: AgentProfile?, onSave: (AgentProfile) -> Unit = {}) {
         composeRule.setContent {
             ConnectOnionTheme {
                 AgentFormScreen(
                     existingAgent = existingAgent,
                     savedAgents = listOf(saved),
-                    onSave = {},
+                    onSave = onSave,
                     onCancel = {}
                 )
             }
@@ -52,6 +55,8 @@ class AgentFormScreenComposeTest {
 
     /** Name, Server URL, then Agent Address — the same order in both modes. */
     private fun addressField() = composeRule.onAllNodes(hasSetTextAction())[2].performScrollTo()
+
+    private fun serverUrlField() = composeRule.onAllNodes(hasSetTextAction())[1].performScrollTo()
 
     @Test
     fun `Add agent's address field offers no saved-agent dropdown`() {
@@ -72,5 +77,47 @@ class AgentFormScreenComposeTest {
         addressField().performClick()
 
         composeRule.onNodeWithText("Saved Bot").assertIsDisplayed()
+    }
+
+    // -- what Save hands over ------------------------------------------
+
+    private val address = "0x" + "f5a1".repeat(16)
+
+    private fun save() = composeRule.onNodeWithText("Save agent").performScrollTo().performClick()
+
+    @Test
+    fun `an agent added by address alone is named after it and routed through the relay`() {
+        var result: AgentProfile? = null
+        setScreen(existingAgent = null) { result = it }
+
+        // Pasted addresses arrive with whitespace more often than not.
+        addressField().performTextInput("  $address \n")
+        save()
+
+        val agent = result ?: error("Save handed nothing over")
+        assertEquals(address, agent.address)
+        assertEquals(defaultAgentName(address), agent.name)
+        assertEquals("https://oo.openonion.ai", agent.serverUrl)
+        assertEquals("relay", agent.connectionMode)
+        assertNull("a blank API key is none, not an empty string", agent.apiKey)
+    }
+
+    @Test
+    fun `choosing Direct saves a direct agent at the URL typed`() {
+        var result: AgentProfile? = null
+        setScreen(existingAgent = null) { result = it }
+
+        composeRule.onNodeWithText("Direct Connection").performScrollTo().performClick()
+        // The toggle clears Server URL from a LaunchedEffect; typing before it
+        // settles would have the URL wiped straight back out.
+        composeRule.waitForIdle()
+        serverUrlField().performTextInput(" https://agent.example.com ")
+        addressField().performTextInput(address)
+        save()
+
+        val agent = result ?: error("Save handed nothing over")
+        assertEquals("direct", agent.connectionMode)
+        assertEquals("https://agent.example.com", agent.serverUrl)
+        assertEquals(address, agent.address)
     }
 }

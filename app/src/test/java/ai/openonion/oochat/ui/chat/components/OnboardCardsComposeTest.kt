@@ -366,4 +366,25 @@ class OnboardCardsComposeTest {
         composeRule.onNodeWithText("Verified — Continuing your request").assertExists()
         composeRule.onNodeWithText(ONBOARD_NO_RESPONSE).assertDoesNotExist()
     }
+
+    @Test
+    fun `submitting with no live connection says so at once, not after a spinner`() {
+        setGate(RecordingKeyboard(), liveConnection = { false })
+
+        submitCode("code-123")
+
+        composeRule.onNodeWithText(ONBOARD_CONNECTION_LOST).assertExists()
+        composeRule.onNodeWithText("Verifying…").assertDoesNotExist()
+    }
+
+    @Test
+    fun `the success card carries the agent's own welcome`() {
+        composeRule.setContent {
+            ConnectOnionTheme {
+                OnboardSuccessCard(ChatItem.OnboardSuccess(id = "ob1", level = "contact", message = "Welcome aboard"))
+            }
+        }
+
+        composeRule.onNodeWithText("Verified — Welcome aboard").assertExists()
+    }
 }

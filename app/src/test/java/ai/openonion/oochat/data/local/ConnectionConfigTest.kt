@@ -99,4 +99,46 @@ class ConnectionConfigTest {
         assertEquals(123L, copy.lastConnected)
         assertEquals(5_000L, copy.connectionTimeout)
     }
+
+    // ── toConnectTarget: which way a saved config is dialled ──────────
+    //
+    // Direct vs relay is decided here, from the server URL alone: one of the
+    // known relays means relay, anything else is an agent's own endpoint.
+
+    private val agent = "0x" + "ab".repeat(32)
+
+    @Test
+    fun defaultRelayConfigConnectsThroughTheRelay() {
+        val target = ConnectionConfig(serverUrl = "https://oo.openonion.ai", agentAddress = agent).toConnectTarget()
+
+        assertFalse(target.isDirect)
+        assertNull("the relay URL is not a direct URL", target.directUrl)
+        assertEquals(agent, target.agentAddress)
+    }
+
+    @Test
+    fun everySpellingOfTheDefaultRelayConnectsThroughTheRelay() {
+        for (url in listOf("https://oo.openonion.ai/", "wss://oo.openonion.ai", "ws://oo.openonion.ai", "http://oo.openonion.ai")) {
+            assertFalse(url, ConnectionConfig(serverUrl = url, agentAddress = agent).toConnectTarget().isDirect)
+        }
+    }
+
+    // Holds only because ConnectionConfig cannot record which mode Setup was
+    // in: a custom *relay* saved from Setup is dialled direct too. Revisit with
+    // W16AAPPLE-56 (saved connectionMode is ignored).
+    @Test
+    fun customServerUrlConnectsDirectToThatUrl() {
+        val target = ConnectionConfig(serverUrl = "https://agent.example.com", agentAddress = agent).toConnectTarget()
+
+        assertTrue(target.isDirect)
+        assertEquals("https://agent.example.com", target.directUrl)
+        assertEquals(agent, target.agentAddress)
+    }
+
+    @Test
+    fun blankAgentAddressFallsBackToTheServerUrl() {
+        val target = ConnectionConfig(serverUrl = "https://agent.example.com", agentAddress = " ").toConnectTarget()
+
+        assertEquals("https://agent.example.com", target.agentAddress)
+    }
 }
