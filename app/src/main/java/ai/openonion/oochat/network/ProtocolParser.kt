@@ -1,5 +1,6 @@
 package ai.openonion.oochat.network
 
+import ai.openonion.oochat.data.protocol.OipProtocol
 import ai.openonion.oochat.data.protocol.ServerEvent
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.data.protocol.SkillWire
@@ -18,7 +19,9 @@ import ai.openonion.oochat.util.LogSanitizer
 import ai.openonion.oochat.util.LogTags
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * Pure function for parsing WebSocket messages into ConnectionEvents.
@@ -466,11 +469,18 @@ object ProtocolParser {
                 }
             }
 
-            "ERROR" -> ParseResult(
-                event = ConnectionEvent.ConnectionError(
-                    message = event.message ?: event.error ?: "Unknown error"
+            // The Host refused our OIP version. Its own event, not a
+            // ConnectionError: this one must end the connection for good,
+            // where every other ERROR is either recoverable or non-fatal.
+            "ERROR" -> if (event.code == OipProtocol.UNSUPPORTED_VERSION_CODE) {
+                ParseResult(event = ConnectionEvent.ProtocolRejected(hostProtocol = describeProtocol(event.protocol)))
+            } else {
+                ParseResult(
+                    event = ConnectionEvent.ConnectionError(
+                        message = event.message ?: event.error ?: "Unknown error"
+                    )
                 )
-            )
+            }
 
             // Plugin-initiated mode switch (ULW enter/exit, tool_approval's
             // _set_mode, plan_mode enter/exit) — see ServerEvent.mode's own
@@ -581,6 +591,14 @@ object ProtocolParser {
     const val MAX_DASHBOARD_HTML_CHARS = 2 * 1024 * 1024
 
     private fun generateId(): String = java.util.UUID.randomUUID().toString()
+
+    /** "oip/0.2" from a Host descriptor, or null when it names no version. */
+    private fun describeProtocol(descriptor: JsonElement?): String? {
+        val fields = descriptor as? JsonObject ?: return null
+        val version = (fields["version"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
+        val name = (fields["name"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() } ?: OipProtocol.NAME
+        return "$name/$version"
+    }
 
     /**
      * Wire skills to domain skills. Nameless entries are dropped — there is
@@ -708,6 +726,16 @@ sealed class ConnectionEvent {
      */
     data class SessionStatusReceived(val sessionId: String?, val status: String) : ConnectionEvent()
     data class ConnectionError(val message: String) : ConnectionEvent()
+
+    /**
+     * The Host rejected this client's OIP version (ERROR code -32010). Final
+     * for the connection: retrying sends the same descriptor and is refused
+     * the same way, so nothing reconnects automatically after it.
+     *
+     * @param hostProtocol the version the Host speaks, as "oip/0.2", or null
+     *   when its descriptor was missing or unreadable.
+     */
+    data class ProtocolRejected(val hostProtocol: String?) : ConnectionEvent()
     data object Disconnected : ConnectionEvent()
     data object Reconnecting : ConnectionEvent()
     data object Waiting : ConnectionEvent()

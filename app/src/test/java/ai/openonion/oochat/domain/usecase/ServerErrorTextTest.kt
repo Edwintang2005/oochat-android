@@ -42,6 +42,24 @@ class ServerErrorTextTest {
     }
 
     @Test
+    fun `a refused protocol version names both versions and what to do`() {
+        assertEquals(
+            "This agent uses a different version of the chat protocol (oip/0.2) than this app (oip/0.1). " +
+                "Update the app or the agent, then reconnect.",
+            ServerErrorText.incompatibleProtocol(hostProtocol = "oip/0.2", clientProtocol = "oip/0.1")
+        )
+    }
+
+    @Test
+    fun `a refusal that did not say the Host's version still reads clearly`() {
+        assertEquals(
+            "This agent doesn't support this app's version of the chat protocol (oip/0.1). " +
+                "Update the app or the agent, then reconnect.",
+            ServerErrorText.incompatibleProtocol(hostProtocol = null, clientProtocol = "oip/0.1")
+        )
+    }
+
+    @Test
     fun `a stale-session rejection is not an offline verdict`() {
         // The other definitive-looking error, which has its own recovery path
         // and does want the second attempt.

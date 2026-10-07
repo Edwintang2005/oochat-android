@@ -1969,6 +1969,103 @@ class AgentConnectionRobolectricTest {
         conn.teardown()
     }
 
+    // ── W16AAPPLE-12: a refused OIP version fails once ────────────────
+    //
+    // The Host answers an unsupported descriptor with this ERROR and then
+    // keeps reading the socket (ws_router/session.py), so whatever ends that
+    // socket later must not start the ladder.
+
+    private val versionRejection =
+        """{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol","retryable":false,""" +
+            """"protocol":{"name":"oip","version":"0.2","min_version":"0.2","max_version":"0.2"}}"""
+
+    @Test
+    fun `a refused OIP version closes the socket, reports once, and never reconnects`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        val listener = factory.lastListener!!
+        listener.onOpen(ws, fakeResponse())
+
+        listener.onMessage(ws, versionRejection)
+
+        assertEquals("the client must close the socket the Host left open", 1000, ws.closeCode)
+        assertEquals(listOf(ConnectionEvent.ProtocolRejected(hostProtocol = "oip/0.2")), seen.filterIsInstance<ConnectionEvent.ProtocolRejected>())
+
+        // Everything that would normally re-dial: the socket ending badly,
+        // the network coming back (ChatViewModel), the app resuming.
+        listener.onClosed(ws, 1006, "abnormal closure")
+        listener.onFailure(ws, java.io.IOException("connection reset"), null)
+        conn.retryNow()
+        advanceTimeBy(10 * 60_000L)
+
+        assertEquals("no automatic reconnect after the rejection", 1, factory.socketCount)
+        assertTrue(
+            "nothing may follow that reads as a retry or replaces the reason: $seen",
+            seen.none { it is ConnectionEvent.Reconnecting || it is ConnectionEvent.Disconnected || it is ConnectionEvent.ConnectionError }
+        )
+        assertFalse(conn.isConnected())
+        conn.teardown()
+    }
+
+    @Test
+    fun `a refusal on a reconnect rung ends the ladder there`() = runTest {
+        // A Host upgraded while the app was connected: the socket drops, and
+        // the ladder's own CONNECT is the one refused.
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+        simulateConnected("sess-1")
+        factory.lastListener!!.onClosed(factory.lastWebSocket!!, 1006, "abnormal closure")
+        advanceTimeBy(AgentConnection.reconnectBackoffMs(1) + 1)
+        assertEquals("test setup: rung #1 must have opened a socket", 2, factory.socketCount)
+
+        val rung = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(rung, fakeResponse())
+        factory.lastListener!!.onMessage(rung, versionRejection)
+        factory.lastListener!!.onFailure(rung, java.io.IOException("connection reset"), null)
+        advanceTimeBy(10 * 60_000L)
+
+        assertEquals(2, factory.socketCount)
+        conn.teardown()
+    }
+
+    @Test
+    fun `a refusal of the CONNECT re-sent after onboarding is final too`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        factory.lastListener!!.onMessage(ws, """{"type":"ONBOARD_REQUIRED","id":"ob1","methods":["invite_code"]}""")
+        factory.lastListener!!.onMessage(ws, """{"type":"ONBOARD_SUCCESS","id":"ob1","level":"contact","message":"ok"}""")
+
+        factory.lastListener!!.onMessage(ws, versionRejection)
+        advanceTimeBy(10 * 60_000L)
+
+        assertEquals(1000, ws.closeCode)
+        assertEquals(1, factory.socketCount)
+        assertTrue(
+            "the onboarding path must not dress the refusal up as a rejected invite code",
+            seen.none { it is ConnectionEvent.ChatItemReceived && it.item is ChatItem.OnboardingFailed }
+        )
+        conn.teardown()
+    }
+
+    @Test
+    fun `the user connecting again after a refusal gets a fresh attempt`() = runTest {
+        // "No automatic reconnect" — a deliberate retry is still the user's to make.
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onMessage(factory.lastWebSocket!!, versionRejection)
+
+        conn.connect("0xAGENT")
+        runCurrent()
+
+        assertEquals(2, factory.socketCount)
+        conn.teardown()
+    }
+
     private companion object {
         /** Deadlock guard for [awaitOn]; never reached while the code is correct. */
         const val AWAIT_TIMEOUT_MS = 15_000L

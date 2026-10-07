@@ -2,6 +2,7 @@ package ai.openonion.oochat.data.repository
 
 import ai.openonion.oochat.crypto.KeyManager
 import ai.openonion.oochat.data.protocol.FileAttachment
+import ai.openonion.oochat.data.protocol.OipProtocol
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.data.protocol.toDomain
 import ai.openonion.oochat.domain.model.AgentLiveProfile
@@ -268,6 +269,20 @@ class ConnectionRepositoryImpl(
                             FileLogger.eRepeating(LogTags.CONN_REPO, "→ Error (never connected this attempt): ${event.message}")
                             _connectionState.value = ConnectionState.Error(message = shown)
                         }
+                    }
+                    is ConnectionEvent.ProtocolRejected -> {
+                        // Fatal whether or not this attempt connected before:
+                        // an auto-reconnect after a Host upgrade can be the
+                        // CONNECT that is refused. retryable = false is what
+                        // stops ConnectToAgentUseCase spending its second attempt.
+                        FileLogger.e(LogTags.CONN_REPO, "→ Error (OIP version rejected, host=${event.hostProtocol ?: "<undeclared>"})")
+                        _connectionState.value = ConnectionState.Error(
+                            message = ServerErrorText.incompatibleProtocol(
+                                hostProtocol = event.hostProtocol,
+                                clientProtocol = "${OipProtocol.NAME}/${OipProtocol.VERSION}"
+                            ),
+                            retryable = false
+                        )
                     }
                     is ConnectionEvent.Disconnected -> {
                         FileLogger.i(LogTags.CONN_REPO, "→ Disconnected")

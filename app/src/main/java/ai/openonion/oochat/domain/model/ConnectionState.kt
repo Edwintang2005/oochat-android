@@ -24,10 +24,15 @@ sealed class ConnectionState {
         val session: SessionSnapshot? = null
     ) : ConnectionState()
 
+    /**
+     * @param retryable false when trying again cannot help (the agent refused
+     *   this app's protocol version), so nothing should retry automatically.
+     */
     data class Error(
         val message: String,
         val technicalDetails: String? = null,
-        val cause: Throwable? = null
+        val cause: Throwable? = null,
+        val retryable: Boolean = true
     ) : ConnectionState() {
         companion object {
             fun fromException(e: Throwable): Error {

@@ -35,6 +35,14 @@ object OipProtocol {
     const val MIN_VERSION = "0.1"
     const val MAX_VERSION = "0.1"
 
+    /**
+     * The ERROR `code` the Host sends when it does not support [VERSION]:
+     * `{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol",
+     * "retryable":false,"protocol":{...}}` (ws_router/connect.py). A string
+     * because [ServerEvent.code] reads every code as its text.
+     */
+    const val UNSUPPORTED_VERSION_CODE = "-32010"
+
     val DESCRIPTOR = ProtocolDescriptor(
         name = NAME,
         version = VERSION,
