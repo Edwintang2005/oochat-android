@@ -220,6 +220,25 @@ override suspend fun disconnect() {
         assertEquals(2, fakeRepository.connectCount)
     }
 
+    @Test
+    fun `a refused protocol version does not spend a second attempt`() = runTest(testDispatcher) {
+        // W16AAPPLE-12: attempt 2 would send the same OIP descriptor, be
+        // refused again, and put a second copy of the error in front of the user.
+        val useCase = newUseCase()
+        fakeRepository.connectBehaviors.add {
+            fakeRepository.state.value = ConnectionState.Error(
+                message = ServerErrorText.incompatibleProtocol(hostProtocol = "oip/0.2", clientProtocol = "oip/0.1"),
+                retryable = false
+            )
+        }
+
+        val connected = useCase.connect(validAddress)
+
+        assertFalse(connected)
+        assertEquals("one CONNECT, one refusal", 1, fakeRepository.connectCount)
+        assertEquals(0, fakeRepository.resetCount)
+    }
+
     // ── Both attempts fail ────────────────────────────────────────────
 
     @Test

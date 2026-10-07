@@ -9,6 +9,7 @@ import ai.openonion.oochat.data.protocol.FileAttachment
 import ai.openonion.oochat.data.protocol.InputMsg
 import ai.openonion.oochat.data.protocol.InterruptMessage
 import ai.openonion.oochat.data.protocol.ModeChangeMessage
+import ai.openonion.oochat.data.protocol.OipProtocol
 import ai.openonion.oochat.data.protocol.OnboardSubmitMessage
 import ai.openonion.oochat.data.protocol.OnboardSubmitPayload
 import ai.openonion.oochat.data.protocol.PlanReviewResponse
@@ -165,6 +166,12 @@ class AgentConnection(
     // directly rather than [connect], precisely so this flag survives
     // its own retry.
     @Volatile private var staleSessionRecoveryAttempted = false
+
+    // True once the Host has refused this client's OIP version (W16AAPPLE-12).
+    // Terminal for the cycle: every reconnect would send the same descriptor
+    // and be refused the same way, so [attemptReconnect] and [retryNow] stand
+    // down. Reset only by [connect], i.e. by the user trying again.
+    @Volatile private var protocolRejected = false
 
     // Every session id this connection has been on, however it got there —
     // staged by us, or assigned by the server. Recording the server-assigned
@@ -350,6 +357,7 @@ class AgentConnection(
             // stale-session recovery, independent of whether a previous
             // cycle already used (and possibly exhausted) its one shot.
             staleSessionRecoveryAttempted = false
+            protocolRejected = false
             reconnectScope = CoroutineScope(SupervisorJob() + reconnectDispatcher)
 
             openWebSocket(agentAddress, directUrl)
@@ -637,6 +645,26 @@ class AgentConnection(
 
     fun isConnected(): Boolean = webSocket != null && isConnectionReady
 
+    /**
+     * End this cycle after the Host refused our OIP version. The Host keeps
+     * the socket open after its ERROR (ws_router/session.py returns to the
+     * read loop), so the client closes it: left open, its eventual drop would
+     * climb the reconnect ladder and be refused once per rung. Retiring it
+     * bumps [socketGeneration], so that close's own onClosed is ignored rather
+     * than reported as a [ConnectionEvent.Disconnected] over the real reason.
+     */
+    private fun stopAfterProtocolRejection() {
+        synchronized(this) {
+            protocolRejected = true
+            isReconnecting = false
+            isConnectionReady = false
+            reconnectJob?.cancel()
+            reconnectJob = null
+            onboardingPending = false
+            retireSocket("Unsupported OIP protocol")
+        }
+    }
+
     fun reset() {
         _currentSession = null
         outstandingInputIds.clear()
@@ -653,7 +681,7 @@ class AgentConnection(
      * No-op unless a reconnect is already pending — this does not start one.
      */
     fun retryNow() {
-        if (!isReconnecting) return
+        if (!isReconnecting || protocolRejected) return
         FileLogger.i(LogTags.AGENT_CONN, "Reconnect: retrying now (foreground)")
         reconnectJob?.cancel()
         reconnectAttempts = 0
@@ -679,6 +707,10 @@ class AgentConnection(
      * which the UI reads (correctly) as a network drop.
      */
     private fun attemptReconnect() {
+        if (protocolRejected) {
+            FileLogger.i(LogTags.AGENT_CONN, "OIP version rejected — not reconnecting")
+            return
+        }
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
             FileLogger.w(LogTags.AGENT_CONN, "Max reconnect attempts reached ($MAX_RECONNECT_ATTEMPTS)")
             isConnectionReady = false
@@ -1098,6 +1130,15 @@ class AgentConnection(
                 }
                 is ConnectionEvent.OutputReceived -> {
                     FileLogger.i(LogTags.AGENT_CONN, "OUTPUT ✓ ${LogSanitizer.contentSummary(event.result)}")
+                    _events.tryEmit(event)
+                }
+                is ConnectionEvent.ProtocolRejected -> {
+                    FileLogger.e(
+                        LogTags.AGENT_CONN,
+                        "CONNECT refused: Host speaks ${event.hostProtocol ?: "<undeclared>"}, " +
+                            "client ${OipProtocol.NAME}/${OipProtocol.VERSION} — not reconnecting"
+                    )
+                    stopAfterProtocolRejection()
                     _events.tryEmit(event)
                 }
                 is ConnectionEvent.ConnectionError -> {

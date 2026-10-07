@@ -32,6 +32,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import okio.ByteString
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -291,6 +292,59 @@ class ConnectionRepositoryImplTest {
 
         val state = repository.connectionState.value as ConnectionState.Error
         assertEquals("This agent is offline. Start it, then reconnect.", state.message)
+    }
+
+    // ── W16AAPPLE-12: a refused OIP version ──────────────────────────
+
+    private fun simulateVersionRejection() {
+        factory.lastListener?.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol","retryable":false,""" +
+                """"protocol":{"name":"oip","version":"0.2","min_version":"0.2","max_version":"0.2"}}"""
+        )
+    }
+
+    @Test
+    fun `a refused OIP version is one readable, non-retryable error`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+
+        awaitUntil(retry = { simulateVersionRejection() }) {
+            repository.connectionState.value is ConnectionState.Error
+        }
+
+        val state = repository.connectionState.value as ConnectionState.Error
+        assertEquals(
+            "This agent uses a different version of the chat protocol (oip/0.2) than this app (oip/0.1). " +
+                "Update the app or the agent, then reconnect.",
+            state.message
+        )
+        assertFalse("nothing may retry a version mismatch automatically", state.retryable)
+    }
+
+    @Test
+    fun `a refused OIP version after an earlier CONNECTED is still fatal`() = runTest(testDispatcher) {
+        // Unlike a business-logic ERROR on a live session, which stays a
+        // non-fatal chat event: the refusal means the connection is over.
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) {
+            repository.connectionState.value is ConnectionState.Connected
+        }
+
+        simulateVersionRejection()
+        awaitUntil { repository.connectionState.value is ConnectionState.Error }
+
+        assertFalse((repository.connectionState.value as ConnectionState.Error).retryable)
+    }
+
+    @Test
+    fun `an ordinary connect-time ERROR stays retryable`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+
+        awaitUntil(retry = { simulateError("forbidden: Denied by fast rules") }) {
+            repository.connectionState.value is ConnectionState.Error
+        }
+
+        assertTrue((repository.connectionState.value as ConnectionState.Error).retryable)
     }
 
     @Test
