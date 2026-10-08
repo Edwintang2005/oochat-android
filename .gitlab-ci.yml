@@ -26,19 +26,43 @@ variables:
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
   GIT_DEPTH: "20"
 
-# One pipeline per change: merge requests, and pushes to branches without an
-# open merge request (otherwise a push to an MR branch runs twice).
+# Runs for merge requests and for main, nothing else: a push to a branch with
+# no merge request (a work in progress, a diary) starts no pipeline.
+#
+# Only main writes the Gradle cache (see .gradle-cache). A merge request reads
+# it, so it starts warm without paying for an upload on every push.
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
-      when: never
-    - if: $CI_COMMIT_BRANCH
+      variables:
+        CACHE_POLICY: pull
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      variables:
+        CACHE_POLICY: pull-push
 
 stages:
   - check
   - test
   - build
+
+# Gradle's dependency cache, about 27,000 files. Every Gradle job reads it, but
+# only unit-tests writes it, and only on main: zipping and uploading it took
+# about a minute, and four jobs used to do it on every push.
+#
+# unprotect: main is a protected branch and merge request refs are not, and
+# GitLab keeps those caches apart by default, so a merge request would never
+# see main's. Merge requests only read it, so they cannot change what main uses.
+.gradle-cache: &gradle-cache
+  # Dependencies change when a build script does; key on those.
+  key:
+    files:
+      - build.gradle.kts
+      - app/build.gradle.kts
+  paths:
+    - .gradle-home/caches/
+    - .gradle-home/wrapper/
+  unprotect: true
+  policy: pull
 
 default:
   # A newer push supersedes a running pipeline instead of queueing behind it.
@@ -61,16 +85,7 @@ default:
     # left every 30 seconds; the last line before a stall says why.
     - echo "[machine] $(nproc) CPUs, $(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo) MB RAM"
     - (while sleep 30; do echo "[memory] $(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo) MB available"; done) &
-  cache:
-    # Dependencies change when a build script does; key on those.
-    key:
-      files:
-        - build.gradle.kts
-        - app/build.gradle.kts
-    paths:
-      - .gradle-home/caches/
-      - .gradle-home/wrapper/
-    policy: pull-push
+  cache: *gradle-cache
 
 ktlint:
   stage: check
@@ -89,6 +104,11 @@ unit-tests:
   stage: test
   # Longer than the project default; the runner caps it if it allows less.
   timeout: 30m
+  # The one job that writes the cache, on main only (CACHE_POLICY, above). It
+  # resolves the most dependencies: the app's and its tests'.
+  cache:
+    <<: *gradle-cache
+    policy: $CACHE_POLICY
   script:
     - ./gradlew :app:testDebugUnitTest
     # testDebugUnitTest and the Roborazzi tasks reconfigure the same Gradle
@@ -112,16 +132,15 @@ unit-tests:
         | sed -E 's/ \([A-Za-z]+: .*$//' | sort -u || true)
       echo "Known issues still open:"
       echo "${issues:-  none}"
-    - ./gradlew :app:jacocoTestReport
+  # Only the JUnit XML (about 100 KB), which GitLab turns into the merge
+  # request's test summary: which tests failed and why. The HTML test report and
+  # JaCoCo coverage (about 950 files) are not uploaded; this pipeline checks that
+  # the app builds and its tests pass. Both still build locally (README).
   artifacts:
     when: always
-    expire_in: 2 weeks
+    expire_in: 1 week
     reports:
-      # Shows failures, and skipped known issues, in the merge request.
       junit: app/build/test-results/testDebugUnitTest/*.xml
-    paths:
-      - app/build/reports/tests/testDebugUnitTest/
-      - app/build/reports/jacoco/jacocoTestReport/
 
 instrumented-tests-compile:
   stage: test
