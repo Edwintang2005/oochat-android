@@ -147,7 +147,7 @@ open class SettingsViewModel @JvmOverloads constructor(
     }
 
     /**
-     * Import an identity from a 12/24-word phrase or raw hex key. Failure
+     * Import an identity from a recovery phrase or raw hex key. Failure
      * (invalid phrase/key — thrown by KeyManager's validation) is returned
      * as a [Result] so ImportKeySheet can show it inline; nothing is
      * invalidated or reloaded unless the import actually succeeded.

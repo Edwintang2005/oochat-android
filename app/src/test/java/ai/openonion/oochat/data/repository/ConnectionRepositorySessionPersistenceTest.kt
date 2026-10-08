@@ -1,6 +1,7 @@
 package ai.openonion.oochat.data.repository
 
 import ai.openonion.oochat.crypto.KeyManager
+import ai.openonion.oochat.crypto.TestIdentity
 import ai.openonion.oochat.data.protocol.FileAttachment
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.domain.model.ApprovalMode
@@ -133,7 +134,7 @@ class ConnectionRepositorySessionPersistenceTest {
     @Before
     fun setUp() {
         val keyManager = KeyManager(ApplicationProvider.getApplicationContext<android.content.Context>())
-        keyManager.save(keyManager.keysFromHex("aa".repeat(32) + "bb".repeat(32)))
+        keyManager.save(TestIdentity.keys())
         factory = FakeWebSocketFactory()
         store = RecordingSessionStore()
         val sink = NoopSink()

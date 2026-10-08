@@ -1,6 +1,7 @@
 package ai.openonion.oochat.domain.usecase
 
 import ai.openonion.oochat.crypto.KeyManager
+import ai.openonion.oochat.crypto.TestIdentity
 import ai.openonion.oochat.data.local.ConnectionConfig
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.data.repository.AgentRepository
@@ -186,7 +187,7 @@ class ColdStartConnectionTest {
         // connect is in flight.
         Dispatchers.setMain(Dispatchers.Default)
         keyManager = KeyManager(ApplicationProvider.getApplicationContext())
-        keyManager.save(keyManager.keysFromHex("aa".repeat(32) + "bb".repeat(32)))
+        keyManager.save(TestIdentity.keys())
         factory = FakeWebSocketFactory()
         sessionStore = FakeSessionStore()
         agentRepo = FakeAgentRepository()

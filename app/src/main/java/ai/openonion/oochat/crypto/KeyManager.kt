@@ -185,12 +185,13 @@ class KeyManager internal constructor(
 
     /**
      * Derive the identity for an existing, already-known mnemonic phrase
-     * (import / restore). Throws [Mnemonics.ChecksumException],
-     * [Mnemonics.WordCountException], or [Mnemonics.InvalidWordException]
-     * (all `cash.z.ecc.android.bip39.Mnemonics.*`) if the phrase is invalid.
+     * (import / restore). Case and spacing between words don't matter. Throws
+     * [Mnemonics.ChecksumException], [Mnemonics.WordCountException], or
+     * [Mnemonics.InvalidWordException] (all `cash.z.ecc.android.bip39.Mnemonics.*`)
+     * if the phrase is invalid.
      */
     fun keysFromMnemonic(mnemonic: String): AddressData {
-        val mnemonicCode = Mnemonics.MnemonicCode(mnemonic.trim().lowercase())
+        val mnemonicCode = Mnemonics.MnemonicCode(normalisePhrase(mnemonic))
         mnemonicCode.validate()
         val seed = mnemonicCode.toSeed().copyOfRange(0, 32)
         return keysFromSeed(seed)
@@ -200,8 +201,10 @@ class KeyManager internal constructor(
      * Derive the identity for a raw 64-byte Ed25519 secret key given as 128
      * hex characters (optionally "0x"-prefixed) — the legacy/no-mnemonic
      * import path, matching the web client's `importKey()` hex fallback.
-     * The public key is the secret key's last 32 bytes, per libsodium's
-     * (and tweetnacl's identical) packed secret-key convention.
+     * The key is libsodium's (and tweetnacl's identical) packing: a 32-byte
+     * seed, then the public key it derives. A key whose second half is not
+     * that public key is refused: its address would be one the key cannot
+     * sign for, so every CONNECT would fail verification.
      */
     fun keysFromHex(hex: String): AddressData {
         val cleaned = hex.trim().removePrefix("0x")
@@ -211,6 +214,10 @@ class KeyManager internal constructor(
         }
         val privateKey = cleaned.hexToBytes()
         val publicKey = privateKey.copyOfRange(32, 64)
+        val (derivedPublicKey, _) = ed25519.keypairFromSeed(privateKey.copyOfRange(0, 32))
+        require(derivedPublicKey.contentEquals(publicKey)) {
+            "Invalid private key — it doesn't match its own public key. Check the whole key was copied."
+        }
         val address = "0x" + publicKey.toHex()
         return AddressData(
             address = address,
@@ -235,20 +242,22 @@ class KeyManager internal constructor(
 
     /**
      * Overwrites the current identity from user-supplied input — either a
-     * 12/24-word recovery phrase or a raw hex private key, matching the web
-     * client's `importKey()` branching exactly (word count 12 or 24 →
-     * mnemonic path; otherwise treated as hex).
+     * recovery phrase of any BIP39 length ([PHRASE_WORD_COUNTS]) or a raw hex
+     * private key. Matches connectonion-react's `seedFromRecovery()`
+     * (browser-identity.ts): any BIP39 length, spacing collapsed, and a hex
+     * key refused unless its public half matches its seed.
      */
     override fun importFromPhraseOrHex(input: String): AddressData {
-        val trimmed = input.trim().lowercase()
-        val wordCount = trimmed.split(Regex("\\s+")).filter { it.isNotEmpty() }.size
-        return if (wordCount == 12 || wordCount == 24) {
-            val keys = keysFromMnemonic(trimmed)
+        val phrase = normalisePhrase(input)
+        return if (phrase.split(' ').size in PHRASE_WORD_COUNTS) {
+            val keys = keysFromMnemonic(phrase)
             save(keys)
-            saveMnemonic(trimmed)
+            // Stored normalised, so "Backup Seed Phrase" shows the words the
+            // way BIP39 reads them, whatever spacing they were typed with.
+            saveMnemonic(phrase)
             keys
         } else {
-            val keys = keysFromHex(trimmed)
+            val keys = keysFromHex(input.trim().lowercase())
             save(keys)
             clearMnemonic()
             keys
@@ -334,6 +343,10 @@ class KeyManager internal constructor(
         }
     }
 
+    /** Lower case, single spaces: the form BIP39 derives the seed from. */
+    private fun normalisePhrase(phrase: String): String =
+        phrase.trim().lowercase().split(Regex("\\s+")).joinToString(" ")
+
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     private fun Char.isHexDigit(): Boolean = Character.digit(this, 16) >= 0
@@ -359,6 +372,9 @@ class KeyManager internal constructor(
     }
 
     companion object {
+        /** Every phrase length BIP39 defines: 128 to 256 bits of entropy. */
+        val PHRASE_WORD_COUNTS = setOf(12, 15, 18, 21, 24)
+
         /**
          * The identity store's own file. Internal rather than private because
          * the encryption status of *this* file is what the Settings warning
