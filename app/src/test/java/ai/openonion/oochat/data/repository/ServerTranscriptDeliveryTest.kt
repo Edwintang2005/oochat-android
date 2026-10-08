@@ -1,6 +1,7 @@
 package ai.openonion.oochat.data.repository
 
 import ai.openonion.oochat.crypto.KeyManager
+import ai.openonion.oochat.crypto.TestIdentity
 import ai.openonion.oochat.data.protocol.FileAttachment
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.domain.model.ChatEvent
@@ -104,7 +105,7 @@ class ServerTranscriptDeliveryTest {
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val keyManager = KeyManager(context)
-        keyManager.save(keyManager.keysFromHex("aa".repeat(32) + "bb".repeat(32)))
+        keyManager.save(TestIdentity.keys())
         factory = FakeWebSocketFactory()
         val sink = NoopSink()
         repository = ConnectionRepositoryImpl(

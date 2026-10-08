@@ -1,6 +1,5 @@
 package ai.openonion.oochat.crypto
 
-import ai.openonion.oochat.knownIssue
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import cash.z.ecc.android.bip39.Mnemonics
@@ -128,37 +127,57 @@ class KeyManagerMnemonicTest {
     fun `a hex import after a phrase identity drops the phrase from the backup`() {
         keyManager.importFromPhraseOrHex(phrase12)
 
-        keyManager.importFromPhraseOrHex("aa".repeat(32) + "bb".repeat(32))
+        keyManager.importFromPhraseOrHex(TestIdentity.hexKey())
 
         // A stale phrase here would back up an identity that is no longer the
         // one in use.
         assertEquals(
-            KeyManager.BackupExport.LegacyHexKey("aa".repeat(32) + "bb".repeat(32)),
+            KeyManager.BackupExport.LegacyHexKey(TestIdentity.hexKey()),
             keyManager.exportBackup()
         )
     }
 
     @Test
-    fun `known issue - a valid 15-word phrase is rejected as a bad hex key`() {
-        // BIP39 allows 12, 15, 18, 21 and 24 words; import routes only 12 and
-        // 24 to the phrase path (as the web client's importKey does), and the
-        // rest fall through to hex with a message about hex characters.
-        val phrase15 = (List(14) { "abandon" } + "address").joinToString(" ")
+    fun `a valid 15, 18 or 21-word phrase restores like any other`() {
+        // BIP39 allows 12, 15, 18, 21 and 24 words, and so do the connectonion
+        // SDK's recover() and the React client's seedFromRecovery(). Import
+        // used to route only 12 and 24 to the phrase path, so these fell
+        // through to hex and were refused as "Invalid key length".
+        //
+        // Addresses from python-mnemonic 0.21 + PyNaCl, seed[:32] — the same
+        // derivation as the other phrases in this file.
+        val phrases = mapOf(
+            (List(14) { "abandon" } + "address").joinToString(" ") to
+                "0x8a5945abdc29e319078cc86b26d8dfec1bae4e950c4355a03f1cd85e20d32061",
+            (List(17) { "abandon" } + "agent").joinToString(" ") to
+                "0xd9b452bed8b921b07b43450ae0df1bd9b14dcc72f4831d2a45d47a86ecb45d75",
+            (List(20) { "abandon" } + "admit").joinToString(" ") to
+                "0xe052c05765d9629f50e1b03f41c2d789176975ac7089f228b9c3d1ede47d2c92"
+        )
 
-        knownIssue("importFromPhraseOrHex treats 15/18/21-word phrases as hex keys") {
-            keyManager.importFromPhraseOrHex(phrase15)
+        for ((phrase, address) in phrases) {
+            val words = phrase.split(" ").size
+
+            assertEquals("$words words", address, keyManager.importFromPhraseOrHex(phrase).address)
+            assertEquals("$words words", KeyManager.BackupExport.Phrase(phrase), keyManager.exportBackup())
         }
     }
 
     @Test
-    fun `known issue - a phrase with a double space between two words is not restored`() {
-        // Word counting splits on any whitespace; the phrase itself is handed
-        // to BIP39 with the spacing it was typed with.
+    fun `a phrase with a double space between two words is restored`() {
         val doubleSpaced = phrase12.replaceFirst(" ", "  ")
 
-        knownIssue("internal whitespace is not normalised before the phrase reaches BIP39") {
-            assertEquals(address12, keyManager.importFromPhraseOrHex(doubleSpaced).address)
-        }
+        assertEquals(address12, keyManager.importFromPhraseOrHex(doubleSpaced).address)
+    }
+
+    @Test
+    fun `a phrase typed across lines and tabs is backed up single-spaced`() {
+        // Backup shows the stored phrase, so it is stored the way BIP39 reads
+        // it rather than the way it happened to be pasted.
+        val messy = phrase12.split(" ").chunked(4).joinToString("\n") { it.joinToString(" \t") }
+
+        assertEquals(address12, keyManager.importFromPhraseOrHex(messy).address)
+        assertEquals(KeyManager.BackupExport.Phrase(phrase12), keyManager.exportBackup())
     }
 
     // ── reset ─────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 package ai.openonion.oochat.network
 
 import ai.openonion.oochat.crypto.KeyManager
+import ai.openonion.oochat.crypto.TestIdentity
 import ai.openonion.oochat.data.protocol.OipProtocol
 import ai.openonion.oochat.data.protocol.ProtocolDescriptor
 import ai.openonion.oochat.data.protocol.SessionState
@@ -59,8 +60,8 @@ import kotlin.coroutines.CoroutineContext
 /**
  * Unit tests for [AgentConnection] against a fake [WebSocketFactory] (the
  * seam it already exposes for testing) plus a real, Robolectric-backed
- * [KeyManager] pre-seeded via [KeyManager.keysFromHex] (pure byte-slicing,
- * no native call) so [AgentConnection.connect] can reach [KeyManager.loadOrGenerate]'s
+ * [KeyManager] pre-seeded with a saved identity ([TestIdentity], derived
+ * off-device) so [AgentConnection.connect] can reach [KeyManager.loadOrGenerate]'s
  * existing-key path.
  *
  * Deliberately never invokes [WebSocketListener.onOpen]: `AgentConnection`'s
@@ -136,10 +137,10 @@ class AgentConnectionRobolectricTest {
     @Before
     fun setUp() {
         keyManager = KeyManager(ApplicationProvider.getApplicationContext())
-        // keysFromHex is pure byte-slicing (no native libsodium call) — see
-        // class doc — so loadOrGenerate() below takes the existing-key
-        // path instead of falling through to the blocked generate() path.
-        keyManager.save(keyManager.keysFromHex("aa".repeat(32) + "bb".repeat(32)))
+        // A saved identity — see class doc — so loadOrGenerate() takes the
+        // existing-key path instead of falling through to the blocked
+        // generate() path.
+        keyManager.save(TestIdentity.keys())
         factory = FakeWebSocketFactory()
         // respondToOnboard() signs its payload via keyManager.sign(), which
         // (like sendConnectMessage's CONNECT signing — see class doc) needs

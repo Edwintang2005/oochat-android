@@ -1,6 +1,5 @@
 package ai.openonion.oochat.crypto
 
-import ai.openonion.oochat.knownIssue
 import android.app.Application
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -8,9 +7,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Unit tests for [KeyManager.canonicalJson] — the only part of
- * [KeyManager]'s crypto logic that runs as constructed in production on a
- * plain JVM.
+ * Unit tests for [KeyManager.canonicalJson] and [KeyManager.keysFromHex] on a
+ * plain JVM. `keysFromHex` checks a key against the public key its seed
+ * derives, so this class injects [BouncyCastleEd25519] in libsodium's place;
+ * `canonicalJson` touches neither.
  *
  * [KeyManager.generate]/[KeyManager.sign] depend on `com.goterl.lazysodium`,
  * whose native `libsodium` binary is compiled per-Android-ABI and cannot be
@@ -31,7 +31,12 @@ import org.junit.Test
  */
 class KeyManagerTest {
 
-    private val keyManager = KeyManager(Application())
+    private val keyManager = KeyManager(Application(), BouncyCastleEd25519())
+
+    // RFC 8032 section 7.1, test 1: a seed and the public key it derives.
+    private val seedHex = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    private val publicKeyHex = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    private val secretKeyHex = seedHex + publicKeyHex
 
     @Test
     fun `canonicalJson sorts keys alphabetically regardless of input map order`() {
@@ -103,26 +108,21 @@ class KeyManagerTest {
         assertEquals(keyManager.canonicalJson(payloadA), keyManager.canonicalJson(payloadB))
     }
 
-    // ── keysFromHex ── no native libsodium call (pure byte slicing), so
-    // this is exercisable in the same plain-JVM setup as canonicalJson.
+    // ── keysFromHex ──────────────────────────────────────────────────
 
     @Test
-    fun `keysFromHex derives the address from the last 32 bytes of a 128-char hex key`() {
-        val privateKeyHex = "aa".repeat(32) + "bb".repeat(32)
+    fun `keysFromHex gives the address of the key's public half`() {
+        val keys = keyManager.keysFromHex(secretKeyHex)
 
-        val keys = keyManager.keysFromHex(privateKeyHex)
-
-        assertEquals("0x" + "bb".repeat(32), keys.address)
+        assertEquals("0x$publicKeyHex", keys.address)
         assertEquals(64, keys.privateKey.size)
         assertEquals(32, keys.publicKey.size)
     }
 
     @Test
     fun `keysFromHex accepts a 0x-prefixed key identically to an unprefixed one`() {
-        val privateKeyHex = "cc".repeat(32) + "dd".repeat(32)
-
-        val withPrefix = keyManager.keysFromHex("0x$privateKeyHex")
-        val withoutPrefix = keyManager.keysFromHex(privateKeyHex)
+        val withPrefix = keyManager.keysFromHex("0x$secretKeyHex")
+        val withoutPrefix = keyManager.keysFromHex(secretKeyHex)
 
         assertEquals(withoutPrefix.address, withPrefix.address)
     }
@@ -147,10 +147,10 @@ class KeyManagerTest {
         // The charset check must not be stricter than the parse: A-F is hex,
         // and someone pasting an upper-case key deserves their own identity
         // back rather than a rejection.
-        val lower = keyManager.keysFromHex("ab".repeat(64)).address
+        val lower = keyManager.keysFromHex(secretKeyHex).address
 
-        assertEquals("0x" + "ab".repeat(32), lower)
-        assertEquals(lower, keyManager.keysFromHex("AB".repeat(64)).address)
+        assertEquals("0x$publicKeyHex", lower)
+        assertEquals(lower, keyManager.keysFromHex(secretKeyHex.uppercase()).address)
     }
 
     @Test
@@ -166,14 +166,25 @@ class KeyManagerTest {
     }
 
     @Test
-    fun `known issue - a hex key whose halves do not belong together is accepted`() {
+    fun `a hex key whose halves do not belong together is refused`() {
         // The second half of a libsodium secret key is the public key the first
         // half derives. Importing a key where it is not gives an address the
         // key cannot sign for, so every CONNECT fails verification.
         val mismatched = "aa".repeat(32) + "bb".repeat(32)
 
-        knownIssue("keysFromHex takes the public key from the last 32 bytes without checking it against the seed") {
-            assertThrows(IllegalArgumentException::class.java) { keyManager.keysFromHex(mismatched) }
-        }
+        assertThrows(IllegalArgumentException::class.java) { keyManager.keysFromHex(mismatched) }
+    }
+
+    @Test
+    fun `a key with one changed character in its public half is refused`() {
+        // The likeliest way to meet a mismatched key: a typo or a bad paste.
+        val lastDigit = secretKeyHex.last()
+        val typo = secretKeyHex.dropLast(1) + (if (lastDigit == '0') '1' else '0')
+
+        val message = assertThrows(IllegalArgumentException::class.java) {
+            keyManager.keysFromHex(typo)
+        }.message.orEmpty()
+
+        assertTrue("unhelpful rejection message: $message", message.contains("copied"))
     }
 }
