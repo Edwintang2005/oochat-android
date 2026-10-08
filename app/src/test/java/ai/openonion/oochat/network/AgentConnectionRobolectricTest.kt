@@ -1,11 +1,14 @@
 package ai.openonion.oochat.network
 
 import ai.openonion.oochat.crypto.KeyManager
+import ai.openonion.oochat.data.protocol.OipProtocol
+import ai.openonion.oochat.data.protocol.ProtocolDescriptor
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.knownIssue
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,7 +51,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
+import java.io.PrintStream
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Unit tests for [AgentConnection] against a fake [WebSocketFactory] (the
@@ -609,6 +615,74 @@ class AgentConnectionRobolectricTest {
             payloadTs,
             envelopeTs
         )
+    }
+
+    // ── W16AAPPLE-11: OIP protocol descriptor ─────────────────────────
+
+    private fun sentConnect(): JsonObject {
+        val frame = factory.lastWebSocket!!.sentMessages.lastOrNull { it.contains("\"type\":\"CONNECT\"") }
+            ?: error("no CONNECT was sent")
+        return Json.parseToJsonElement(frame).jsonObject
+    }
+
+    private fun assertDeclaresOip(connect: JsonObject) {
+        val protocol = connect["protocol"]?.jsonObject ?: error("CONNECT has no protocol descriptor: $connect")
+        assertEquals(
+            Json.decodeFromJsonElement(ProtocolDescriptor.serializer(), protocol),
+            OipProtocol.DESCRIPTOR
+        )
+        assertEquals("oip", protocol["name"]?.jsonPrimitive?.content)
+        assertEquals("0.1", protocol["version"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `the CONNECT sent when the socket opens declares the OIP protocol descriptor`() {
+        connection.connect("0xAGENT")
+        factory.lastListener?.onOpen(factory.lastWebSocket!!, fakeResponse())
+
+        assertDeclaresOip(sentConnect())
+    }
+
+    @Test
+    fun `the CONNECT resent after onboarding still declares the OIP protocol descriptor`() {
+        connection.connect("0xAGENT")
+        factory.lastListener?.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"ONBOARD_REQUIRED","id":"ob1","methods":["invite_code"]}"""
+        )
+        factory.lastListener?.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"ONBOARD_SUCCESS","id":"ob1","level":"contact","message":"ok"}"""
+        )
+
+        assertDeclaresOip(sentConnect())
+    }
+
+    @Test
+    fun `the OIP descriptor is not part of the signed CONNECT payload`() {
+        // The Host verifies the signature over `payload` alone and reads
+        // `protocol` off the envelope, so the descriptor must not change the
+        // bytes the client signs.
+        val signed = CopyOnWriteArrayList<String>()
+        val conn = AgentConnection(
+            keyManager,
+            webSocketFactory = factory,
+            signer = { _, canonical -> signed += canonical; "fake-signature" }
+        )
+        try {
+            conn.connect("0xAGENT")
+            factory.lastListener?.onOpen(factory.lastWebSocket!!, fakeResponse())
+
+            val canonical = signed.singleOrNull() ?: error("expected one signed CONNECT payload, saw $signed")
+            assertFalse("protocol must stay on the envelope: $canonical", canonical.contains("protocol"))
+            assertEquals(
+                "the envelope's payload must be exactly what was signed",
+                Json.parseToJsonElement(canonical),
+                sentConnect()["payload"]
+            )
+        } finally {
+            conn.teardown()
+        }
     }
 
     @Test
@@ -1896,6 +1970,209 @@ class AgentConnectionRobolectricTest {
         advanceTimeBy(10 * 60_000L)
 
         assertTrue("expected the ladder to reopen, saw ${factory.socketCount} socket(s)", factory.socketCount >= 2)
+        conn.teardown()
+    }
+
+    // ── W16AAPPLE-12: a refused OIP version fails once ────────────────
+    //
+    // The Host answers an unsupported descriptor with this ERROR and then
+    // keeps reading the socket (ws_router/session.py), so whatever ends that
+    // socket later must not start the ladder.
+
+    private val versionRejection =
+        """{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol","retryable":false,""" +
+            """"protocol":{"name":"oip","version":"0.2","min_version":"0.2","max_version":"0.2"}}"""
+
+    @Test
+    fun `a refused OIP version closes the socket, reports once, and never reconnects`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        val listener = factory.lastListener!!
+        listener.onOpen(ws, fakeResponse())
+
+        listener.onMessage(ws, versionRejection)
+
+        assertEquals("the client must close the socket the Host left open", 1000, ws.closeCode)
+        assertEquals(listOf(ConnectionEvent.ProtocolRejected(hostProtocol = "oip/0.2")), seen.filterIsInstance<ConnectionEvent.ProtocolRejected>())
+
+        // Everything that would normally re-dial: the socket ending badly,
+        // the network coming back (ChatViewModel), the app resuming.
+        listener.onClosed(ws, 1006, "abnormal closure")
+        listener.onFailure(ws, java.io.IOException("connection reset"), null)
+        conn.retryNow()
+        advanceTimeBy(10 * 60_000L)
+
+        assertEquals("no automatic reconnect after the rejection", 1, factory.socketCount)
+        assertTrue(
+            "nothing may follow that reads as a retry or replaces the reason: $seen",
+            seen.none { it is ConnectionEvent.Reconnecting || it is ConnectionEvent.Disconnected || it is ConnectionEvent.ConnectionError }
+        )
+        assertFalse(conn.isConnected())
+        conn.teardown()
+    }
+
+    @Test
+    fun `a refusal on a reconnect rung ends the ladder there`() = runTest {
+        // A Host upgraded while the app was connected: the socket drops, and
+        // the ladder's own CONNECT is the one refused.
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+        simulateConnected("sess-1")
+        factory.lastListener!!.onClosed(factory.lastWebSocket!!, 1006, "abnormal closure")
+        advanceTimeBy(AgentConnection.reconnectBackoffMs(1) + 1)
+        assertEquals("test setup: rung #1 must have opened a socket", 2, factory.socketCount)
+
+        val rung = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(rung, fakeResponse())
+        factory.lastListener!!.onMessage(rung, versionRejection)
+        factory.lastListener!!.onFailure(rung, java.io.IOException("connection reset"), null)
+        advanceTimeBy(10 * 60_000L)
+
+        assertEquals(2, factory.socketCount)
+        conn.teardown()
+    }
+
+    @Test
+    fun `a refusal of the CONNECT re-sent after onboarding is final too`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        factory.lastListener!!.onMessage(ws, """{"type":"ONBOARD_REQUIRED","id":"ob1","methods":["invite_code"]}""")
+        factory.lastListener!!.onMessage(ws, """{"type":"ONBOARD_SUCCESS","id":"ob1","level":"contact","message":"ok"}""")
+
+        factory.lastListener!!.onMessage(ws, versionRejection)
+        advanceTimeBy(10 * 60_000L)
+
+        assertEquals(1000, ws.closeCode)
+        assertEquals(1, factory.socketCount)
+        assertTrue(
+            "the onboarding path must not dress the refusal up as a rejected invite code",
+            seen.none { it is ConnectionEvent.ChatItemReceived && it.item is ChatItem.OnboardingFailed }
+        )
+        conn.teardown()
+    }
+
+    /**
+     * Forwards to [inner], but first runs [onNextDispatch] once from inside
+     * `dispatch` — i.e. inside `launch`, before it has returned the Job its
+     * caller is about to store. A frame on OkHttp's thread can land there.
+     */
+    private class InterposingDispatcher(private val inner: CoroutineDispatcher) : CoroutineDispatcher() {
+        @Volatile var onNextDispatch: (() -> Unit)? = null
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            onNextDispatch?.also { onNextDispatch = null }?.invoke()
+            inner.dispatch(context, block)
+        }
+    }
+
+    @Test
+    fun `a refusal landing while retryNow is launching its reopen does not get a second CONNECT`() = runTest {
+        // The app resumes (retryNow, main thread) just as the rung's CONNECT
+        // is refused (OkHttp thread): retryNow has passed its guard, and the
+        // refusal's cancel of reconnectJob still sees the previous job.
+        val dispatcher = InterposingDispatcher(StandardTestDispatcher(testScheduler))
+        val conn = AgentConnection(
+            keyManager,
+            webSocketFactory = factory,
+            signer = { _, _ -> "fake-signature" },
+            reconnectDispatcher = dispatcher
+        )
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+        simulateConnected("sess-1")
+        factory.lastListener!!.onClosed(factory.lastWebSocket!!, 1006, "abnormal closure")
+        conn.retryNow()
+        runCurrent()
+        assertEquals("test setup: retryNow must have opened the rung", 2, factory.socketCount)
+        val rung = factory.lastWebSocket!!
+        val rungListener = factory.lastListener!!
+        rungListener.onOpen(rung, fakeResponse())
+
+        dispatcher.onNextDispatch = { rungListener.onMessage(rung, versionRejection) }
+        conn.retryNow()
+        runCurrent()
+
+        assertEquals(1000, rung.closeCode)
+        assertEquals("no CONNECT may follow the refusal", 2, factory.socketCount)
+        conn.teardown()
+    }
+
+    @Test
+    fun `a refusal landing while a conversation switch reopens does not get a second CONNECT`() = runTest {
+        // switchSession runs on the repository's IO thread and checks for a
+        // live socket before reopening; the refusal can land on OkHttp's
+        // thread in between. Modelled by delivering it from switchSession's
+        // own log line, which Robolectric writes synchronously.
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        val listener = factory.lastListener!!
+        listener.onOpen(ws, fakeResponse())
+
+        var delivered = false
+        val logged = StringBuilder()
+        val previousStream = ShadowLog.stream
+        ShadowLog.stream = PrintStream(object : java.io.OutputStream() {
+            override fun write(b: Int) {
+                logged.append(b.toChar())
+                if (!delivered && logged.contains("Switching session")) {
+                    delivered = true
+                    listener.onMessage(ws, versionRejection)
+                }
+            }
+        })
+        try {
+            conn.switchSession(SessionState(sessionId = "sess-2"))
+        } finally {
+            ShadowLog.stream = previousStream
+        }
+        advanceTimeBy(10 * 60_000L)
+
+        assertTrue("test setup: the refusal must land inside switchSession", delivered)
+        assertEquals("no CONNECT may follow the refusal", 1, factory.socketCount)
+        assertTrue(
+            "nothing may replace the refusal as the last word: $seen",
+            seen.last() is ConnectionEvent.ProtocolRejected
+        )
+        conn.teardown()
+    }
+
+    @Test
+    fun `the user connecting again after a refusal gets a fresh attempt`() = runTest {
+        // "No automatic reconnect" — a deliberate retry is still the user's to make.
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onMessage(factory.lastWebSocket!!, versionRejection)
+
+        conn.connect("0xAGENT")
+        runCurrent()
+
+        assertEquals(2, factory.socketCount)
+        conn.teardown()
+    }
+
+    @Test
+    fun `a refusal does not outlive the cycle it ended - the next connect gets its ladder back`() = runTest {
+        // The stand-down is per cycle. connect() opens a socket whether or not
+        // it clears the flag, so the test above cannot tell; if it stayed set,
+        // the user's retry would connect once and never recover from a drop.
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        factory.lastListener!!.onMessage(factory.lastWebSocket!!, versionRejection)
+        conn.connect("0xAGENT")
+        runCurrent()
+        assertEquals("test setup: the retry opened a socket", 2, factory.socketCount)
+
+        factory.lastListener!!.onFailure(factory.lastWebSocket!!, java.io.IOException("connection reset"), null)
+        advanceTimeBy(AgentConnection.reconnectBackoffMs(1) + 1)
+
+        assertEquals("the new cycle's ladder must run", 3, factory.socketCount)
         conn.teardown()
     }
 

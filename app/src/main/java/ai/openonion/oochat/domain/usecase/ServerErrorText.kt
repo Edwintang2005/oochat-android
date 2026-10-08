@@ -46,4 +46,22 @@ object ServerErrorText {
      */
     fun isOfflineVerdict(text: String): Boolean =
         isAgentOffline(text) || text.trim() == AGENT_OFFLINE
+
+    /**
+     * The agent refused this app's OIP version (ERROR -32010). Names both
+     * versions when the Host said which it speaks, since that is what tells
+     * the user which side needs the update.
+     *
+     * @param hostProtocol the Host's version as "oip/0.2", or null if unknown.
+     * @param clientProtocol this app's version, same form. Passed in rather
+     *   than read from the wire layer, which domain/ must not import.
+     */
+    fun incompatibleProtocol(hostProtocol: String?, clientProtocol: String): String {
+        val mismatch = if (hostProtocol != null) {
+            "This agent uses a different version of the chat protocol ($hostProtocol) than this app ($clientProtocol)."
+        } else {
+            "This agent doesn't support this app's version of the chat protocol ($clientProtocol)."
+        }
+        return "$mismatch Update the app or the agent, then reconnect."
+    }
 }

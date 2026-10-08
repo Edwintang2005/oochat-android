@@ -130,7 +130,17 @@ data class ServerEvent(
     // exit_plan_and_implement() sends `{'type':'mode_changed','mode':mode}`
     // with no triggered_by key at all.
     val mode: String? = null,
-    @SerialName("triggered_by") val triggeredBy: String? = null
+    @SerialName("triggered_by") val triggeredBy: String? = null,
+    // "ERROR" frame's machine-readable code. Lenient: the OIP version
+    // rejection sends a number (-32010, connect.py), other ERRORs a string
+    // ("provider_station_only", session.py), most none at all.
+    @Serializable(with = LenientStringSerializer::class) val code: String = "",
+    // The Host's own OIP descriptor, on CONNECTED and on the version
+    // rejection ERROR. A JsonElement, not a ProtocolDescriptor: it carries
+    // fields this client doesn't model (websocket_path, extensions), and a
+    // descriptor missing one we do must not drop the frame that explains
+    // why the connection failed.
+    val protocol: JsonElement? = null
 )
 
 @Serializable

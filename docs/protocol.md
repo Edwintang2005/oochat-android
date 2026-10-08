@@ -31,7 +31,9 @@ After a transient socket failure or close, `AgentConnection` retries up to five
 times with exponential delays of 2, 4, 8, 16, and 32 seconds. It emits a
 `ConnectionEvent.Reconnecting` while retrying. A pending onboarding gate
 suppresses automatic reconnects until the user acts, and a rejected onboarding
-submission opens a fresh connection so the server can send a new gate.
+submission opens a fresh connection so the server can send a new gate. A Host
+that refuses the client's OIP version ends the cycle with no reconnect at all;
+see [Incompatible protocol version](#incompatible-protocol-version).
 
 ## Client to server frames
 
@@ -47,6 +49,7 @@ They are `@Serializable` Kotlin data classes and are encoded with
 | Field | Meaning |
 | --- | --- |
 | `type` | Always `"CONNECT"`. |
+| `protocol` | The OIP protocol descriptor, `OipProtocol.DESCRIPTOR`. See below. |
 | `payload` | `ConnectPayload(timestamp, to)`; this is the signed payload. |
 | `from` | The local Ed25519 address. |
 | `signature` | Hex Ed25519 signature over the canonical payload JSON. |
@@ -59,6 +62,80 @@ They are `@Serializable` Kotlin data classes and are encoded with
 `KeyManager.canonicalJson()` followed by `KeyManager.sign()` to create the
 signature. Keeping one timestamp for the signed payload and envelope avoids a
 signature mismatch.
+
+#### Protocol descriptor
+
+Every `CONNECT`, including the one re-sent after an onboarding gate, declares
+the OIP version the client speaks:
+
+```json
+"protocol": {"name": "oip", "version": "0.1", "min_version": "0.1", "max_version": "0.1"}
+```
+
+The descriptor is defined once, in
+`app/src/main/java/ai/openonion/oochat/data/protocol/OipProtocol.kt`, and
+matches `OIP_PROTOCOL` in `connectonion-react`'s `src/connect/protocol.ts`.
+It sits at the top level of the envelope and is not signed. The Host reads
+`data.get("protocol")` from the envelope and verifies the signature over
+`payload` alone, so adding the descriptor does not change the signed bytes.
+
+The Host compares only `name` and `version`, in `supports_oip()` in
+`connectonion/network/host/protocol.py`. It accepts a `CONNECT` with no
+descriptor only during the rolling compatibility window. That window covers
+1.7.x and may close no earlier than 1.8.0a1 (2026-09-15). If the Host does not
+support the declared version, it answers with a non-retryable
+`{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol","retryable":false,"protocol":{…}}`.
+The client treats that as final; see
+[Incompatible protocol version](#incompatible-protocol-version).
+
+Covered by `OutgoingMessagesTest`, which checks the serialised `CONNECT`
+frame, and by `AgentConnectionRobolectricTest`, which checks the frame sent
+when the socket opens, the frame re-sent after onboarding, and that the
+descriptor is not part of the signed payload.
+
+#### Incompatible protocol version
+
+When the Host refuses the descriptor, the client shows one error and does not
+reconnect on its own. Retrying would send the same descriptor and be refused
+the same way, so each attempt would cost battery and add another copy of the
+error.
+
+1. `ProtocolParser` turns an `ERROR` whose `code` is `-32010`
+   (`OipProtocol.UNSUPPORTED_VERSION_CODE`) into
+   `ConnectionEvent.ProtocolRejected`. The event carries the Host's version
+   from the frame's `protocol` descriptor, for example `oip/0.2`, or null if
+   the descriptor is missing or malformed. The name and version are
+   peer-controlled and end up in `app.log` and in the error text, so anything
+   other than a short token (letters, digits, `.`, `_`, `+`, `-`, at most 32
+   characters) also reads as null. Every other `ERROR`, including ones with a
+   string `code`, stays a `ConnectionError`.
+2. `AgentConnection` marks the cycle as rejected, cancels any scheduled
+   reconnect, and closes the socket itself. The Host leaves the socket open
+   after its `ERROR`, and a later drop would otherwise start the reconnect
+   ladder. While the cycle is rejected, `attemptReconnect()`, `retryNow()` and
+   the socket reopen behind a conversation switch do nothing. That covers
+   socket drops, the network coming back, the app returning to the
+   foreground, and a switch that raced the refusal. Only a new `connect()`,
+   meaning the user trying again, clears the flag.
+3. `ConnectionRepositoryImpl` publishes
+   `ConnectionState.Error(retryable = false)` with the message from
+   `ServerErrorText.incompatibleProtocol()`, for example: "This agent uses a
+   different version of the chat protocol (oip/0.2) than this app (oip/0.1).
+   Update the app or the agent, then reconnect." It does this even if the
+   attempt had already connected, because an auto-reconnect after a Host
+   upgrade can be the `CONNECT` that is refused.
+4. `ConnectToAgentUseCase` does not make its usual second attempt after a
+   non-retryable error.
+5. `ChatViewModel` adds the message to the chat once. Its stale-session
+   suppression applies only to retryable errors, so a Host version that
+   happens to read like a stale-session error cannot hide the message.
+   `ConnectionBanner` titles the error "Incompatible version" rather than
+   "Connection failed", and keeps its Reconnect action: nothing recovers on its
+   own, and once the app or the agent is updated, that is the user's way back.
+
+Covered by `ProtocolParserVersionRejectionTest`, by the W16AAPPLE-12 section of
+`AgentConnectionRobolectricTest`, and by `ConnectionRepositoryImplTest`,
+`ConnectToAgentUseCaseTest`, `ServerErrorTextTest`, `ChatViewModelTest`, and `ConnectionBannerTest`.
 
 When reconnecting, `ConnectionRepositoryImpl` restores the saved
 `SessionState` through `SessionStore`, calls `AgentConnection.setSession()`,
@@ -141,7 +218,7 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `files_received` | `id`, `files[].name`, `files[].path` | Creates a `ChatItem.FilesReceivedItem` listing files the agent returned; an absent `files` array yields an empty list. |
 | `ulw_turns_reached` | `id`, `turns_used`, `max_turns` | Creates a `ChatItem.UlwTurnsReachedItem` and enters a waiting state until the user answers with `ULW_RESPONSE`. Both counters default to `0`. |
 | `OUTPUT` | `input_id`, `result`, `session` | Emits the final output when it belongs to the current input, or for any direct connection; updates the session snapshot. |
-| `ERROR` | `message`, `error` | Emits `ConnectionError` using `message`, then `error`, then `"Unknown error"`. |
+| `ERROR` | `code`, `protocol`, `message`, `error` | With `code` `-32010`, emits `ProtocolRejected` (see [Incompatible protocol version](#incompatible-protocol-version)). Otherwise emits `ConnectionError` using `message`, then `error`, then `"Unknown error"`. |
 
 For `assistant`, `thinking` text, `agent_image`, and `session_sync`, the parser
 uses `stableAssistantId()` to make replayed messages idempotent. This prevents

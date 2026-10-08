@@ -11,6 +11,11 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class ConnectMessage(
     val type: String = "CONNECT",
+    // Top-level and unsigned, as in connectonion-react's CONNECT: the Host
+    // reads data.get("protocol") off the envelope, not the signed payload.
+    // Omitting it is accepted only during the descriptor-less compatibility
+    // window, which may close from 1.8.0a1 onwards (websocket-protocol.md).
+    val protocol: ProtocolDescriptor = OipProtocol.DESCRIPTOR,
     val payload: ConnectPayload,
     val from: String,
     val signature: String,
