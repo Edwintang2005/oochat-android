@@ -913,7 +913,11 @@ open class ChatViewModel @JvmOverloads constructor(
         val forceNew = startFreshOnNextConnect
         startFreshOnNextConnect = false
         restoreLocalSession(agentAddress, forceNew)
-        _awaitingOnboardCode.value = false
+        // Only once the agent has let us in. connect() also returns true when
+        // ONBOARD_REQUIRED won its race, and clearing this then put the banner
+        // back to "Connecting to agent…" over a gate still waiting for a code
+        // (W16AAPPLE-80). The Connected transition reaches here again.
+        if (connectionState.value is ConnectionState.Connected) _awaitingOnboardCode.value = false
     }
 
     /**
@@ -926,7 +930,20 @@ open class ChatViewModel @JvmOverloads constructor(
     private suspend fun restoreLocalSession(agentAddress: String, forceNew: Boolean) {
         when (val resume = conversationHistory.ensureActiveSession(agentAddress, viewModelScope, forceNew)) {
             is SessionResume.Unchanged -> {}
-            is SessionResume.Started -> _uiState.update { it.copy(chatItems = emptyList()) }
+            // A new conversation starts empty, except for an onboarding gate
+            // still waiting on the user. It belongs to the connection, not
+            // the conversation: the agent answers nothing until it is
+            // answered. On a first connect to an agent not saved yet, the
+            // card lands before this runs, and wiping it left no way to enter
+            // the code (W16AAPPLE-80).
+            is SessionResume.Started -> _uiState.update { state ->
+                val openGate = if (state.listFlags.hasOnboardSuccess) {
+                    emptyList()
+                } else {
+                    state.chatItems.filter { it is ChatItem.OnboardRequired || it is ChatItem.OnboardingFailed }
+                }
+                state.copy(chatItems = openGate)
+            }
             is SessionResume.Resumed -> {
                 val merged = trimToRetentionWindow(
                     (resume.items + _uiState.value.chatItems).dedupeUI()
