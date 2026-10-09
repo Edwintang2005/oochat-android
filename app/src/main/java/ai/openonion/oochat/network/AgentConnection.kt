@@ -78,6 +78,25 @@ class AgentConnection(
     val currentSession: SessionState? get() = _currentSession
     private data class ReplayCursor(val sessionId: String, val msgId: String)
     @Volatile private var replayCursor: ReplayCursor? = null
+        /**
+     * Digests of the agent-log frames already handled, oldest first. After a reconnect the Host
+     * re-sends frames this connection has seen, so repeats are dropped before they reach anything
+     * with a side effect. Keyed on the whole frame, not its id: the Host reuses one id for a call
+     * and its result, and for each status of a compaction.
+     */
+    private val seenFrames = LinkedHashSet<String>()
+
+    /** True the first time [text] is seen, false for a repeat; see [seenFrames]. */
+    private fun isFirstSighting(text: String): Boolean {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(text.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        synchronized(seenFrames) {
+            if (!seenFrames.add(digest)) return false
+            while (seenFrames.size > MAX_SEEN_FRAMES) seenFrames.remove(seenFrames.first())
+            return true
+        }
+    }
 
     /**
      * Every INPUT whose reply is still owed, not just the newest one.
@@ -681,6 +700,7 @@ class AgentConnection(
     fun reset() {
         _currentSession = null
         replayCursor = null
+        synchronized(seenFrames) { seenFrames.clear() }
         outstandingInputIds.clear()
         pendingMessageSink.clear(agentAddress)
     }
@@ -1033,6 +1053,13 @@ class AgentConnection(
             // iteration, and toSet() iterates.
             val outstanding = synchronized(outstandingInputIds) { outstandingInputIds.toSet() }
             val result = ProtocolParser.parse(text, outstanding, isDirect)
+            // A replay re-sends frames already handled; drop repeats before any side effect.
+            // Only agent-log frames carry a msgId, so snapshots re-sent on every CONNECT still pass.
+            if (result.msgId != null && !isFirstSighting(text)) {
+                FileLogger.d(LogTags.AGENT_CONN, "Dropping replayed frame: ${LogSanitizer.jsonTypeSummary(text)}")
+                return
+            }
+
             // The run these ids belonged to has answered (or given up), so the
             // next send starts from an empty set rather than inheriting them.
             if (result.event is ConnectionEvent.OutputReceived ||
@@ -1320,6 +1347,9 @@ class AgentConnection(
 
         /** How many superseded session ids one connection remembers; see knownSessionIds. */
         private const val MAX_REMEMBERED_SESSIONS = 16
+
+        /** How many handled frames are remembered for replay de-duplication; see seenFrames. */
+        private const val MAX_SEEN_FRAMES = 4096
 
         /** Interjections per run before the oldest id stops being recognised; see outstandingInputIds. */
         private const val MAX_OUTSTANDING_INPUT_IDS = 16

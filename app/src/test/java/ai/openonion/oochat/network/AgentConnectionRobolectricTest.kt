@@ -1633,6 +1633,78 @@ class AgentConnectionRobolectricTest {
         conn.teardown()
     }
 
+        /**
+     * Opens [conn], delivers [before] on the first socket, drops it, and returns
+     * the socket the ladder opens next, already CONNECTED again.
+     */
+    private fun TestScope.reconnectAfter(conn: AgentConnection, before: List<String>): WebSocket {
+        conn.connect("0xAGENT")
+        val first = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(first, fakeResponse())
+        simulateConnected("sess-1")
+        before.forEach { factory.lastListener!!.onMessage(first, it) }
+
+        factory.lastListener!!.onClosed(first, 1006, "abnormal closure")
+        advanceUntilIdle()
+        val second = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(second, fakeResponse())
+        simulateConnected("sess-1")
+        return second
+    }
+
+    @Test
+    fun `frames replayed after a reconnect are delivered once and in order`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        val a = """{"type":"tool_call","id":"ev-1","tool_id":"t1","name":"bash"}"""
+        val b = """{"type":"tool_call","id":"ev-2","tool_id":"t2","name":"bash"}"""
+        val c = """{"type":"tool_call","id":"ev-3","tool_id":"t3","name":"bash"}"""
+        val second = reconnectAfter(conn, listOf(a, b))
+
+        // The Host replays the turn from the top: a and b again, then c, which is new.
+        listOf(a, b, c).forEach { factory.lastListener!!.onMessage(second, it) }
+
+        val ids = seen.filterIsInstance<ConnectionEvent.ChatItemReceived>().map { it.item.id }
+        assertEquals(listOf("t1", "t2", "t3"), ids)
+        conn.teardown()
+    }
+
+    @Test
+    fun `a replayed approval_needed does not put the chat back into waiting`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        val approval = """{"type":"approval_needed","id":"ap-1","tool":"bash","arguments":{"command":"ls"}}"""
+        val second = reconnectAfter(conn, listOf(approval))
+
+        factory.lastListener!!.onMessage(second, approval)
+
+        assertEquals(1, seen.count { it is ConnectionEvent.Waiting })
+        conn.teardown()
+    }
+
+    @Test
+    fun `frames that share an id but not a type or status are not mistaken for repeats`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(ws, fakeResponse())
+        simulateConnected("sess-1")
+
+        // The Host reuses one id for a call and its result, and for every status of a compaction.
+        listOf(
+            """{"type":"llm_call","id":"L1","model":"m"}""",
+            """{"type":"llm_result","id":"L1","model":"m","status":"done"}""",
+            """{"type":"compact","id":"C1","status":"compacting"}""",
+            """{"type":"compact","id":"C1","status":"done"}"""
+        ).forEach { factory.lastListener!!.onMessage(ws, it) }
+
+        val delivered = seen.count { it is ConnectionEvent.ChatItemReceived || it is ConnectionEvent.ChatItemUpdated }
+        assertEquals("every one of the four frames must reach the chat", 4, delivered)
+        conn.teardown()
+    }
+
+
     @Test
     fun `the socket a switch replaces cannot report its own close as a disconnect`() = runTest {
         // reopenSocket closes synchronously but opens from a launch, and the
