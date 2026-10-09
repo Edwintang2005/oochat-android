@@ -1732,7 +1732,81 @@ class AgentConnectionRobolectricTest {
         assertEquals((0 until burst).map { "t$it" }, delivered)
         conn.teardown()
     }
+    @Test
+    fun `a conversation switch does not carry the previous last message id`() = runTest {
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        val first = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(first, fakeResponse())
+        simulateConnected("sess-A")
+        factory.lastListener!!.onMessage(first, """{"type":"tool_call","id":"ev-1","tool_id":"t1","name":"bash"}""")
 
+        conn.switchSession(SessionState(sessionId = "sess-B"))
+        runCurrent()
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+
+        val connect = sentConnect()
+        assertEquals("sess-B", connect["session_id"]?.jsonPrimitive?.content)
+        assertNull("ev-1 belongs to sess-A's log, not sess-B's", connect["last_msg_id"])
+        conn.teardown()
+    }
+
+    @Test
+    fun `an id on a frame written straight to the socket is never sent as last_msg_id`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val frames = listOf(
+            """{"type":"AGENT_PROFILE","id":"host-1","name":"agent","model":"m"}""",
+            """{"type":"DASHBOARD_SNAPSHOT","id":"host-2","html":"<p>hi</p>"}"""
+        )
+
+        reconnectAfter(conn, frames)
+
+        assertNull(sentConnect()["last_msg_id"])
+        conn.teardown()
+    }
+
+    @Test
+    fun `a snapshot re-sent on every CONNECT is not mistaken for a replay`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        val profile = """{"type":"AGENT_PROFILE","name":"agent","model":"m"}"""
+        val second = reconnectAfter(conn, listOf(profile))
+
+        factory.lastListener!!.onMessage(second, profile)
+
+        assertEquals(2, seen.count { it is ConnectionEvent.AgentProfileReceived })
+        conn.teardown()
+    }
+
+    @Test
+    fun `the last message id is not part of the signed CONNECT payload`() = runTest {
+        val signed = CopyOnWriteArrayList<String>()
+        val conn = AgentConnection(
+            keyManager,
+            webSocketFactory = factory,
+            signer = { _, canonical -> signed += canonical; "fake-signature" },
+            reconnectDispatcher = StandardTestDispatcher(testScheduler)
+        )
+        conn.connect("0xAGENT")
+        val first = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(first, fakeResponse())
+        simulateConnected("sess-1")
+        factory.lastListener!!.onMessage(first, """{"type":"tool_call","id":"ev-1","tool_id":"t1","name":"bash"}""")
+        factory.lastListener!!.onClosed(first, 1006, "abnormal closure")
+        advanceUntilIdle()
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+
+        val reconnect = sentConnect()
+        assertEquals("ev-1", reconnect["last_msg_id"]?.jsonPrimitive?.content)
+        val canonical = signed.last()
+        assertFalse("last_msg_id must stay on the envelope: $canonical", canonical.contains("last_msg_id"))
+        assertEquals(
+            "the envelope's payload must be exactly what was signed",
+            Json.parseToJsonElement(canonical),
+            reconnect["payload"]
+        )
+        conn.teardown()
+    }
 
     @Test
     fun `the socket a switch replaces cannot report its own close as a disconnect`() = runTest {

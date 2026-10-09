@@ -644,4 +644,47 @@ class ProtocolParserTest {
         assertFalse(result.setWaiting)
         assertNull(result.updateSession)
     }
+
+    // ── msgId: the Host's id for a frame in its replay log ───────────
+
+    @Test
+    fun `frames from the agent log carry their id as msgId`() {
+        val frames = listOf(
+            """{"type":"llm_call","id":"m1","model":"x"}""",
+            """{"type":"llm_result","id":"m1","status":"done"}""",
+            """{"type":"thinking","id":"m1","content":"hmm"}""",
+            """{"type":"tool_call","id":"m1","tool_id":"t1","name":"bash"}""",
+            """{"type":"tool_result","id":"m1","tool_id":"t1","status":"success","result":"ok"}""",
+            """{"type":"assistant","id":"m1","content":"hello"}""",
+            """{"type":"session_sync","id":"m1","session":{"session_id":"s1","messages":[]}}""",
+            """{"type":"approval_needed","id":"m1","tool":"bash"}""",
+            """{"type":"ask_user","id":"m1","question":"ok?"}"""
+        )
+
+        frames.forEach { frame -> assertEquals(frame, "m1", parse(frame).msgId) }
+    }
+
+    @Test
+    fun `frames written straight to the socket never carry a msgId`() {
+        // None of these are in the Host's replay log, so an id on one names nothing it could rewind to.
+        val frames = listOf(
+            """{"type":"PING","id":"h1"}""",
+            """{"type":"CONNECTED","id":"h1","session_id":"s1"}""",
+            """{"type":"AGENT_PROFILE","id":"h1","name":"a","model":"m"}""",
+            """{"type":"DASHBOARD_SNAPSHOT","id":"h1","html":"<p>hi</p>"}""",
+            """{"type":"ONBOARD_REQUIRED","id":"h1","methods":["invite_code"]}""",
+            """{"type":"ONBOARD_SUCCESS","id":"h1","level":"contact"}""",
+            """{"type":"OUTPUT","id":"h1","result":"done"}""",
+            """{"type":"ERROR","id":"h1","message":"nope"}""",
+            """{"type":"SESSION_STATUS","id":"h1","session_id":"s1","status":"running"}"""
+        )
+
+        frames.forEach { frame -> assertNull(frame, parse(frame).msgId) }
+    }
+
+    @Test
+    fun `a log frame without a usable id has no msgId`() {
+        assertNull(parse("""{"type":"tool_call","tool_id":"t1","name":"bash"}""").msgId)
+        assertNull(parse("""{"type":"tool_call","id":"  ","tool_id":"t1","name":"bash"}""").msgId)
+    }
 }
