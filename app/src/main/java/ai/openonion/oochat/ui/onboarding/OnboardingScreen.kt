@@ -106,20 +106,12 @@ fun OnboardingScreen(
     }
 
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-        result.contents?.let { scanned ->
-            // User-defined QR payload convention: serverUrl and agentAddress
-            // joined by a "/" — split on the LAST "/" since serverUrl itself
-            // contains "//" (e.g. "https://").
-            val lastSlash = scanned.lastIndexOf('/')
-            if (lastSlash > 0 && lastSlash < scanned.length - 1) {
-                val scannedServerUrl = scanned.substring(0, lastSlash)
-                val scannedAgentAddress = scanned.substring(lastSlash + 1)
-                formState = formState.copy(
-                    serverUrl = scannedServerUrl,
-                    agentAddress = scannedAgentAddress,
-                    useDirectConnection = !Constants.isDefaultServerUrl(scannedServerUrl)
-                )
-            }
+        result.contents?.let(AgentQrCode::parse)?.let { scanned ->
+            formState = formState.copy(
+                serverUrl = scanned.serverUrl,
+                agentAddress = scanned.agentAddress,
+                useDirectConnection = !Constants.isDefaultServerUrl(scanned.serverUrl)
+            )
         }
     }
     fun launchScan() {
