@@ -31,6 +31,14 @@ import kotlinx.serialization.json.contentOrNull
  */
 object ProtocolParser {
 
+    private val AGENT_LOG_TYPES = setOf(
+        "llm_call", "llm_result", "thinking", "tool_call", "tool_result", "agent_image",
+        "assistant", "session_sync", "user_input", "ask_user", "approval_needed", "intent",
+        "eval", "compact", "tool_blocked", "plan_review", "files_received", "diff_preview",
+        "ulw_turns_reached", "mode_changed"
+    )
+
+
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -68,7 +76,7 @@ object ProtocolParser {
             "Parsed type=${event.type}, ${LogSanitizer.contentSummary(event.content.orEmpty())}"
         )
 
-        return when (event.type) {
+        val parsed = when (event.type) {
             "PING" -> ParseResult(
                 event = ConnectionEvent.Ping,
                 shouldSendPong = true
@@ -517,6 +525,11 @@ object ProtocolParser {
 
             else -> ParseResult(event = ConnectionEvent.Unknown)
         }
+        return if (event.type in AGENT_LOG_TYPES) {
+            parsed.copy(msgId = event.id?.takeIf { it.isNotBlank() })
+        } else {
+            parsed
+        }
     }
 
     /**
@@ -682,7 +695,8 @@ data class ParseResult(
     val updateSession: ai.openonion.oochat.data.protocol.SessionState? = null,
     val updateSessionId: String? = null,
     val setWaiting: Boolean = false,
-    val extraEvents: List<ConnectionEvent> = emptyList()
+    val extraEvents: List<ConnectionEvent> = emptyList(),
+    val msgId: String? = null
 )
 
 /**

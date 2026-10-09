@@ -1612,6 +1612,28 @@ class AgentConnectionRobolectricTest {
     }
 
     @Test
+    fun `the CONNECT sent on reconnect carries the session id and the last message id seen`() = runTest {
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        val first = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(first, fakeResponse())
+        simulateConnected("sess-1")
+        factory.lastListener!!.onMessage(first, """{"type":"tool_call","id":"ev-1","tool_id":"t1","name":"bash"}""")
+        factory.lastListener!!.onMessage(first, """{"type":"thinking","id":"ev-2","content":"working on it"}""")
+
+        // The socket drops; rung #1 (2 s) wakes on the virtual clock and opens a second socket.
+        factory.lastListener!!.onClosed(first, 1006, "abnormal closure")
+        advanceUntilIdle()
+        assertEquals("test setup: the ladder should have opened a replacement socket", 2, factory.socketCount)
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+
+        val connect = sentConnect()
+        assertEquals("sess-1", connect["session_id"]?.jsonPrimitive?.content)
+        assertEquals("ev-2", connect["last_msg_id"]?.jsonPrimitive?.content)
+        conn.teardown()
+    }
+
+    @Test
     fun `the socket a switch replaces cannot report its own close as a disconnect`() = runTest {
         // reopenSocket closes synchronously but opens from a launch, and the
         // generation the stale-callback guard compares against was only bumped

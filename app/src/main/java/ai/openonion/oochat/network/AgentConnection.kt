@@ -76,6 +76,9 @@ class AgentConnection(
     @Volatile private var keys: KeyManager.AddressData? = null
     @Volatile private var _currentSession: SessionState? = null
     val currentSession: SessionState? get() = _currentSession
+    private data class ReplayCursor(val sessionId: String, val msgId: String)
+    @Volatile private var replayCursor: ReplayCursor? = null
+
     /**
      * Every INPUT whose reply is still owed, not just the newest one.
      *
@@ -386,6 +389,7 @@ class AgentConnection(
         // Never repeats, never goes backwards — see nextConnectTimestamp.
         val timestamp = nextConnectTimestamp()
         val directNow = isDirect
+        val sessionId = _currentSession?.sessionId
 
         val signature = signPayload(
             payloadFields = buildMap<String, Any> {
@@ -403,7 +407,8 @@ class AgentConnection(
             signature = signature,
             timestamp = timestamp,
             to = if (!directNow) capturedAgentAddress else null,
-            sessionId = _currentSession?.sessionId
+            sessionId = sessionId,
+            lastMsgId = replayCursor?.takeIf { it.sessionId == sessionId }?.msgId
         )
 
         val msgStr = json.encodeToString(connectMsg)
@@ -675,6 +680,7 @@ class AgentConnection(
 
     fun reset() {
         _currentSession = null
+        replayCursor = null
         outstandingInputIds.clear()
         pendingMessageSink.clear(agentAddress)
     }
@@ -1076,6 +1082,9 @@ class AgentConnection(
             }
             _currentSession?.takeIf { it != sessionBefore }?.let {
                 _events.tryEmit(ConnectionEvent.SessionUpdated(it))
+            }
+            result.msgId?.let { id ->
+                _currentSession?.sessionId?.let { sid -> replayCursor = ReplayCursor(sid, id) }
             }
 
             // Set waiting state
