@@ -27,7 +27,9 @@ interface AgentDao {
     @Query("SELECT * FROM agent_profiles WHERE id = :id")
     suspend fun getAgentById(id: String): AgentEntity?
 
-    @Query("SELECT * FROM agent_profiles WHERE address = :address")
+    // NOCASE: hex is case-insensitive, and rows saved before addresses were
+    // lower-cased may hold capitals (W16AAPPLE-57).
+    @Query("SELECT * FROM agent_profiles WHERE address = :address COLLATE NOCASE")
     suspend fun getAgentByAddress(address: String): AgentEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

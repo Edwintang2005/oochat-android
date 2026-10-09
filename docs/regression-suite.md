@@ -17,7 +17,7 @@ belongs in one of those classes, or its class belongs in that list.
 
 | Feature | Classes | What is pinned |
 |---|---|---|
-| Add agent by 0x address | `AgentViewModelTest`, `AgentFormScreenComposeTest`, `AgentFormNamingTest`, `EmbeddedDiscoveryPanelComposeTest`, `AgentDiscoveryServiceTest`, `AgentRepositoryImplTest`, `AgentDiscoveryRepositoryImplTest`, `AgentMapperTest` | 0x + 64 hex and every near miss; a URL pasted as an address; what Save hands over (trimmed address, default name, relay or direct) |
+| Add agent by 0x address | `AgentViewModelTest`, `AgentFormScreenComposeTest`, `AgentFormNamingTest`, `EmbeddedDiscoveryPanelComposeTest`, `AgentDiscoveryServiceTest`, `AgentRepositoryImplTest`, `AgentDiscoveryRepositoryImplTest`, `AgentMapperTest` | 0x + 64 hex and every near miss, in Setup too; a URL pasted as an address; what Save hands over (trimmed, lower-cased address, default name, relay or direct); one agent per address in any letter case, on add, edit and discovery; the first agent added becomes the default (W16AAPPLE-57 to -61, -81) |
 | Direct (/ws) and relay (/ws/input) | `AgentConnectionRobolectricTest`, `AgentConnectionTest`, `ProtocolParserTest`, `ConnectionConfigTest`, `ConstantsTest`, `EncryptedPreferencesConnectionConfigRepositoryTest`, `LoadingViewModelTest` | The URL actually dialled in each mode; `to` present on relay frames and absent on direct ones, signed and unsigned; which saved configs count as relay |
 | Ed25519 identity | `IdentityVectorsTest`, `KeyManagerMnemonicTest`, `KeyManagerPersistenceTest`, `KeyManagerTest`, `SettingsViewModelTest` | Phrase -> seed -> address and key -> signature, against outside test data; mint, restore, import, reset and backup; every BIP39 phrase length, spacing, and hex keys whose halves do not match (W16AAPPLE-62, -63, -64) |
 | Onboarding gate | `OnboardCardsComposeTest`, `ChatEventReducerTest`, `OutgoingMessagesTest`, `ConnectionRepositoryImplTest`, `ConnectToAgentUseCaseTest`, `OnboardingViewModelTest` | No reconnect behind the user while the gate is open (failure and close); the exact `ONBOARD_SUBMIT` frame; submitting while disconnected |
@@ -53,11 +53,6 @@ purpose. At that point, remove the wrapper, and the test guards the fix.
 | Direct/relay | A direct `wss://host` URL becomes `ws://wss://host/ws`, so the app dials a host called `wss` | `AgentConnectionRobolectricTest` |
 | Direct/relay | A direct URL ending in `/` is dialled at `//ws` (the Add Agent form does not trim it) | `AgentConnectionRobolectricTest` |
 | Direct/relay | The saved `connectionMode` is never read. A relay-mode agent on a self-hosted relay is dialled at `<relay>/ws` | `ChatViewModelTest` |
-| Add agent | `0xAB...` and `0xab...` are saved as two agents | `AgentViewModelTest` |
-| Add agent | Editing an agent onto another's address is not caught. In Room it throws inside an unguarded launch | `AgentViewModelTest` |
-| Add agent | Adding a discovered agent that is already saved saves it again. In Room, REPLACE drops the old row and its API key | `AgentViewModelTest` |
-| Add agent | The first agent added from discovery does not become the default | `AgentViewModelTest` |
-| Onboarding | Setup accepts an address the Add Agent form rejects (no 0x + 64 hex check) | `OnboardingViewModelTest` |
 | Slash palette | Skills from the directory are not de-duplicated, and "No description" is not dropped | `ConnectionRepositoryImplTest` |
 | Slash palette | Two skills with the same name crash the composer when `/` is typed | `SlashCommandPaletteComposeTest` |
 | Low balance | The amount follows the phone's locale: `$0,42` on a German phone | `LowBalanceBarComposeTest` |
