@@ -15,10 +15,13 @@ import ai.openonion.oochat.network.PendingMessageSink
 import ai.openonion.oochat.network.QueuedMessage
 import ai.openonion.oochat.network.WebSocketFactory
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -119,6 +122,13 @@ class ConnectionRepositoryImplTest {
         factory.lastListener?.onMessage(factory.lastWebSocket!!, """{"type":"CONNECTED","session_id":"$sessionId"}""")
     }
 
+    private fun simulateToolCall(toolId: String) {
+        factory.lastListener?.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"tool_call","id":"ev-$toolId","tool_id":"$toolId","name":"bash"}"""
+        )
+    }
+
     private fun simulateError(message: String) {
         factory.lastListener?.onMessage(factory.lastWebSocket!!, """{"type":"ERROR","message":"$message"}""")
     }
@@ -201,6 +211,41 @@ class ConnectionRepositoryImplTest {
         } as ChatEvent.ChatItemReceived
 
         assertTrue(received.item is ChatItem.OnboardRequired)
+    }
+
+    @Test
+    fun `a burst of frames bigger than the chat event buffer reaches a slow collector whole`() = runBlocking {
+        repository.connect("0xAGENT")
+        simulateConnected()
+
+        // A collector stuck on its first event while the burst arrives, like the chat's Room writes.
+        val release = CompletableDeferred<Unit>()
+        val started = CompletableDeferred<Unit>()
+        val delivered = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val collector = launch(Dispatchers.Default) {
+            repository.observeEvents().collect { event ->
+                started.complete(Unit)
+                release.await()
+                if (event is ChatEvent.ChatItemReceived) delivered += event.item.id
+            }
+        }
+        // Frames sent before the collector subscribes are lost, so send markers until it has one.
+        var marker = 0
+        withTimeout(5000L) {
+            while (!started.isCompleted) {
+                simulateToolCall("m${marker++}")
+                delay(20)
+            }
+        }
+
+        val burst = 200
+        repeat(burst) { simulateToolCall("t$it") }
+        delay(500) // the repository's own collector passes every frame on while the consumer is stuck
+        release.complete(Unit)
+        delay(500)
+        collector.cancel()
+
+        assertEquals((0 until burst).map { "t$it" }, delivered.filter { it.startsWith("t") })
     }
 
     @Test

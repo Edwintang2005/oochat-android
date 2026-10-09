@@ -78,7 +78,8 @@ class AgentConnection(
     val currentSession: SessionState? get() = _currentSession
     private data class ReplayCursor(val sessionId: String, val msgId: String)
     @Volatile private var replayCursor: ReplayCursor? = null
-        /**
+
+    /**
      * Digests of the agent-log frames already handled, oldest first. After a reconnect the Host
      * re-sends frames this connection has seen, so repeats are dropped before they reach anything
      * with a side effect. Keyed on the whole frame, not its id: the Host reuses one id for a call
@@ -251,7 +252,7 @@ class AgentConnection(
     // whichever one was ready first. ChatItem/Output frames that the
     // state collector won were silently dropped by its `else -> {}`.
     private val _events = MutableSharedFlow<ConnectionEvent>(
-        extraBufferCapacity = 64,
+        extraBufferCapacity = EVENT_BUFFER_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     // SharedFlow, not Flow: replay is 0, so a subscriber has to be able to
@@ -1347,6 +1348,15 @@ class AgentConnection(
 
         /** How many superseded session ids one connection remembers; see knownSessionIds. */
         private const val MAX_REMEMBERED_SESSIONS = 16
+
+        /**
+         * Slots in each event buffer between the socket and the chat (this class's, and the
+         * repository's chat bus). A replay can hand over a whole turn at once; a consumer slower
+         * than the socket makes a full buffer drop its oldest event, and with the cursor already
+         * past it that message is gone for good. DROP_OLDEST stays, so a stuck collector can
+         * never stall the socket.
+         */
+        internal const val EVENT_BUFFER_CAPACITY = 1024
 
         /** How many handled frames are remembered for replay de-duplication; see seenFrames. */
         private const val MAX_SEEN_FRAMES = 4096

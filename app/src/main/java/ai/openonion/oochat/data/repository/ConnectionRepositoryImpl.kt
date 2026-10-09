@@ -186,7 +186,7 @@ class ConnectionRepositoryImpl(
 
     // Long-lived broadcast bus for chat events. ChatViewModel.init subscribes to observeEvents() BEFORE connect() establishes the connection, so this hot bus survives the "not yet connected" window and forwards every event once a connection exists.
     private val _chatEvents = MutableSharedFlow<ChatEvent>(
-        extraBufferCapacity = 64,
+        extraBufferCapacity = AgentConnection.EVENT_BUFFER_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
 

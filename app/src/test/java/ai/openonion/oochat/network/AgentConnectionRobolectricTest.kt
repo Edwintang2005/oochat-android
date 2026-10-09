@@ -1704,6 +1704,35 @@ class AgentConnectionRobolectricTest {
         conn.teardown()
     }
 
+    @Test
+    fun `a burst of frames bigger than the event buffer is delivered whole`() = runTest {
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(ws, fakeResponse())
+        simulateConnected("sess-1")
+
+        // A consumer stuck on its first event while the burst arrives, like a slow Room write.
+        val release = CompletableDeferred<Unit>()
+        val delivered = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            conn.events.collect { event ->
+                release.await()
+                if (event is ConnectionEvent.ChatItemReceived) delivered += event.item.id
+            }
+        }
+
+        val burst = 200
+        repeat(burst) { i ->
+            factory.lastListener!!.onMessage(ws, """{"type":"tool_call","id":"ev-$i","tool_id":"t$i","name":"bash"}""")
+        }
+        release.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals((0 until burst).map { "t$it" }, delivered)
+        conn.teardown()
+    }
+
 
     @Test
     fun `the socket a switch replaces cannot report its own close as a disconnect`() = runTest {
