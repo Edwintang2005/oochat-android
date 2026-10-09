@@ -1,0 +1,9 @@
+9/10:
+I am implementing the EXEC and EXEC_RESULT frames.
+
+I firstly built the classes for EXEC payloads and EXEC_RESULT frames.
+I classified each outcome when sending a frame as either success, error,
+not sent, or unknown to cover all cases and created classes for each one.
+
+I added EXEC result handling and execution. This covers building the exec
+messages and payload, and receiving any exec results.
