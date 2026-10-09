@@ -537,9 +537,10 @@ object ProtocolParser {
      * [ConnectionEvent.ChatItemReceived] events — one per assistant
      * message in the session's `messages` array.
      *
-     * Position-based IDs ("session-msg-{index}") keep repeated syncs
-     * idempotent — the [ai.openonion.oochat.domain.model.dedupeUI]
-     * helper in ChatViewModel collapses duplicates by id.
+     * Content-derived IDs ([ai.openonion.oochat.domain.model.stableAssistantId])
+     * keep repeated syncs idempotent — the
+     * [ai.openonion.oochat.domain.model.dedupeUI] helper in ChatViewModel
+     * collapses duplicates by id.
      *
      * Only `role == "assistant"` messages are surfaced as chat items.
      * User messages are skipped (the local [ChatItem.User] is the
