@@ -3232,6 +3232,64 @@ class ChatViewModelTest {
         assertTrue(vm.awaitingOnboardCode.value)
     }
 
+    // ── W16AAPPLE-80: first connect to an invite-gated agent ──────────
+    //
+    // The agent is not in Room yet (Setup saves only ConnectionConfig), so the
+    // conversation is resolved after connect() returns, which it does with
+    // true once ONBOARD_REQUIRED wins. Starting that conversation used to empty
+    // the list, card included, and clear the flag: "Connecting to agent…"
+    // forever, with no way to enter the code.
+
+    @Test
+    fun `a new agent's invite-code card survives the first connect, and the banner still asks for the code`() = runTest(testDispatcher) {
+        val address = "0x" + "ab".repeat(32)
+        vm.markOnboardPending() // as LoadingScreen hands over
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.OnboardRequired(id = "ob1", methods = listOf("invite_code")))
+        )
+        testScheduler.advanceUntilIdle()
+
+        vm.connectToAgent(address)
+        testScheduler.advanceUntilIdle()
+
+        assertNotNull("the agent is saved on this connect", agentRepo.getAgentByAddress(address))
+        assertEquals(listOf("ob1"), vm.uiState.value.chatItems.map { it.id })
+        assertTrue(vm.awaitingOnboardCode.value)
+    }
+
+    @Test
+    fun `a new conversation keeps an open onboarding gate and nothing else`() = runTest(testDispatcher) {
+        val address = "0x" + "cd".repeat(32)
+        connectUseCase.emit(ChatEvent.ChatItemReceived(ChatItem.User(id = "u1", content = "earlier")))
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.OnboardRequired(id = "ob1", methods = listOf("invite_code")))
+        )
+        testScheduler.advanceUntilIdle()
+
+        vm.connectToAgent(address)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(listOf("ob1"), vm.uiState.value.chatItems.map { it.id })
+    }
+
+    @Test
+    fun `a new conversation drops an onboarding card that has already been answered`() = runTest(testDispatcher) {
+        val address = "0x" + "ef".repeat(32)
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.OnboardRequired(id = "ob1", methods = listOf("invite_code")))
+        )
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.OnboardSuccess(id = "os1", level = "basic", message = "Welcome"))
+        )
+        testScheduler.advanceUntilIdle()
+
+        vm.connectToAgent(address)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(emptyList<String>(), vm.uiState.value.chatItems.map { it.id })
+        assertFalse(vm.awaitingOnboardCode.value)
+    }
+
     @Test
     fun `awaitingOnboardCode clears once OnboardSuccess arrives`() {
         connectUseCase.emit(
