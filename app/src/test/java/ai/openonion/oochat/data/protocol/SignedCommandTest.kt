@@ -155,6 +155,30 @@ class SignedCommandTest {
         )
     }
 
+    /**
+     * The gate model above verifies with this client's own [KeyManager.canonicalJson],
+     * so it can only prove the client agrees with itself. These pins are what
+     * tie it to the Host: each character class here is one where JSON encoders
+     * are free to differ (escape it or not, `\t` or `\u0009`), and Python's
+     * answer is the one that counts. Expected string from
+     * `json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`.
+     */
+    @Test
+    fun `characters JSON encoders disagree on canonicalise as the Host does`() {
+        val hard = InputMsg(
+            inputId = "in-1",
+            prompt = "tab\there ctl\u0001\u001f del\u007f quote\"back\\slash sep é→你 emoji😀 </script>\r\n"
+        )
+        val payload = Json.parseToJsonElement(sign(command(hard), nonce = "n-1")).jsonObject["payload"]!!.jsonObject
+
+        assertEquals(
+            "{\"input_id\":\"in-1\",\"nonce\":\"n-1\"," +
+                "\"prompt\":\"tab\\there ctl\\u0001\\u001f del\u007f quote\\\"back\\\\slash sep é→你 emoji😀 </script>\\r\\n\"," +
+                "\"timestamp\":1760000000,\"to\":\"0xagent\",\"type\":\"INPUT\"}",
+            keyManager.canonicalJson(payload)
+        )
+    }
+
     @Test
     fun `every command type the gate covers signs and verifies`() {
         val commands = listOf(

@@ -223,13 +223,22 @@ If no identity is loaded, a command is dropped rather than sent unsigned.
   twice its old size on the wire.
 - The client's clock must be within 300 seconds of the Host's. This was
   already true for `CONNECT`; now every command is refused as well when the
-  clock is off.
-- A refusal comes back as an ordinary `ERROR`, so it surfaces as a
-  `ConnectionError` like any other. A correct client never triggers one.
+  clock is off. The client does not correct for the offset, and the refusal
+  (`unauthorized: signature expired`) reaches the user as the Host's raw text
+  rather than as advice to check the device's date and time. Tracked as a
+  known issue by `ServerErrorTextTest`'s
+  `known issue - an expired signature is not explained as the device clock`.
+- Every refusal comes back as an ordinary `ERROR`, so it surfaces as a
+  `ConnectionError` like any other. A correct client never triggers one
+  except through the clock.
+- A command dropped for want of an identity is only logged; the UI is
+  not told. CONNECT needs the same keys, so this cannot happen on a live
+  connection in practice.
 
 Covered by `SignedCommandTest`, which signs every command type with real Ed25519
 and checks it against a model of the Host's gate. That covers a byte-for-byte
-canonical form taken from Python's own `json.dumps`, a rejected replay, a fresh
+canonical form taken from Python's own `json.dumps` (including tabs, control
+characters, DEL, U+2028 and emoji, where JSON encoders differ), a rejected replay, a fresh
 nonce for each repeated command, and refusal of an edited, relabelled,
 foreign-signed, misaddressed or stale command. Also covered by the W16AAPPLE-16
 section of `AgentConnectionRobolectricTest`, which checks the frames
