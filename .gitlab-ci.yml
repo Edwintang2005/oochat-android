@@ -53,11 +53,22 @@ stages:
 # GitLab keeps those caches apart by default, so a merge request would never
 # see main's. Merge requests only read it, so they cannot change what main uses.
 .gradle-cache: &gradle-cache
-  # Dependencies change when a build script does; key on those.
+  # Keyed on the Gradle version only, not the build scripts. A merge request
+  # cannot write the cache, so with the scripts in the key any MR that edits
+  # one (adding a test to the regression suite, say) found no cache at all,
+  # downloaded every dependency and ran out of time. A cache that is a few
+  # dependencies behind costs only those downloads. Main rewrites it on every
+  # pipeline, and Gradle deletes entries unused for 30 days, so it does not
+  # grow without bound.
   key:
     files:
-      - build.gradle.kts
-      - app/build.gradle.kts
+      - gradle/wrapper/gradle-wrapper.properties
+  # Temporary: the cache main saved under the old build-script key, so the
+  # first pipelines on the new key start warm. GitLab appends -non_protected
+  # to a fallback key but not the 0_ index prefix, so the prefix is spelled out.
+  # Remove once main has saved the cache under the new key.
+  fallback_keys:
+    - 0_build_app/build-64e7d287432ceb074455feec6c84ab0098bc450c
   paths:
     - .gradle-home/caches/
     - .gradle-home/wrapper/
@@ -105,10 +116,13 @@ unit-tests:
   # Longer than the project default; the runner caps it if it allows less.
   timeout: 30m
   # The one job that writes the cache, on main only (CACHE_POLICY, above). It
-  # resolves the most dependencies: the app's and its tests'.
+  # resolves the most dependencies: the app's and its tests'. Saved even when
+  # the job fails or times out, so a cold main run still leaves what it
+  # downloaded for the next one instead of nothing.
   cache:
     <<: *gradle-cache
     policy: $CACHE_POLICY
+    when: always
   script:
     - ./gradlew :app:testDebugUnitTest
     # testDebugUnitTest and the Roborazzi tasks reconfigure the same Gradle
