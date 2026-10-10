@@ -6,7 +6,6 @@ import ai.openonion.oochat.data.repository.AgentRepository
 import ai.openonion.oochat.data.repository.ConnectionConfigRepository
 import ai.openonion.oochat.data.repository.DefaultAgentRepositoryContract
 import ai.openonion.oochat.domain.model.AgentProfile
-import ai.openonion.oochat.knownIssue
 import android.app.Application
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -51,8 +50,9 @@ class AgentViewModelTest {
         override suspend fun getAgentById(id: String): AgentProfile? =
             agents.value.find { it.id == id }
 
+        // Case-insensitive, as AgentDao's COLLATE NOCASE lookup is.
         override suspend fun getAgentByAddress(address: String): AgentProfile? =
-            agents.value.find { it.address == address }
+            agents.value.find { it.address.equals(address, ignoreCase = true) }
 
         override suspend fun createAgent(agent: AgentProfile): AgentProfile {
             createCount++
@@ -530,41 +530,57 @@ class AgentViewModelTest {
         assertNull(viewModel.uiState.value.error)
     }
 
-    // -- known issues in adding agents ---------------------------------
+    // -- adding and saving agents (W16AAPPLE-57 to -61, -81) ------------
     //
-    // The fake repository matches addresses exactly, as Room's
-    // `WHERE address = :address` and the entity's unique index do.
+    // These were the W16AAPPLE-47 suite's known issues; each now guards its fix.
 
     @Test
-    fun `known issue - the same address in another letter case is saved as a second agent`() = runTest {
+    fun `the same address in another letter case is the same agent`() = runTest {
         agentRepository.agents.value = listOf(testAgent(address = "0x" + "ab".repeat(32)))
         viewModel = buildViewModel()
 
         val created = viewModel.createAgent(name = "Again", address = "0x" + "AB".repeat(32), serverUrl = "https://x.com")
 
-        knownIssue("addresses are compared case-sensitively, so 0xAB... and 0xab... are two agents") {
-            assertFalse("the same key in capitals is the same agent", created)
-        }
+        assertFalse("the same key in capitals is the same agent", created)
+        assertEquals("Agent with this address already exists", viewModel.uiState.value.error?.message)
     }
 
     @Test
-    fun `known issue - editing an agent onto another agent's address is not caught`() = runTest {
+    fun `a new agent's address is saved in lower case`() = runTest {
+        viewModel.createAgent(name = "A", address = "0x" + "AB".repeat(32), serverUrl = "https://x.com")
+
+        assertEquals("0x" + "ab".repeat(32), agentRepository.agents.value.single().address)
+    }
+
+    @Test
+    fun `editing an agent onto another agent's address is refused`() = runTest {
         val taken = validAddress('1')
         agentRepository.agents.value = listOf(testAgent("a1", address = taken), testAgent("a2", address = validAddress('2')))
         viewModel = buildViewModel()
 
         val updated = viewModel.updateAgent(testAgent("a2", address = taken))
 
-        // In Room the unique index turns this into a SQLiteConstraintException
-        // inside AgentEditScreenWrapper's unguarded launch.
-        knownIssue("updateAgent has no duplicate-address check, unlike createAgent") {
-            assertFalse("updateAgent reported success", updated)
-            assertEquals("Agent with this address already exists", viewModel.uiState.value.error?.message)
-        }
+        // In Room the unique index turned this into a SQLiteConstraintException
+        // inside AgentEditScreenWrapper's launch.
+        assertFalse("updateAgent reported success", updated)
+        assertEquals("Agent with this address already exists", viewModel.uiState.value.error?.message)
+        assertEquals(0, agentRepository.updateCount)
     }
 
     @Test
-    fun `known issue - adding a discovered agent that is already saved saves it again`() = runTest {
+    fun `editing an agent and keeping its own address still saves`() = runTest {
+        val address = validAddress('2')
+        agentRepository.agents.value = listOf(testAgent("a2", address = address))
+        viewModel = buildViewModel()
+
+        val updated = viewModel.updateAgent(testAgent("a2", address = address.uppercase().replace("0X", "0x")))
+
+        assertTrue(updated)
+        assertEquals(address, agentRepository.agents.value.single().address)
+    }
+
+    @Test
+    fun `adding a discovered agent that is already saved leaves the saved one alone`() = runTest {
         val address = validAddress('3')
         agentRepository.agents.value = listOf(testAgent("saved-uuid", address = address))
         viewModel = buildViewModel()
@@ -573,31 +589,26 @@ class AgentViewModelTest {
         viewModel.addDiscoveredAgent(testAgent(id = address, address = address))
 
         // In Room the insert is REPLACE on a unique address, so the saved row
-        // is deleted and re-created under the new id: its API key (kept by
-        // id in secure storage) and its place in the list are lost.
-        knownIssue("addDiscoveredAgent skips the already-saved check connectToDiscoveredAgent has") {
-            assertEquals(0, agentRepository.createCount)
-        }
+        // was deleted and re-created under the new id: its API key (kept by
+        // id in secure storage) and its place in the list were lost.
+        assertEquals(0, agentRepository.createCount)
+        assertEquals(listOf("saved-uuid"), agentRepository.agents.value.map { it.id })
     }
 
     @Test
-    fun `known issue - the first agent added from discovery does not become the default`() = runTest {
+    fun `the first agent added from discovery becomes the default`() = runTest {
         viewModel.addDiscoveredAgent(testAgent(id = "d1", address = validAddress('4')))
 
-        knownIssue("addDiscoveredAgent skips the first-agent default createAgent and connectToDiscoveredAgent apply") {
-            assertEquals("d1", defaultAgentRepository.defaultAgentId)
-        }
+        assertEquals("d1", defaultAgentRepository.defaultAgentId)
     }
 
     @Test
-    fun `known issue - Add Agent tells someone who pasted a URL to use a dropdown it does not have`() = runTest {
+    fun `Add Agent's error for a URL in the address field does not mention a dropdown`() = runTest {
         viewModel.createAgent(name = "A", address = "https://agent.example.com", serverUrl = "https://x.com")
         val message = viewModel.uiState.value.error?.message.orEmpty()
 
         // The Add Agent form has no saved-agent dropdown (see
         // AgentFormScreenComposeTest); only Edit does. createAgent backs Add.
-        knownIssue("the URL-as-address error ends \"Please select from the dropdown.\", which Add Agent does not have") {
-            assertFalse(message, message.contains("dropdown"))
-        }
+        assertEquals("Agent address should be a hex address (0x...), not a URL.", message)
     }
 }

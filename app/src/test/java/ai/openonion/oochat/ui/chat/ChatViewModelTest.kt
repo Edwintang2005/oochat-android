@@ -180,7 +180,11 @@ class ChatViewModelTest {
                 throw java.io.IOException("socket refused the write")
             }
             sentMessages += SentMessage(content, agentAddress, images, files)
+            onSend?.invoke()
         }
+
+        /** Runs while a send is still in flight — lets a test have the host answer before it returns. */
+        var onSend: (() -> Unit)? = null
 
         var lastRespond: String? = null
         override suspend fun respond(answer: String) { lastRespond = answer }
@@ -1917,6 +1921,387 @@ class ChatViewModelTest {
             )
         }
 
+    // ── Runtime input: RUNTIME_INPUT_ACK / RUNTIME_INPUT_REJECTED ──────
+    //
+    // The idle hold above keeps ordinary messages out of a running turn. What
+    // reaches the host mid-turn anyway is a message whose hold timed out, and
+    // for that one the host answers with an ACK (queued) or a refusal (not).
+    // The ACK carries only the host's own id, so these tests also pin that it
+    // is linked to its message by order.
+
+    /** A connected agent that is mid-run on "first question". */
+    private fun kotlinx.coroutines.test.TestScope.givenARunningTurn() {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        vm.sendMessage("first question")
+        testScheduler.runCurrent()
+        connectUseCase.emit(startTurn("turn-1"))
+        testScheduler.runCurrent()
+        assertTrue("premise: the agent is mid-run", vm.isAgentWorking.value)
+    }
+
+    /** Sends [text] and lets the idle hold time out, so it goes out into the running turn. */
+    private fun kotlinx.coroutines.test.TestScope.sendIntoRunningTurn(text: String) {
+        vm.sendMessage(text)
+        testScheduler.runCurrent()
+        testScheduler.advanceTimeBy(ChatViewModel.TURN_WAIT_TIMEOUT_MS + 1)
+        testScheduler.runCurrent()
+    }
+
+    private fun userMessage(text: String): ChatItem.User =
+        vm.uiState.value.chatItems.filterIsInstance<ChatItem.User>().first { it.content == text }
+
+    @Test
+    fun `a message sent into a running turn shows as pending until the ACK arrives`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+
+            sendIntoRunningTurn("actually, use the staging URL")
+
+            assertEquals(
+                "premise: it did reach the wire, mid-turn",
+                listOf("first question", "actually, use the staging URL"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+            assertEquals(
+                "on the wire but unconfirmed",
+                UserMessageState.AWAITING_ACK,
+                userMessage("actually, use the staging URL").state
+            )
+
+            connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            testScheduler.runCurrent()
+
+            assertEquals(UserMessageState.SENT, userMessage("actually, use the staging URL").state)
+        }
+
+    @Test
+    fun `a message sent to an idle agent never waits for an ACK`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            connectUseCase.markConnected(address)
+
+            vm.sendMessage("hello")
+            testScheduler.runCurrent()
+
+            // It starts a turn of its own, and the host sends no ACK for that.
+            assertEquals(UserMessageState.SENT, userMessage("hello").state)
+        }
+
+    @Test
+    fun `a second message waits behind an unanswered one, so a reply can only be for the first`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("second")
+            assertEquals(UserMessageState.AWAITING_ACK, userMessage("second").state)
+
+            vm.sendMessage("third")
+            testScheduler.runCurrent()
+
+            assertEquals(
+                "nothing else goes out while an answer is owed",
+                listOf("first question", "second"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+
+            connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.SENT, userMessage("second").state)
+
+            testScheduler.advanceTimeBy(ChatViewModel.TURN_WAIT_TIMEOUT_MS + 1)
+            testScheduler.runCurrent()
+            assertEquals(
+                listOf("first question", "second", "third"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+            assertEquals(UserMessageState.AWAITING_ACK, userMessage("third").state)
+
+            connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.SENT, userMessage("third").state)
+        }
+
+    @Test
+    fun `an ACK that arrives while the send is still in flight is not lost`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            connectUseCase.onSend = {
+                connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            }
+
+            sendIntoRunningTurn("second")
+
+            // Settled by the ACK itself, not by the reply timeout running out.
+            assertEquals(UserMessageState.SENT, userMessage("second").state)
+        }
+
+    @Test
+    fun `a wrong guess that a turn was running does not let a later ACK settle the wrong message`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("second")
+            testScheduler.advanceTimeBy(ChatViewModel.RUNTIME_INPUT_REPLY_TIMEOUT_MS + 1)
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.SENT, userMessage("second").state)
+
+            sendIntoRunningTurn("third")
+            assertEquals(UserMessageState.AWAITING_ACK, userMessage("third").state)
+
+            connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.SENT, userMessage("second").state)
+            assertEquals(UserMessageState.SENT, userMessage("third").state)
+        }
+
+    @Test
+    fun `an unrelated error frame does not fail a message still waiting for its answer`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("second")
+
+            connectUseCase.emit(ChatEvent.ConnectionErrorOccurred("provider hiccup"))
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.AWAITING_ACK, userMessage("second").state)
+
+            connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.SENT, userMessage("second").state)
+        }
+
+    @Test
+    fun `a message the host keeps refusing is resent once, not forever`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("use staging")
+
+            connectUseCase.emit(ChatEvent.RuntimeInputRejected(sessionId = "sess-1", retryable = true))
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.QUEUED, userMessage("use staging").state)
+
+            testScheduler.advanceTimeBy(ChatViewModel.TURN_WAIT_TIMEOUT_MS + 1)
+            testScheduler.runCurrent()
+            assertEquals(
+                listOf("first question", "use staging", "use staging"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+
+            connectUseCase.emit(ChatEvent.RuntimeInputRejected(sessionId = "sess-1", retryable = true))
+            testScheduler.runCurrent()
+            testScheduler.advanceTimeBy(ChatViewModel.TURN_WAIT_TIMEOUT_MS * 3)
+            testScheduler.runCurrent()
+
+            assertEquals(UserMessageState.FAILED, userMessage("use staging").state)
+            assertEquals("no third attempt", 3, connectUseCase.sentMessages.size)
+        }
+
+    @Test
+    fun `a message with an image is held until the turn ends, never sent into it`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+
+            vm.sendMessage("see this", images = listOf("content://picker/1"))
+            testScheduler.runCurrent()
+            // Well inside the 2 minute cap: still held, not sent, not failed.
+            testScheduler.advanceTimeBy(ChatViewModel.TURN_WAIT_TIMEOUT_MS / 2)
+            testScheduler.runCurrent()
+
+            assertEquals(
+                "the host's mid-turn queue keeps only the text, so the image must not go yet",
+                listOf("first question"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+            assertEquals(UserMessageState.QUEUED, userMessage("see this").state)
+
+            connectUseCase.endTurn()
+            testScheduler.runCurrent()
+
+            val sent = connectUseCase.sentMessages.single { it.content == "see this" }
+            assertEquals(
+                listOf("data:image/jpeg;base64,FAKE-content://picker/1"),
+                sent.images
+            )
+            assertEquals(UserMessageState.SENT, userMessage("see this").state)
+        }
+
+    @Test
+    fun `an image message behind a stuck card fails after the cap and does not block later messages`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            // The turn ends, but a card is left RUNNING (a tool the server died in
+            // the middle of). Nothing clears it, so the agent still reads as busy.
+            connectUseCase.endTurn()
+            testScheduler.runCurrent()
+            connectUseCase.emit(startTurn("stuck-tool"))
+            testScheduler.runCurrent()
+            assertTrue("premise: busy on a stuck card alone", vm.isAgentWorking.value)
+
+            vm.sendMessage("see this", images = listOf("content://picker/1"))
+            testScheduler.runCurrent()
+            vm.sendMessage("and a follow-up")
+            testScheduler.runCurrent()
+
+            testScheduler.advanceTimeBy(ChatViewModel.TURN_WAIT_TIMEOUT_MS + 1)
+            testScheduler.runCurrent()
+            assertEquals(
+                "the attachment is not sent into the running turn",
+                listOf("first question"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+            assertEquals(UserMessageState.FAILED, userMessage("see this").state)
+
+            val saved = messageRepo.snapshot()
+                .filter { it.role == Role.USER && it.content == "see this" }
+            assertEquals(
+                "the failed message is saved, so it is still there after a restart",
+                1,
+                saved.size
+            )
+            testScheduler.advanceTimeBy(ChatViewModel.TURN_WAIT_TIMEOUT_MS + 1)
+            testScheduler.runCurrent()
+            assertEquals(
+                "and the lock was released, so the text message behind it still goes",
+                listOf("first question", "and a follow-up"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+        }
+
+    @Test
+    fun `a reply that lands while the host's answer is awaited leaves the agent idle, not busy`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("second")
+            assertEquals(UserMessageState.AWAITING_ACK, userMessage("second").state)
+
+            // The guess was wrong: "second" started its own turn, and it answers
+            // well inside the 10 s window, with no ACK.
+            connectUseCase.endTurn()
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.SENT, userMessage("second").state)
+
+            vm.sendMessage("third")
+            testScheduler.runCurrent()
+
+            assertEquals(
+                "goes out at once, without waiting out the 2 minute hold",
+                listOf("first question", "second", "third"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+        }
+
+    @Test
+    fun `a retryable refusal holds the message and resends it as a normal INPUT after the turn`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("use staging")
+
+            connectUseCase.emit(ChatEvent.RuntimeInputRejected(sessionId = "sess-1", retryable = true))
+            testScheduler.runCurrent()
+
+            assertEquals(
+                "nothing was queued on the host, so it is waiting again",
+                UserMessageState.QUEUED,
+                userMessage("use staging").state
+            )
+            assertEquals(
+                "and it has not been sent a second time yet",
+                listOf("first question", "use staging"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+
+            connectUseCase.endTurn()
+            testScheduler.runCurrent()
+
+            assertEquals(
+                "the turn is over, so it goes out once more, as an ordinary INPUT",
+                listOf("first question", "use staging", "use staging"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+            assertEquals(UserMessageState.SENT, userMessage("use staging").state)
+            assertEquals(
+                "one bubble throughout, not a second copy",
+                1,
+                vm.uiState.value.chatItems.filterIsInstance<ChatItem.User>().count { it.content == "use staging" }
+            )
+        }
+
+    @Test
+    fun `a refusal that is not retryable marks the message failed and does not resend it`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("use staging")
+
+            connectUseCase.emit(ChatEvent.RuntimeInputRejected(sessionId = "sess-1", retryable = false))
+            testScheduler.runCurrent()
+            connectUseCase.endTurn()
+            testScheduler.runCurrent()
+
+            assertEquals(UserMessageState.FAILED, userMessage("use staging").state)
+            assertEquals(
+                listOf("first question", "use staging"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+        }
+
+    @Test
+    fun `a turn that ends with no reply settles the pending message as sent`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("use staging")
+
+            // The host answers a runtime INPUT the moment it reads it. Silence
+            // until OUTPUT means this one reached an agent that had just gone
+            // idle and started a turn of its own.
+            connectUseCase.endTurn()
+            testScheduler.runCurrent()
+
+            assertEquals(UserMessageState.SENT, userMessage("use staging").state)
+        }
+
+    @Test
+    fun `losing the connection while a message is pending marks it failed`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("use staging")
+
+            connectUseCase.forceState(ConnectionState.Reconnecting)
+            testScheduler.runCurrent()
+
+            // No reply can arrive on a dead socket, and whether the host queued
+            // it is unknown — so it must not keep saying "Sending…".
+            assertEquals(UserMessageState.FAILED, userMessage("use staging").state)
+
+            // And a late ACK does not revive it: nothing is awaiting one now.
+            connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.FAILED, userMessage("use staging").state)
+        }
+
+    @Test
+    fun `an ACK with no message awaiting it is ignored`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            connectUseCase.markConnected(address)
+            vm.sendMessage("hello")
+            testScheduler.runCurrent()
+
+            connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            connectUseCase.emit(ChatEvent.RuntimeInputRejected(sessionId = "sess-1", retryable = true))
+            testScheduler.runCurrent()
+
+            assertEquals(UserMessageState.SENT, userMessage("hello").state)
+            assertEquals(
+                "and nothing was sent again",
+                listOf("hello"),
+                connectUseCase.sentMessages.map { it.content }
+            )
+        }
+
     // ── clearChat ──────────────────────────────────────────────────────
 
     @Test
@@ -3230,6 +3615,75 @@ class ChatViewModelTest {
         )
 
         assertTrue(vm.awaitingOnboardCode.value)
+    }
+
+    // ── W16AAPPLE-80: first connect to an invite-gated agent ──────────
+    //
+    // The agent is not in Room yet (Setup saves only ConnectionConfig), so the
+    // conversation is resolved after connect() returns, which it does with
+    // true once ONBOARD_REQUIRED wins. Starting that conversation used to empty
+    // the list, card included, and clear the flag: "Connecting to agent…"
+    // forever, with no way to enter the code.
+
+    @Test
+    fun `a new agent's invite-code card survives the first connect, and the banner still asks for the code`() = runTest(testDispatcher) {
+        val address = "0x" + "ab".repeat(32)
+        vm.markOnboardPending() // as LoadingScreen hands over
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.OnboardRequired(id = "ob1", methods = listOf("invite_code")))
+        )
+        testScheduler.advanceUntilIdle()
+
+        vm.connectToAgent(address)
+        testScheduler.advanceUntilIdle()
+
+        assertNotNull("the agent is saved on this connect", agentRepo.getAgentByAddress(address))
+        assertEquals(listOf("ob1"), vm.uiState.value.chatItems.map { it.id })
+        assertTrue(vm.awaitingOnboardCode.value)
+    }
+
+    @Test
+    fun `an agent first saved by the chat screen is saved with a lower-case address`() = runTest(testDispatcher) {
+        // The same form AgentViewModel and Setup save in (W16AAPPLE-57).
+        vm.connectToAgent("0x" + "AB".repeat(32))
+        testScheduler.advanceUntilIdle()
+
+        // This fake matches addresses exactly, so only the saved form is found.
+        assertNotNull(agentRepo.getAgentByAddress("0x" + "ab".repeat(32)))
+        assertNull(agentRepo.getAgentByAddress("0x" + "AB".repeat(32)))
+    }
+
+    @Test
+    fun `a new conversation keeps an open onboarding gate and nothing else`() = runTest(testDispatcher) {
+        val address = "0x" + "cd".repeat(32)
+        connectUseCase.emit(ChatEvent.ChatItemReceived(ChatItem.User(id = "u1", content = "earlier")))
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.OnboardRequired(id = "ob1", methods = listOf("invite_code")))
+        )
+        testScheduler.advanceUntilIdle()
+
+        vm.connectToAgent(address)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(listOf("ob1"), vm.uiState.value.chatItems.map { it.id })
+    }
+
+    @Test
+    fun `a new conversation drops an onboarding card that has already been answered`() = runTest(testDispatcher) {
+        val address = "0x" + "ef".repeat(32)
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.OnboardRequired(id = "ob1", methods = listOf("invite_code")))
+        )
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.OnboardSuccess(id = "os1", level = "basic", message = "Welcome"))
+        )
+        testScheduler.advanceUntilIdle()
+
+        vm.connectToAgent(address)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(emptyList<String>(), vm.uiState.value.chatItems.map { it.id })
+        assertFalse(vm.awaitingOnboardCode.value)
     }
 
     @Test

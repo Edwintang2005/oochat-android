@@ -20,6 +20,15 @@ enum class UserMessageState {
     QUEUED,
 
     /**
+     * On the wire, but sent into a turn that was still running, so the host may
+     * take it as runtime input. In that case it answers `RUNTIME_INPUT_ACK`
+     * (queued) or `RUNTIME_INPUT_REJECTED` (not taken) and the bubble stays
+     * here until one arrives. Unlike [QUEUED] it is not held back: it has been
+     * sent, so it does not pin to the tail of the running turn's output.
+     */
+    AWAITING_ACK,
+
+    /**
      * Delivery failed and will not be retried on its own. The bubble says so
      * and offers to send it again — the only state the user has to act on.
      */
