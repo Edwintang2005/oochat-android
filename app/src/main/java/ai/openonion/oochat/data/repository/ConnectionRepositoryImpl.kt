@@ -225,7 +225,9 @@ class ConnectionRepositoryImpl(
                         fetchPublishedProfile()
                         _connectionState.value = ConnectionState.Connected(
                             address = event.address,
-                            session = event.session?.toDomain()
+                            session = event.session?.toDomain(),
+                            status = event.status,
+                            serverNewer = event.serverNewer
                         )
                         event.session?.let { session ->
                             // Inline, not debounced: CONNECTED is once per

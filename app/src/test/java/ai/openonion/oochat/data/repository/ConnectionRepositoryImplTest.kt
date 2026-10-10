@@ -8,6 +8,7 @@ import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.network.AgentConnection
 import ai.openonion.oochat.network.AgentDiscoveryService
@@ -124,6 +125,13 @@ class ConnectionRepositoryImplTest {
         factory.lastListener?.onMessage(factory.lastWebSocket!!, """{"type":"CONNECTED","session_id":"$sessionId"}""")
     }
 
+    private fun simulateConnectedWith(status: String, serverNewer: Boolean) {
+        factory.lastListener?.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"CONNECTED","session_id":"sess-1","status":"$status","server_newer":$serverNewer}"""
+        )
+    }
+
     private fun simulateToolCall(toolId: String) {
         factory.lastListener?.onMessage(
             factory.lastWebSocket!!,
@@ -190,6 +198,45 @@ class ConnectionRepositoryImplTest {
 
         assertTrue(repository.connectionState.value is ConnectionState.Connected)
         assertTrue(repository.isConnected())
+    }
+
+    @Test
+    fun `the Connected state carries the status and server_newer the Host sent`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+
+        awaitUntil(retry = { simulateConnectedWith("running", serverNewer = true) }) {
+            repository.connectionState.value is ConnectionState.Connected
+        }
+
+        val connected = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(ServerSessionStatus.RUNNING, connected.status)
+        assertTrue(connected.serverNewer)
+    }
+
+    @Test
+    fun `the Connected state is UNKNOWN and not newer when the Host sent neither`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+
+        val connected = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(ServerSessionStatus.UNKNOWN, connected.status)
+        assertFalse(connected.serverNewer)
+    }
+
+    @Test
+    fun `a later CONNECTED replaces the status of the earlier one`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnectedWith("running", serverNewer = true) }) {
+            (repository.connectionState.value as? ConnectionState.Connected)?.status == ServerSessionStatus.RUNNING
+        }
+
+        awaitUntil(retry = { simulateConnectedWith("connected", serverNewer = false) }) {
+            (repository.connectionState.value as? ConnectionState.Connected)?.status == ServerSessionStatus.CONNECTED
+        }
+
+        val connected = repository.connectionState.value as ConnectionState.Connected
+        assertFalse("the earlier frame's server_newer must not linger", connected.serverNewer)
     }
 
     @Test
