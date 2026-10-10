@@ -26,6 +26,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Request
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -240,9 +241,9 @@ class ConnectionRepositoryImplTest {
 
         val burst = 200
         repeat(burst) { simulateToolCall("t$it") }
-        delay(500) // the repository's own collector passes every frame on while the consumer is stuck
+        delay(300) // lets the repository's own collector pass every frame on while the consumer is stuck
         release.complete(Unit)
-        delay(500)
+        withTimeoutOrNull(5000L) { while (delivered.count { it.startsWith("t") } < burst) delay(20) }
         collector.cancel()
 
         assertEquals((0 until burst).map { "t$it" }, delivered.filter { it.startsWith("t") })

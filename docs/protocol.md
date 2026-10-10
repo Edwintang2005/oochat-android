@@ -60,7 +60,7 @@ They are `@Serializable` Kotlin data classes and are encoded with
 | `timestamp` | Unix time in seconds. The same value is used in `payload`. |
 | `to` | Target agent address for relay mode; absent for direct mode. |
 | `session_id` | Optional persisted server-session identifier. |
-| `last_msg_id` | Optional. The Host's id for the last agent-log frame this connection handled on `session_id`; sent only on a reconnect to that same session. Unsigned, like `session_id`. See [Reconnect and replay](#reconnect-and-replay). |
+| `last_msg_id` | Optional. The Host's id for the last agent-log frame this connection handled on `session_id`; sent on a `CONNECT` for that same session (a reconnect, a switch back, the re-`CONNECT` after an invite code) and ignored by the Host unless the session is still running. Unsigned, like `session_id`. See [Reconnect and replay](#reconnect-and-replay). |
 | `session` | Optional `SessionState` snapshot. |
 
 `AgentConnection.sendConnectMessage()` builds the payload and uses
@@ -232,8 +232,8 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 For `assistant`, `thinking` text, `agent_image`, and `session_sync`, the parser
 uses `stableAssistantId()` to make replayed messages idempotent. This prevents
 the same assistant response from appearing multiple times after reconnecting.
-That is the second line of defence: `AgentConnection` first drops an exact
-repeat of any agent-log frame (see [Reconnect and replay](#reconnect-and-replay)).
+That is the second line of defence: `AgentConnection` first drops a repeat of a
+frame it has already handled (see [Reconnect and replay](#reconnect-and-replay)).
 
 The status and checkpoint events reuse the server's `id` instead. When a frame
 omits it the parser generates a UUID, so that frame cannot be correlated with a
@@ -274,27 +274,27 @@ A dropped socket does not stop the agent. The Host keeps the running turn and a
 log of everything the agent has sent on that session, so a client that comes
 back can ask for what it missed instead of losing it.
 
-**What the client sends.** Every `CONNECT` carries `session_id`. A reconnect on
-the same `AgentConnection` (the retry ladder, or `retryNow()`) also carries
-`last_msg_id`: the Host's own id for the last agent-log frame the connection
-handled on that session. The id is unsigned and sits next to `session_id` on the
-envelope; the signed `payload` is still just `timestamp`, plus `to` in relay
-mode. A socket reopened for a different conversation, or after a stale-session
-rejection (which drops the session), is on a different session and sends no
-`last_msg_id`.
+**What the client sends.** Every `CONNECT` carries `session_id`. A `CONNECT` for
+the session the connection last handled agent frames on (a retry from the ladder
+or `retryNow()`, a switch back to that session, the re-`CONNECT` after an invite
+code) also carries `last_msg_id`: the Host's own id for the last agent-log frame
+handled there. The Host ignores it unless the session is still `running`. The id
+is unsigned and sits next to `session_id` on the envelope; the signed `payload`
+is still just `timestamp`, plus `to` in relay mode. A `CONNECT` for any other
+session (a different conversation, or a stale-session rejection, which drops the
+session) sends no `last_msg_id`.
 
-**What moves the cursor.** `ProtocolParser` copies a frame's `id` into
-`ParseResult.msgId` only for the types in `AGENT_LOG_TYPES`, the ones the Host
-appends to its log: `llm_call`, `llm_result`, `thinking`, `tool_call`,
-`tool_result`, `agent_image`, `assistant`, `session_sync`, `user_input`,
-`ask_user`, `approval_needed`, `intent`, `eval`, `compact`, `tool_blocked`,
-`plan_review`, `files_received`, `diff_preview`, `ulw_turns_reached`, and
-`mode_changed`. Frames the Host writes straight to the socket (`CONNECTED`,
+**What moves the cursor.** Any frame that carries an `id`, except the frames the
+Host writes straight to the socket instead of appending to its log: `CONNECTED`,
 `OUTPUT`, `ERROR`, `PING`, `AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`,
-`SESSION_STATUS`, `ONBOARD_*`) never move it, because an id on one of those names
-nothing the Host could rewind to. `AgentConnection` stores the latest id
-together with its session and sends it only while that session is still the
-current one; `reset()` clears it.
+`SESSION_STATUS`, `ONBOARD_REQUIRED` and `ONBOARD_SUCCESS` (`HOST_FRAME_TYPES` in
+`ProtocolParser`). The Host stamps an `id` on every entry in its log, so this
+follows new event types (`plan`, `turn_result`, `provider_message`, and so on)
+without a list to maintain, whether or not the client decodes them;
+`ProtocolParser` puts it in `ParseResult.msgId`. An id on one of the excluded
+frames would name nothing the Host could rewind to. `AgentConnection` stores the
+latest id together with its session and sends it only while that session is
+still the current one; `reset()` clears it.
 
 **What the Host does.**
 
@@ -310,16 +310,22 @@ The Host finds the id by searching its log from the start and resumes after the
 can start earlier than the client expects and re-send frames it already has. The
 Host leaves de-duplication to the client.
 
-**De-duplication.** `AgentConnection.handleMessage` keeps a SHA-256 digest of
-the text of each agent-log frame it has handled (the last `MAX_SEEN_FRAMES`,
-4096) and drops an exact repeat straight after parsing, before the session is
-updated and before `Waiting` or any chat event is emitted, so a repeat changes
-nothing. The comparison is on the whole frame, not on its `id`: the Host reuses
-one id for `llm_call` and `llm_result`, for `tool_call` and `tool_result`, and
-for every status of a `compact` or an `eval`, so comparing ids would drop real
-updates. Frames with no `msgId` are never compared, which is why the snapshots
-the Host re-sends on every `CONNECT` (`AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`)
-still arrive. A dropped repeat also leaves the cursor where it was. The
+**De-duplication.** `ProtocolParser` gives each frame that becomes a chat item
+(or updates one) a `dedupeKey`: a SHA-256 of the frame as the client decodes it,
+without `session_id`. `AgentConnection.handleMessage` keeps the last
+`MAX_SEEN_FRAMES` (4096) keys and drops a frame whose key it has seen straight
+after parsing, before the session is updated and before `Waiting` or any chat
+event is emitted, so a repeat changes nothing. The key is not the raw text:
+through the relay every frame carries a `conn_id` that is new for each client
+socket, so the same logged event reads differently after a reconnect. Nor is it
+the `id` alone: the Host reuses one id for `llm_call` and `llm_result`, for
+`tool_call` and `tool_result`, and for every status of a `compact` or an `eval`,
+so comparing ids would drop real updates. Three kinds of frame have no key and
+are never dropped: the snapshots the Host re-sends on every `CONNECT`
+(`AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`); `session_sync`, whose replay carries the
+session as it is now and so never equals the original, and which is already safe
+to receive twice (a reply's id comes from its content); and frames the client
+does not decode. A dropped repeat also leaves the cursor where it was. The
 item-level idempotence described above (`stableAssistantId()`, `dedupeUI()`)
 stays as the second line of defence.
 
@@ -338,17 +344,20 @@ when full, so a stuck collector can never stall the socket. That is a bound, not
 a guarantee: a replay of more than about a thousand events arriving while the
 chat is busy can still lose the oldest.
 
-**Known gaps.** The cursor and the digests live in the `AgentConnection`
+**Known gaps.** The cursor and the keys of the frames already seen live in the `AgentConnection`
 instance, in memory. A new instance (the Reconnect button, an app restart)
 starts without them, sends no `last_msg_id`, and the Host replays the whole
 current execution; only the item-level de-duplication then protects against
 repeats. Persisting the cursor is not implemented.
 
 Covered by `OutgoingMessagesTest` (the `CONNECT` wire shape), `ProtocolParserTest`
-(`msgId` only on agent-log frames), `AgentConnectionRobolectricTest` (the cursor
-is sent, scoped to its session and kept out of the signed payload; repeats are
-dropped once and in order; snapshots still arrive; a 200-frame burst arrives
-whole), and `ConnectionRepositoryImplTest` (the same burst through the chat bus).
+(`msgId` on every log frame and no host frame; a `dedupeKey` that ignores `conn_id`
+and `session_id` and separates frames that differ), `AgentConnectionRobolectricTest`
+(the cursor is sent, scoped to its session and kept out of the signed payload;
+repeats are dropped once and in order, also when the relay names the new socket
+differently; snapshots still arrive; `reset()` and a switch away and back; a
+200-frame burst arrives whole), and `ConnectionRepositoryImplTest` (the same
+burst through the chat bus).
 
 ## HTTP exception
 

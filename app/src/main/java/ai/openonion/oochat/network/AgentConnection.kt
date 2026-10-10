@@ -80,20 +80,18 @@ class AgentConnection(
     @Volatile private var replayCursor: ReplayCursor? = null
 
     /**
-     * Digests of the agent-log frames already handled, oldest first. After a reconnect the Host
-     * re-sends frames this connection has seen, so repeats are dropped before they reach anything
-     * with a side effect. Keyed on the whole frame, not its id: the Host reuses one id for a call
-     * and its result, and for each status of a compaction.
+     * Keys ([ParseResult.dedupeKey]) of the agent-log frames already handled, oldest first. After a
+     * reconnect the Host re-sends frames this connection has seen, so repeats are dropped before they
+     * reach anything with a side effect. The key is the frame's decoded content, not its raw text or
+     * its id: the relay stamps a different conn_id on every socket, and the Host reuses one id for a
+     * call and its result and for each status of a compaction.
      */
     private val seenFrames = LinkedHashSet<String>()
 
-    /** True the first time [text] is seen, false for a repeat; see [seenFrames]. */
-    private fun isFirstSighting(text: String): Boolean {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(text.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+    /** True the first time [key] is seen, false for a repeat; see [seenFrames]. */
+    private fun isFirstSighting(key: String): Boolean {
         synchronized(seenFrames) {
-            if (!seenFrames.add(digest)) return false
+            if (!seenFrames.add(key)) return false
             while (seenFrames.size > MAX_SEEN_FRAMES) seenFrames.remove(seenFrames.first())
             return true
         }
@@ -1054,9 +1052,10 @@ class AgentConnection(
             // iteration, and toSet() iterates.
             val outstanding = synchronized(outstandingInputIds) { outstandingInputIds.toSet() }
             val result = ProtocolParser.parse(text, outstanding, isDirect)
-            // A replay re-sends frames already handled; drop repeats before any side effect.
-            // Only agent-log frames carry a msgId, so snapshots re-sent on every CONNECT still pass.
-            if (result.msgId != null && !isFirstSighting(text)) {
+            // A replay re-sends frames already handled; drop repeats before any side effect. Only
+            // frames with a dedupeKey are compared, so snapshots re-sent on every CONNECT still pass.
+            val dedupeKey = result.dedupeKey
+            if (dedupeKey != null && !isFirstSighting(dedupeKey)) {
                 FileLogger.d(LogTags.AGENT_CONN, "Dropping replayed frame: ${LogSanitizer.jsonTypeSummary(text)}")
                 return
             }

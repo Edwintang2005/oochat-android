@@ -1809,6 +1809,83 @@ class AgentConnectionRobolectricTest {
     }
 
     @Test
+    fun `repeats are dropped when the relay stamps a different conn_id on the new socket`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        fun relayed(toolId: String, connId: String) =
+            """{"session_id":"sess-1","type":"tool_call","id":"ev-$toolId","tool_id":"$toolId","name":"bash","conn_id":"$connId"}"""
+        val second = reconnectAfter(conn, listOf(relayed("t1", "conn-a"), relayed("t2", "conn-a")))
+
+        // The same logged events on a new socket, which the relay names differently.
+        listOf(relayed("t1", "conn-b"), relayed("t2", "conn-b"), relayed("t3", "conn-b"))
+            .forEach { factory.lastListener!!.onMessage(second, it) }
+
+        val ids = seen.filterIsInstance<ConnectionEvent.ChatItemReceived>().map { it.item.id }
+        assertEquals(listOf("t1", "t2", "t3"), ids)
+        conn.teardown()
+    }
+
+    @Test
+    fun `a replayed session_sync is processed, not dropped`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        val sync = """{"type":"session_sync","id":"ss-1","session":{"session_id":"sess-1","messages":[{"role":"assistant","content":"hello"}]}}"""
+        val second = reconnectAfter(conn, listOf(sync))
+
+        factory.lastListener!!.onMessage(second, sync)
+
+        // A replayed snapshot carries the session as it is now, so it is never a repeat. The reply's id comes
+        // from its content, so receiving it twice is safe.
+        assertEquals(2, seen.count { it is ConnectionEvent.ChatItemReceived && it.fromSessionSnapshot })
+        conn.teardown()
+    }
+
+    @Test
+    fun `reset forgets the last message id and the frames already seen`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(ws, fakeResponse())
+        simulateConnected("sess-1")
+        val call = """{"type":"tool_call","id":"ev-1","tool_id":"t1","name":"bash"}"""
+        factory.lastListener!!.onMessage(ws, call)
+
+        conn.reset()
+        conn.switchSession(SessionState(sessionId = "sess-1"))
+        runCurrent()
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+        factory.lastListener!!.onMessage(factory.lastWebSocket!!, call)
+
+        assertNull(sentConnect()["last_msg_id"])
+        assertEquals("after a reset the same frame is news again", 2, seen.count { it is ConnectionEvent.ChatItemReceived })
+        conn.teardown()
+    }
+
+    @Test
+    fun `returning to a session whose last message id is still held sends it again`() = runTest {
+        val conn = connectionOnVirtualClock()
+        conn.connect("0xAGENT")
+        val a = factory.lastWebSocket!!
+        factory.lastListener!!.onOpen(a, fakeResponse())
+        simulateConnected("sess-A")
+        factory.lastListener!!.onMessage(a, """{"type":"tool_call","id":"ev-a1","tool_id":"ta1","name":"bash"}""")
+
+        // Away to B, which says nothing, and back to A.
+        conn.switchSession(SessionState(sessionId = "sess-B"))
+        runCurrent()
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+        conn.switchSession(SessionState(sessionId = "sess-A"))
+        runCurrent()
+        factory.lastListener!!.onOpen(factory.lastWebSocket!!, fakeResponse())
+
+        val connect = sentConnect()
+        assertEquals("sess-A", connect["session_id"]?.jsonPrimitive?.content)
+        assertEquals("ev-a1", connect["last_msg_id"]?.jsonPrimitive?.content)
+        conn.teardown()
+    }
+
+    @Test
     fun `the socket a switch replaces cannot report its own close as a disconnect`() = runTest {
         // reopenSocket closes synchronously but opens from a launch, and the
         // generation the stale-callback guard compares against was only bumped
