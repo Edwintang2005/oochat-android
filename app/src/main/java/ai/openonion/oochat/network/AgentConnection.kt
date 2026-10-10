@@ -1176,7 +1176,9 @@ class AgentConnection(
                         ConnectionEvent.Connected(
                             address = keys?.address ?: "unknown",
                             sessionId = result.updateSessionId,
-                            session = result.updateSession
+                            session = result.updateSession,
+                            status = event.status,
+                            serverNewer = event.serverNewer
                         )
                     )
                 }

@@ -6,6 +6,7 @@ import ai.openonion.oochat.data.protocol.OipProtocol
 import ai.openonion.oochat.data.protocol.ProtocolDescriptor
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.domain.model.ChatItem
+import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.knownIssue
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.CompletableDeferred
@@ -1895,6 +1896,23 @@ class AgentConnectionRobolectricTest {
         reconnectAfter(conn, listOf(logged, ack))
 
         assertEquals("ev-1", sentConnect()["last_msg_id"]?.jsonPrimitive?.content)
+        conn.teardown()
+    }
+
+    @Test
+    fun `the CONNECTED event carries the status and server_newer the Host sent`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+
+        factory.lastListener!!.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"CONNECTED","session_id":"sess-1","status":"running","server_newer":true}"""
+        )
+
+        val connected = seen.filterIsInstance<ConnectionEvent.Connected>().single()
+        assertEquals(ServerSessionStatus.RUNNING, connected.status)
+        assertTrue(connected.serverNewer)
         conn.teardown()
     }
 

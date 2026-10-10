@@ -11,6 +11,7 @@ import ai.openonion.oochat.domain.model.CompactStatus
 import ai.openonion.oochat.domain.model.EvalStatus
 import ai.openonion.oochat.domain.model.IntentStatus
 import ai.openonion.oochat.domain.model.ReceivedFile
+import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.ThinkingStatus
 import ai.openonion.oochat.domain.model.ToolStatus
 import ai.openonion.oochat.domain.model.stableAssistantId
@@ -91,7 +92,9 @@ object ProtocolParser {
                 event = ConnectionEvent.Connected(
                     address = "", // Will be filled by caller
                     sessionId = event.sessionId,
-                    session = event.session
+                    session = event.session,
+                    status = ServerSessionStatus.fromWire(event.status),
+                    serverNewer = event.serverNewer == true
                 ),
                 updateSession = event.session,
                 updateSessionId = event.sessionId
@@ -770,7 +773,15 @@ data class ParseResult(
  * Connection events used internally by AgentConnection.
  */
 sealed class ConnectionEvent {
-    data class Connected(val address: String, val sessionId: String? = null, val session: ai.openonion.oochat.data.protocol.SessionState? = null) : ConnectionEvent()
+    data class Connected(
+        val address: String,
+        val sessionId: String? = null,
+        val session: ai.openonion.oochat.data.protocol.SessionState? = null,
+        /** What the Host says about the session just joined. */
+        val status: ServerSessionStatus = ServerSessionStatus.UNKNOWN,
+        /** The Host's copy of the session was newer than the one sent; [session] is the Host's. */
+        val serverNewer: Boolean = false
+    ) : ConnectionEvent()
     /**
      * @param fromSessionSnapshot true when this item came out of a
      *   `session_sync` frame, i.e. it is the server replaying its own history
