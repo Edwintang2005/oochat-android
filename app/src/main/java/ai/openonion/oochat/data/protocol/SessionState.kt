@@ -31,7 +31,15 @@ import kotlinx.serialization.json.jsonPrimitive
 data class SessionState(
     @SerialName("session_id") val sessionId: String? = null,
     val messages: List<SessionMessage>? = null,
-    val turn: Int? = null
+    val turn: Int? = null,
+    /**
+     * The agent's current Todo List, when the Host has one — replacement
+     * state carried on CONNECTED, session_sync and OUTPUT so a client that
+     * reconnects gets it back without waiting for the next `plan` frame.
+     * Absent is not the same as empty: absent says nothing, `[]` clears.
+     * Echoed on CONNECT like the rest of the session, as the web client does.
+     */
+    val plan: List<PlanEntryWire>? = null
 )
 
 @Serializable

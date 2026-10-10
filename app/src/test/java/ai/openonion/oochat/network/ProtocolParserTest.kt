@@ -353,7 +353,7 @@ class ProtocolParserTest {
     @Test
     fun `tool_result updates the matching ToolCall to DONE with a result`() {
         val result = parse(
-            """{"type":"tool_result","tool_id":"t1","name":"search","status":"ok","result":"sunny, 72F"}"""
+            """{"type":"tool_result","tool_id":"t1","name":"search","status":"completed","result":"sunny, 72F"}"""
         )
 
         val ev = result.event as ConnectionEvent.ChatItemUpdated

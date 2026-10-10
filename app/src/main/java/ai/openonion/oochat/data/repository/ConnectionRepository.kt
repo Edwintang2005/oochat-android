@@ -5,7 +5,9 @@ import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.NO_PLAN
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
+import ai.openonion.oochat.domain.model.PlanEntry
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -67,6 +69,14 @@ interface ConnectionRepository {
      * [agentProfile]'s skill list, which is cleared at the same moment.
      */
     val dashboardHtml: StateFlow<String?>
+
+    /**
+     * The agent's current Todo List for the active conversation, empty when
+     * it has none. Replaced whole by each `plan` frame and by the plan a
+     * session snapshot carries, so a reconnect restores it. Cleared on every
+     * [connect] and conversation switch, like [approvalMode]. See [PlanEntry].
+     */
+    val plan: StateFlow<List<PlanEntry>> get() = NO_PLAN
 
     fun observeEvents(): Flow<ChatEvent>
 

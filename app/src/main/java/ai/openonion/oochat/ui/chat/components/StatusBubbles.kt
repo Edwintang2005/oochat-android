@@ -5,10 +5,13 @@ import ai.openonion.oochat.domain.model.ThinkingStatus
 import ai.openonion.oochat.domain.model.ToolStatus
 import ai.openonion.oochat.ui.theme.spacing
 import ai.openonion.oochat.util.summarizeToolCall
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Check
@@ -19,6 +22,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -172,4 +178,111 @@ internal fun ToolCallBubble(item: ChatItem.ToolCall) {
             )
         }
     }
+}
+
+/**
+ * The agent's own reasoning — a `thinking` frame with text (re_act's intent,
+ * reflect's reflection). Collapsed to two lines under a "Thought" label so it
+ * reads as working notes beside the reply rather than as the reply itself;
+ * tap for the rest.
+ *
+ * Shown on the turn's newest thought only (see groupReasoningByTurn). When the
+ * turn had others, [earlierThoughts] holds them and a toggle above the bubble
+ * reveals them, oldest first, so the whole line of thought reads top to bottom.
+ * Whether that is open is the caller's ([showAllThoughts]): this bubble is
+ * replaced each time the agent thinks again, and the reader's choice must not
+ * be lost with it.
+ */
+@Composable
+internal fun ReasoningBubble(
+    item: ChatItem.Thinking,
+    earlierThoughts: List<ChatItem.Thinking> = emptyList(),
+    showAllThoughts: Boolean = false,
+    onToggleThoughts: (() -> Unit)? = null
+) {
+    val text = item.content.orEmpty()
+    Column(modifier = Modifier.padding(vertical = MaterialTheme.spacing.xs)) {
+        if (earlierThoughts.isNotEmpty() && onToggleThoughts != null) {
+            TextButton(
+                onClick = onToggleThoughts,
+                contentPadding = PaddingValues(horizontal = 0.dp),
+                modifier = Modifier.testTag(REASONING_TOGGLE_TAG)
+            ) {
+                Text(
+                    text = thoughtsToggleLabel(showAllThoughts, earlierThoughts.size + 1),
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            AnimatedVisibility(visible = showAllThoughts) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.sm),
+                    modifier = Modifier.padding(bottom = MaterialTheme.spacing.sm)
+                ) {
+                    earlierThoughts.forEach { thought ->
+                        Column {
+                            Text(
+                                text = reasoningLabel(thought.kind),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = thought.content.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontStyle = FontStyle.Italic,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        ExpandableSection(
+            previewContent = { expanded ->
+                Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.xs)
+                    ) {
+                        Text(
+                            text = reasoningLabel(item.kind),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        ExpandChevron(expanded, Modifier.size(16.dp))
+                    }
+                    if (!expanded) {
+                        Text(
+                            text = text,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontStyle = FontStyle.Italic,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            },
+            expandedContent = {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontStyle = FontStyle.Italic,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        )
+    }
+}
+
+/** The toggle above a [ReasoningBubble] whose turn had more than one thought. */
+internal fun thoughtsToggleLabel(showingAll: Boolean, total: Int): String =
+    if (showingAll) "Hide earlier thoughts" else "Show all $total thoughts"
+
+internal const val REASONING_TOGGLE_TAG = "reasoning_show_all"
+
+/** The label above a [ReasoningBubble] — named after the plugin step that produced it. */
+internal fun reasoningLabel(kind: String?): String = when (kind) {
+    "intent" -> "Understanding"
+    "reflect" -> "Reflection"
+    else -> "Thought"
 }

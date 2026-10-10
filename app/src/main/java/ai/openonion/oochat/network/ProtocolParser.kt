@@ -1,6 +1,7 @@
 package ai.openonion.oochat.network
 
 import ai.openonion.oochat.data.protocol.OipProtocol
+import ai.openonion.oochat.data.protocol.PlanEntryWire
 import ai.openonion.oochat.data.protocol.ServerEvent
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.data.protocol.SkillWire
@@ -10,6 +11,9 @@ import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.CompactStatus
 import ai.openonion.oochat.domain.model.EvalStatus
 import ai.openonion.oochat.domain.model.IntentStatus
+import ai.openonion.oochat.domain.model.PlanEntry
+import ai.openonion.oochat.domain.model.PlanPriority
+import ai.openonion.oochat.domain.model.PlanStatus
 import ai.openonion.oochat.domain.model.ReceivedFile
 import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.ThinkingStatus
@@ -190,16 +194,23 @@ object ProtocolParser {
             "thinking" -> {
                 val id = event.id ?: generateId()
                 if (!event.content.isNullOrBlank()) {
-                    // Streaming assistant text delivered without an
-                    // assistant event — model directly via Turn with the
-                    // content-derived id so it merges with the eventual
-                    // assistant / session_sync Turn for the same content.
-                    val tid = stableAssistantId(event.content)
+                    // The agent's reasoning (re_act.py's `intent`, reflect.py's
+                    // `reflect`), not its reply: a standalone item under the
+                    // Host's trace id, the stable identity a replay of this
+                    // frame carries too. Rendering it as a reply Turn made the
+                    // agent appear to answer before it had done anything.
+                    // With no id, a content-derived one still lets a replay
+                    // dedupe; prefixed so it can never share an id with the
+                    // reply Turn stableAssistantId gives the same text.
+                    val tid = event.id ?: "thinking-${stableAssistantId(event.content)}"
                     ParseResult(
                         event = ConnectionEvent.ChatItemReceived(
-                            ChatItem.Turn(
+                            ChatItem.Thinking(
                                 id = tid,
-                                agent = ChatItem.Agent(id = tid, content = event.content)
+                                status = ThinkingStatus.DONE,
+                                content = event.content,
+                                kind = event.kind?.takeIf { it.isNotBlank() } ?: REASONING_KIND,
+                                model = event.model
                             )
                         )
                     )
@@ -219,6 +230,11 @@ object ProtocolParser {
                 }
             }
 
+            // tool_call and tool_result are keyed on `tool_id`, the LLM's own
+            // call id, which tool_executor.py puts on both frames so a result
+            // can find its start. Each frame's `id` is its own trace entry,
+            // different between the two, so it is only a fallback for a frame
+            // with no tool_id at all.
             "tool_call" -> {
                 val id = event.toolId ?: event.id ?: generateId()
                 ParseResult(
@@ -227,7 +243,7 @@ object ProtocolParser {
                             id = id,
                             name = event.name ?: "unknown",
                             args = event.args.toDisplayMap(),
-                            status = ToolStatus.RUNNING
+                            status = toolStartStatus(event.status)
                         )
                     )
                 )
@@ -240,22 +256,24 @@ object ProtocolParser {
                         ChatItem.ToolCall(
                             id = id,
                             name = event.name ?: "",
-                            // The reference implementation itself treats
-                            // anything but "success" as an error path (see
-                            // tool_executor.py's `status in ("error",
-                            // "not_found")` on_error gate) — mirror that
-                            // instead of only recognizing the literal string
-                            // "error", which silently rendered a tool-not-
-                            // found failure as a normal DONE result.
-                            status = when (event.status) {
-                                "error", "not_found" -> ToolStatus.ERROR
-                                else -> ToolStatus.DONE
-                            },
-                            result = event.result
+                            status = toolResultStatus(event.status),
+                            result = event.result,
+                            timingMs = event.timingMs?.toLong()
                         )
                     )
                 )
             }
+
+            // A complete Todo List replacement (agent.py's _record_plan).
+            // Session state rather than a chat item: it has no id of its own
+            // and every frame supersedes the last. Its trace `id` still moves
+            // the replay cursor, like any other log frame (see msgId below).
+            // A malformed plan is dropped whole, never applied in part, and
+            // leaves the last good one showing — the web client's rule.
+            "plan" -> ParseResult(
+                event = decodePlan(event.entries)?.let { ConnectionEvent.PlanUpdated(it) }
+                    ?: ConnectionEvent.Unknown
+            )
 
             "agent_image" -> {
                 if (event.image != null) {
@@ -666,6 +684,62 @@ object ProtocolParser {
     /** `code` of the ERROR frame a host sends when a running turn refuses runtime input. */
     const val RUNTIME_INPUT_REJECTED = "RUNTIME_INPUT_REJECTED"
 
+    /** [ChatItem.Thinking.kind] for reasoning text whose frame names no kind. */
+    const val REASONING_KIND = "reasoning"
+
+    /**
+     * Validates a wire plan as a whole: every entry needs non-empty content and
+     * a known priority and status, or the plan is rejected (null) rather than
+     * shown with rows missing. Null in, null out — an absent plan says nothing,
+     * which is different from an empty one, which clears.
+     */
+    fun decodePlan(wire: List<PlanEntryWire>?): List<PlanEntry>? {
+        if (wire == null) return null
+        val entries = wire.map { entry ->
+            PlanEntry(
+                content = entry.content.takeIf { it.isNotEmpty() } ?: return rejectPlan(wire.size),
+                priority = PlanPriority.fromWire(entry.priority) ?: return rejectPlan(wire.size),
+                status = PlanStatus.fromWire(entry.status) ?: return rejectPlan(wire.size)
+            )
+        }
+        return entries
+    }
+
+    /** [decodePlan]'s inverse, for a plan kept on the session it is sent back in. */
+    fun encodePlan(entries: List<PlanEntry>): List<PlanEntryWire> =
+        entries.map { PlanEntryWire(it.content, it.priority.wire, it.status.wire) }
+
+    private fun rejectPlan(size: Int): List<PlanEntry>? {
+        // Count only: entries are the agent's own task text.
+        FileLogger.w(LogTags.PROTOCOL, "Ignoring malformed plan of $size entries")
+        return null
+    }
+
+    /**
+     * A tool start's status on the OIP wire (wire_events.py normalises
+     * `running` to `in_progress`). Absent reads as started, the same as the
+     * web client's toolStartStatus; anything else is not a state a start can
+     * be in, so it fails closed.
+     */
+    private fun toolStartStatus(status: String?): ToolStatus = when (status) {
+        null, "pending", "running", "in_progress" -> ToolStatus.RUNNING
+        else -> ToolStatus.ERROR
+    }
+
+    /**
+     * A tool result is terminal. The live wire sends `completed` or `failed`
+     * (wire_events.py's _TOOL_RESULT_STATUSES); a replayed or older trace can
+     * still carry `success`, `error`, `not_found` or `interrupted`. Only a
+     * known success reads as done: a missing or unknown status is an error, as
+     * the Host's own replay (session/ui.py) and the web client both treat it.
+     * Reading everything but `error` as success showed every `failed` tool —
+     * which is how the live wire spells failure — as having worked.
+     */
+    private fun toolResultStatus(status: String?): ToolStatus = when (status) {
+        "completed", "success", "done" -> ToolStatus.DONE
+        else -> ToolStatus.ERROR
+    }
+
     private fun generateId(): String = java.util.UUID.randomUUID().toString()
 
     /**
@@ -799,6 +873,13 @@ sealed class ConnectionEvent {
         val answeredQuestion: String? = null
     ) : ConnectionEvent()
     data class ChatItemUpdated(val item: ChatItem) : ConnectionEvent()
+
+    /**
+     * A `plan` frame: the agent's complete current Todo List, replacing any
+     * earlier one; empty clears it. Session state, not a chat item — see
+     * [PlanEntry].
+     */
+    data class PlanUpdated(val entries: List<PlanEntry>) : ConnectionEvent()
     data class OutputReceived(val result: String, val session: ai.openonion.oochat.data.protocol.SessionState?) : ConnectionEvent()
 
     /**

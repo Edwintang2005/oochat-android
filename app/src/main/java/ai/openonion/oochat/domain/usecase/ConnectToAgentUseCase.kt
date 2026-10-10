@@ -10,6 +10,7 @@ import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
+import ai.openonion.oochat.domain.model.PlanEntry
 import ai.openonion.oochat.network.AgentConnection
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.InMemoryPendingMessageSink
@@ -82,6 +83,9 @@ class ConnectToAgentUseCase(
 
     override val dashboardHtml: StateFlow<String?>
         get() = getOrCreateRepository().dashboardHtml
+
+    override val plan: StateFlow<List<PlanEntry>>
+        get() = getOrCreateRepository().plan
 
     /**
      * Connect to an agent with timeout.

@@ -4,7 +4,9 @@ import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.NO_PLAN
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
+import ai.openonion.oochat.domain.model.PlanEntry
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -52,6 +54,12 @@ interface ConnectToAgentUseCaseContract {
      * [ai.openonion.oochat.data.repository.ConnectionRepository.dashboardHtml].
      */
     val dashboardHtml: StateFlow<String?>
+
+    /**
+     * The agent's current Todo List — see
+     * [ai.openonion.oochat.data.repository.ConnectionRepository.plan].
+     */
+    val plan: StateFlow<List<PlanEntry>> get() = NO_PLAN
 
     /**
      * Observe chat events from the connected agent (Thinking / Agent

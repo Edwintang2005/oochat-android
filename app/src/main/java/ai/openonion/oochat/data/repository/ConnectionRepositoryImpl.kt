@@ -12,6 +12,7 @@ import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
+import ai.openonion.oochat.domain.model.PlanEntry
 import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.ServerTranscriptEntry
 import ai.openonion.oochat.domain.usecase.ServerErrorText
@@ -20,6 +21,7 @@ import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.ConnectionEvent
 import ai.openonion.oochat.network.InMemoryPendingMessageSink
 import ai.openonion.oochat.network.PendingMessageSink
+import ai.openonion.oochat.network.ProtocolParser
 import ai.openonion.oochat.util.FileLogger
 import ai.openonion.oochat.util.LogTags
 import ai.openonion.oochat.util.runCatchingCancellable
@@ -186,6 +188,12 @@ class ConnectionRepositoryImpl(
     private val _dashboardHtml = MutableStateFlow<String?>(null)
     override val dashboardHtml: StateFlow<String?> = _dashboardHtml.asStateFlow()
 
+    // Server-session state like the mode chip, with the same resets: cleared
+    // on every connect and conversation switch, so one conversation's Todo
+    // List never shows over another's.
+    private val _plan = MutableStateFlow<List<PlanEntry>>(emptyList())
+    override val plan: StateFlow<List<PlanEntry>> = _plan.asStateFlow()
+
     // Long-lived broadcast bus for chat events. ChatViewModel.init subscribes to observeEvents() BEFORE connect() establishes the connection, so this hot bus survives the "not yet connected" window and forwards every event once a connection exists.
     private val _chatEvents = MutableSharedFlow<ChatEvent>(
         extraBufferCapacity = AgentConnection.EVENT_BUFFER_CAPACITY,
@@ -303,6 +311,14 @@ class ConnectionRepositoryImpl(
                         // Conflated rather than written per frame — see the
                         // session-persistence block above.
                         scheduleSessionSave(event.session)
+                        // CONNECTED, session_sync and OUTPUT all carry the
+                        // Host's plan, which is how a reconnect gets it back
+                        // without waiting for the next `plan` frame. A snapshot
+                        // with no plan, or a malformed one, keeps what is shown.
+                        ProtocolParser.decodePlan(event.session.plan)?.let { _plan.value = it }
+                    }
+                    is ConnectionEvent.PlanUpdated -> {
+                        _plan.value = event.entries
                     }
                     is ConnectionEvent.ChatItemReceived -> {
                         // The one frame that is both a chat entry and connection
@@ -433,7 +449,11 @@ class ConnectionRepositoryImpl(
         _modePending.value = false
         // Agent profile and dashboard deliberately survive: same agent, only
         // a different conversation with it.
-        connection?.switchSession(sessionFor(conversationId))
+        val session = sessionFor(conversationId)
+        // The plan is the left conversation's. The one coming in is its stored
+        // plan: an idle session's CONNECTED carries no snapshot of its own.
+        showStoredPlan(session)
+        connection?.switchSession(session)
     }
 
     /**
@@ -446,6 +466,11 @@ class ConnectionRepositoryImpl(
      * is recoverable from its id alone, and the store only adds the
      * transcript and turn count on top.
      */
+    /** The plan [session] was saved with, or none — see SessionStateEntity.planJson. */
+    private fun showStoredPlan(session: SessionState?) {
+        _plan.value = ProtocolParser.decodePlan(session?.plan).orEmpty()
+    }
+
     private suspend fun sessionFor(conversationId: String?): SessionState? {
         if (conversationId == null) return null
         val stored = conversationId.let { sessionStore?.getSession(it) }
@@ -505,6 +530,7 @@ class ConnectionRepositoryImpl(
                 // point the previous agent's Home at the new agent's
                 // allowlist.
                 _dashboardHtml.value = null
+                _plan.value = emptyList()
 
                 runCatchingCancellable {
                     connection?.disconnect()
@@ -519,6 +545,9 @@ class ConnectionRepositoryImpl(
                     // see sessionFor.
                     currentConversationId = conversationId
                     val restoredSession = sessionFor(conversationId)
+                    // Shown before the socket opens: an idle session's CONNECTED
+                    // carries no snapshot, so the stored plan is the only one.
+                    showStoredPlan(restoredSession)
 
                     val newConnection = agentConnectionFactory(
                         keyManager ?: error("keyManager is required to connect"),

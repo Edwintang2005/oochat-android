@@ -6,6 +6,7 @@ import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.ui.chat.components.ChatTopBar
 import ai.openonion.oochat.ui.chat.components.InputBar
 import ai.openonion.oochat.ui.chat.components.LowBalanceBar
+import ai.openonion.oochat.ui.chat.components.PlanPanel
 import ai.openonion.oochat.ui.chat.components.VoiceInputState
 import ai.openonion.oochat.ui.common.appViewModel
 import ai.openonion.oochat.ui.components.ConnectionBanner
@@ -111,6 +112,7 @@ fun ChatScreen(
     val modePending by viewModel.modePending.collectAsState()
 
     val dashboardHtml by viewModel.dashboardHtml.collectAsState()
+    val plan by viewModel.plan.collectAsState()
     val activeSessionId by viewModel.activeSessionId.collectAsState()
     val itemTimestamps by viewModel.itemTimestamps.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
@@ -323,6 +325,8 @@ fun ChatScreen(
                 awaitingOnboardCode = awaitingOnboardCode,
                 isOffline = isOffline
             )
+
+            PlanPanel(entries = plan)
 
             MessageList(
                 items = uiState.chatItems,

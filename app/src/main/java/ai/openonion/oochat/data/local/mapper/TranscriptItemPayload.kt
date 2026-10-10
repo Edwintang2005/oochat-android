@@ -55,7 +55,13 @@ sealed class TranscriptItemPayload {
         val content: String? = null,
         val tokensTotal: Int? = null,
         val costUsd: Double? = null,
-        val contextPercent: Double? = null
+        val contextPercent: Double? = null,
+        /**
+         * [ChatItem.Thinking.kind]; absent on rows written before reasoning
+         * had one. Not serialised as `kind`: that is this codec's class
+         * discriminator.
+         */
+        @SerialName("reasoning_kind") val kind: String? = null
     ) : TranscriptItemPayload()
 
     /**
@@ -224,7 +230,8 @@ object TranscriptItemCodec {
             content = item.content,
             tokensTotal = item.tokensTotal,
             costUsd = item.costUsd,
-            contextPercent = item.contextPercent
+            contextPercent = item.contextPercent,
+            kind = item.kind
         )
         // A turn that is only a footer (no reply text of its own) — the live
         // llm_call/llm_result row. RUNNING is skipped: llm_result replaces it
@@ -336,7 +343,8 @@ object TranscriptItemCodec {
             content = payload.content,
             tokensTotal = payload.tokensTotal,
             costUsd = payload.costUsd,
-            contextPercent = payload.contextPercent
+            contextPercent = payload.contextPercent,
+            kind = payload.kind
         )
         is TranscriptItemPayload.TurnThinking -> ChatItem.Turn(
             id = payload.id,

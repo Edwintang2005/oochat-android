@@ -8,6 +8,7 @@ import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.PlanStatus
 import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.network.AgentConnection
@@ -607,6 +608,81 @@ class ConnectionRepositoryImplTest {
         repository.connect("0xAGENT2")
 
         assertEquals(null, repository.dashboardHtml.value)
+    }
+
+    // ── plan (W16AAPPLE-17) ──────────────────────────────────────────
+
+    private fun planFrame(vararg statuses: String) =
+        """{"type":"plan","id":"tr-plan","entries":[""" +
+            statuses.mapIndexed { i, s -> """{"content":"step $i","priority":"high","status":"$s"}""" }
+                .joinToString(",") + "]}"
+
+    @Test
+    fun `a plan frame replaces the whole plan`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+
+        awaitUntil(retry = { simulateFrame(planFrame("in_progress", "pending")) }) { repository.plan.value.size == 2 }
+        awaitUntil(retry = { simulateFrame(planFrame("completed")) }) { repository.plan.value.size == 1 }
+
+        assertEquals(PlanStatus.COMPLETED, repository.plan.value.single().status)
+    }
+
+    @Test
+    fun `an empty plan frame clears the plan`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+        awaitUntil(retry = { simulateFrame(planFrame("pending")) }) { repository.plan.value.isNotEmpty() }
+
+        awaitUntil(retry = { simulateFrame("""{"type":"plan","id":"tr-2","entries":[]}""") }) {
+            repository.plan.value.isEmpty()
+        }
+    }
+
+    @Test
+    fun `a malformed plan frame leaves the last good plan showing`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+        awaitUntil(retry = { simulateFrame(planFrame("in_progress")) }) { repository.plan.value.isNotEmpty() }
+
+        // One bad entry rejects the frame whole, never a partial plan.
+        simulateFrame(
+            """{"type":"plan","id":"tr-3","entries":[""" +
+                """{"content":"ok","priority":"low","status":"pending"},""" +
+                """{"content":"bad","priority":"urgent","status":"pending"}]}"""
+        )
+        // The collector handles events in order, so once the dashboard that
+        // followed it is visible, the bad plan has been handled too.
+        awaitUntil(retry = { simulateDashboard() }) { repository.dashboardHtml.value != null }
+
+        assertEquals(listOf("step 0"), repository.plan.value.map { it.content })
+    }
+
+    @Test
+    fun `a reconnect gets the plan back from the CONNECTED snapshot`() = runTest(testDispatcher) {
+        // The Host carries its plan on the session it sends with CONNECTED,
+        // so a client coming back does not have to wait for the next update.
+        repository.connect("0xAGENT")
+        awaitUntil(retry = {
+            simulateFrame(
+                """{"type":"CONNECTED","session_id":"sess-1","session":{"session_id":"sess-1",""" +
+                    """"plan":[{"content":"Run tests","priority":"high","status":"in_progress"}]}}"""
+            )
+        }) { repository.plan.value.isNotEmpty() }
+
+        assertEquals("Run tests", repository.plan.value.single().content)
+        assertEquals(PlanStatus.IN_PROGRESS, repository.plan.value.single().status)
+    }
+
+    @Test
+    fun `connecting again clears the previous plan`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+        awaitUntil(retry = { simulateFrame(planFrame("pending")) }) { repository.plan.value.isNotEmpty() }
+
+        repository.connect("0xAGENT2")
+
+        assertTrue(repository.plan.value.isEmpty())
     }
 
     @Test
