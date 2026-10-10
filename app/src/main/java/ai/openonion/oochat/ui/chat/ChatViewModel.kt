@@ -572,6 +572,15 @@ open class ChatViewModel @JvmOverloads constructor(
     private val serverTurnActive = MutableStateFlow(false)
 
     /**
+     * The messages handed to the connection while the socket was down. The connection parks them in
+     * its outbox and flushes it the moment CONNECTED lands, so their bubbles say "Waiting to send…"
+     * until the next Connected, which is when they go out. Touched only on the main dispatcher.
+     *
+     * Declared above [init] for the same reason as [serverTurnActive].
+     */
+    private val outboxedMessageIds = mutableSetOf<String>()
+
+    /**
      * The one message sent into a running turn that the host has not answered
      * yet, or null.
      *
@@ -641,6 +650,7 @@ open class ChatViewModel @JvmOverloads constructor(
                         // agent we're for — connectToAgent() runs this itself
                         // once the target is known.
                         if (_targetAgentAddress.isNotBlank()) onConnectedTo(_targetAgentAddress, null)
+                        settleOutboxedMessages()
                         // Only fires when the previous Disconnected transition
                         // force-failed a still-in-flight Thinking item (see
                         // failRunningThinking's fromDisconnect branch) — a
@@ -1518,6 +1528,31 @@ open class ChatViewModel @JvmOverloads constructor(
         pending.reply.complete(reply)
     }
 
+    /**
+     * The connection is back, and it flushed its outbox on the way: the messages typed while it was
+     * down are on the wire now. Their bubbles stop saying they are waiting, which is also what
+     * unpins them from the bottom of the list, so the reply to one lands below it instead of above.
+     *
+     * Only the bubbles that went to the outbox: one held behind a running turn is waiting for that
+     * turn, not for the socket, and stays queued.
+     */
+    private fun settleOutboxedMessages() {
+        if (outboxedMessageIds.isEmpty()) return
+        val flushed = outboxedMessageIds.toSet()
+        outboxedMessageIds.clear()
+        _uiState.update { state ->
+            state.copy(
+                chatItems = state.chatItems.map { item ->
+                    if (item is ChatItem.User && item.id in flushed && item.state == UserMessageState.QUEUED) {
+                        item.copy(state = UserMessageState.SENT)
+                    } else {
+                        item
+                    }
+                }
+            )
+        }
+    }
+
     /** Moves one of the user's own bubbles to [next]. */
     private fun setUserMessageState(messageId: String, next: UserMessageState) {
         _uiState.update { state ->
@@ -1841,6 +1876,7 @@ open class ChatViewModel @JvmOverloads constructor(
             // and setting it after the wait would resurrect a turn that already ended.
             serverTurnActive.value = true
             if (pending == null) {
+                if (offline) outboxedMessageIds += userId
                 // Off the tail once it lands, so anything the new turn emits
                 // appends after it the way it always did. Offline sends stay
                 // QUEUED until the outbox flush; only a hard failure is FAILED.

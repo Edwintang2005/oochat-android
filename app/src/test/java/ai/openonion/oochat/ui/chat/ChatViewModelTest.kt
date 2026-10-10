@@ -4623,6 +4623,145 @@ class ChatViewModelTest {
             )
         }
 
+    // ── Messages parked while offline, and the server's newer transcript ─
+
+    private fun contentsOnScreen() = vm.uiState.value.chatItems.map {
+        when (it) {
+            is ChatItem.User -> it.content
+            is ChatItem.Agent -> it.content
+            is ChatItem.Turn -> it.agent?.content.orEmpty()
+            else -> ""
+        }
+    }
+
+    @Test
+    fun `a message typed offline stops saying it is waiting once the connection is back`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            vm.sendMessage("typed offline")
+            testScheduler.runCurrent()
+            assertEquals("test setup", UserMessageState.QUEUED, userMessage("typed offline").state)
+
+            connectUseCase.markConnected(address)
+            testScheduler.runCurrent()
+
+            assertEquals(UserMessageState.SENT, userMessage("typed offline").state)
+        }
+
+    @Test
+    fun `the reply to a message typed offline lands below it`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        vm.sendMessage("typed offline")
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+
+        connectUseCase.emit(ChatEvent.OutputReceived(result = "the answer", session = null))
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("typed offline", "the answer"), contentsOnScreen())
+    }
+
+    @Test
+    fun `a message held behind a running turn stays queued when the connection comes back`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            connectUseCase.markConnected(address)
+            testScheduler.runCurrent()
+            vm.sendMessage("first")
+            testScheduler.runCurrent()
+            vm.sendMessage("second")
+            testScheduler.runCurrent()
+            assertEquals("test setup", UserMessageState.QUEUED, userMessage("second").state)
+
+            connectUseCase.markConnected(address, status = ServerSessionStatus.RUNNING)
+            testScheduler.runCurrent()
+
+            assertEquals(
+                "it is waiting for the turn, not for the socket",
+                UserMessageState.QUEUED,
+                userMessage("second").state
+            )
+        }
+
+    @Test
+    fun `a message typed offline survives the server's newer transcript, and nothing is doubled`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            seedPreviousConversation(address)
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            vm.sendMessage("typed offline")
+            testScheduler.runCurrent()
+
+            connectUseCase.markConnected(address, status = ServerSessionStatus.CONNECTED)
+            connectUseCase.emit(
+                ChatEvent.ServerTranscriptReceived(
+                    entries = listOf(
+                        ServerTranscriptEntry("hello"),
+                        ServerTranscriptEntry("answered while you were away")
+                    ),
+                    turn = 3
+                )
+            )
+            testScheduler.runCurrent()
+
+            val contents = contentsOnScreen()
+            assertEquals("the unsent message is kept", 1, contents.count { it == "typed offline" })
+            assertEquals("the reply it never saw arrives", 1, contents.count { it == "answered while you were away" })
+            assertEquals("what was already there is not doubled", 1, contents.count { it == "hello" })
+        }
+
+    @Test
+    fun `the same server transcript applied twice adds nothing the second time`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        seedPreviousConversation(address)
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        val transcript = ChatEvent.ServerTranscriptReceived(
+            entries = listOf(ServerTranscriptEntry("hello"), ServerTranscriptEntry("answered while you were away")),
+            turn = 3
+        )
+
+        connectUseCase.emit(transcript)
+        testScheduler.runCurrent()
+        connectUseCase.emit(transcript)
+        testScheduler.runCurrent()
+
+        assertEquals(1, contentsOnScreen().count { it == "answered while you were away" })
+        assertEquals(1, messageRepo.snapshot().count { it.content == "answered while you were away" })
+    }
+
+    @Test
+    fun `a reply the live stream already delivered is not doubled by the transcript`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        seedPreviousConversation(address)
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        connectUseCase.emit(ChatEvent.OutputReceived(result = "answered while you were away", session = null))
+        testScheduler.runCurrent()
+
+        connectUseCase.emit(
+            ChatEvent.ServerTranscriptReceived(
+                entries = listOf(ServerTranscriptEntry("hello"), ServerTranscriptEntry("answered while you were away")),
+                turn = 3
+            )
+        )
+        testScheduler.runCurrent()
+
+        assertEquals(1, contentsOnScreen().count { it == "answered while you were away" })
+    }
+
     @Test
     fun `onCleared leaves the shared connection alive for the next screen`() {
         // connectUseCase is app-scoped (see AppContainer): close() is terminal
