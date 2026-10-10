@@ -239,6 +239,80 @@ class ConnectionRepositoryImplTest {
         assertFalse("the earlier frame's server_newer must not linger", connected.serverNewer)
     }
 
+    private fun awaitRunning() = awaitUntil(retry = { simulateConnectedWith("running", serverNewer = true) }) {
+        (repository.connectionState.value as? ConnectionState.Connected)?.status == ServerSessionStatus.RUNNING
+    }
+
+    @Test
+    fun `releasing the status clears what the Host said and keeps the connection`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitRunning()
+
+        repository.releaseSessionStatus()
+
+        val connected = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(ServerSessionStatus.UNKNOWN, connected.status)
+        assertFalse(connected.serverNewer)
+        assertTrue(repository.isConnected())
+    }
+
+    @Test
+    fun `releasing the status leaves a connection that is not Connected alone`() = runTest(testDispatcher) {
+        repository.releaseSessionStatus()
+        assertEquals(ConnectionState.Disconnected, repository.connectionState.value)
+
+        repository.connect("0xAGENT")
+        repository.releaseSessionStatus()
+        assertEquals(ConnectionState.Connecting, repository.connectionState.value)
+    }
+
+    @Test
+    fun `moving to another conversation forgets the status of the one left`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT", conversationId = "conv-A")
+        awaitRunning()
+
+        repository.switchConversation("conv-B")
+
+        val connected = repository.connectionState.value as ConnectionState.Connected
+        assertEquals("the status was conv-A's, not conv-B's", ServerSessionStatus.UNKNOWN, connected.status)
+    }
+
+    @Test
+    fun `staying on the same conversation keeps the status`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT", conversationId = "conv-A")
+        awaitRunning()
+
+        repository.switchConversation("conv-A")
+
+        val connected = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(ServerSessionStatus.RUNNING, connected.status)
+    }
+
+    @Test
+    fun `adopting the session the connection is already on keeps the status`() = runTest(testDispatcher) {
+        // No conversation yet, so the Host mints the session (sess-1) and a conversation later takes its id.
+        repository.connect("0xAGENT")
+        awaitRunning()
+
+        repository.switchConversation("sess-1")
+
+        val connected = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(ServerSessionStatus.RUNNING, connected.status)
+    }
+
+    @Test
+    fun `a finished turn ends the running the Host reported`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitRunning()
+
+        awaitUntil(retry = { simulateFrame("""{"type":"OUTPUT","result":"done"}""") }) {
+            (repository.connectionState.value as? ConnectionState.Connected)?.status == ServerSessionStatus.UNKNOWN
+        }
+
+        val connected = repository.connectionState.value as ConnectionState.Connected
+        assertFalse("the whole answer goes, not just the status", connected.serverNewer)
+    }
+
     @Test
     fun `an OnboardRequired ChatItemReceived is forwarded through observeEvents`() = runBlocking {
         // Uses real dispatchers (not runTest's virtual scheduler) because the event has to cross two real background thread-hops that virtual time can't reliably pump.

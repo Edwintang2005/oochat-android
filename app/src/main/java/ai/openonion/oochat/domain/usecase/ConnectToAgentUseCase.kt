@@ -241,6 +241,10 @@ class ConnectToAgentUseCase(
         getOrCreateRepository().releaseServerTranscript()
     }
 
+    override fun releaseSessionStatus() {
+        getOrCreateRepository().releaseSessionStatus()
+    }
+
     override suspend fun respond(answer: String) {
         getOrCreateRepository().respond(answer)
     }

@@ -68,6 +68,14 @@ interface ConnectToAgentUseCaseContract {
     fun releaseServerTranscript() {}
 
     /**
+     * Tell the connection a screen has acted on the Host's answer to the last CONNECT and it can
+     * be let go — see
+     * [ai.openonion.oochat.data.repository.ConnectionRepository.releaseSessionStatus].
+     * Default no-op so a fake with no connection behind it needs no override.
+     */
+    fun releaseSessionStatus() {}
+
+    /**
      * Connect to an agent by address (relay mode) or URL (direct mode).
      *
      * Implementations should perform address discovery if needed and

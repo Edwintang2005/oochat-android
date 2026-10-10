@@ -12,6 +12,7 @@ import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
+import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.ServerTranscriptEntry
 import ai.openonion.oochat.domain.usecase.ServerErrorText
 import ai.openonion.oochat.network.AgentConnection
@@ -39,6 +40,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onSubscription
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -325,6 +327,9 @@ class ConnectionRepositoryImpl(
                         _chatEvents.tryEmit(ChatEvent.ChatItemUpdated(event.item))
                     }
                     is ConnectionEvent.OutputReceived -> {
+                        // A finished turn ends whatever CONNECT said was running. Before the emit
+                        // below, not after it: a screen that sees the OUTPUT must not read "running".
+                        releaseSessionStatus()
                         // Inline for the same reason as CONNECTED: OUTPUT ends
                         // a turn, so it is the durable checkpoint worth paying
                         // a write for, and there is one per turn.
@@ -373,6 +378,18 @@ class ConnectionRepositoryImpl(
         _serverTranscript.value = null
     }
 
+    override fun releaseSessionStatus() {
+        // CONNECTED said it once, but this state stays Connected for the life of the socket, and a
+        // screen created later starts from it and cannot tell a stale answer from a fresh one.
+        _connectionState.update { state ->
+            if (state is ConnectionState.Connected) {
+                state.copy(status = ServerSessionStatus.UNKNOWN, serverNewer = false)
+            } else {
+                state
+            }
+        }
+    }
+
     override suspend fun switchConversation(conversationId: String?) {
         withContext(Dispatchers.IO) {
             connectMutex.withLock {
@@ -403,6 +420,9 @@ class ConnectionRepositoryImpl(
         // Belongs to the conversation being left — a late subscriber must not
         // reconcile the new conversation against the previous one's history.
         _serverTranscript.value = null
+        // So does the Host's answer to the CONNECT being left: it described that session, and the
+        // new one's own CONNECTED has yet to arrive.
+        releaseSessionStatus()
         // Mode is a property of the server session, so switching conversation
         // makes it unknown again for the same reason connect() does: a
         // security-relevant control must not keep showing the mode of the
