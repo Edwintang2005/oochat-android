@@ -221,7 +221,7 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `ONBOARD_SUCCESS` | `id`, `level`, `message` | Creates a success card; the connection re-authenticates on the live socket. |
 | `intent` | `id`, `status`, `ack`, `is_build` | Updates a `ChatItem.IntentItem`. Status is `UNDERSTOOD` only when `status` is exactly `"understood"`, otherwise `ANALYZING`. |
 | `eval` | `id`, `status`, `passed`, `summary`, `expected`, `eval_path` | Updates a `ChatItem.EvalItem` holding the agent's self-grading result. Status is `DONE` only when `status` is exactly `"done"`, otherwise `EVALUATING`. |
-| `compact` | `id`, `status`, `context_before`, `context_after`, `context_percent`, `message`, `error` | Updates a `ChatItem.CompactItem` tracking context-window compaction. Status is `DONE` for `"done"`, `ERROR` for `"error"`, otherwise `COMPACTING` — the one status event with three terminal states rather than two. |
+| `compact` | `id`, `status`, `context_before`, `context_after`, `context_percent`, `message`, `error` | Updates a `ChatItem.CompactItem` tracking context-window compaction. Status is `DONE` for `"done"`, `ERROR` for `"error"`, otherwise `COMPACTING` — the one status event with three terminal states rather than two. Rendered as a subtle divider in the chat timeline (see [Compaction in the timeline](#compaction-in-the-timeline)). |
 | `tool_blocked` | `id`, `tool`, `reason`, `message`, `command` | Creates a `ChatItem.ToolBlockedItem` for a tool call that policy vetoed before it ran. Missing `tool`, `reason`, and `message` default to the empty string. |
 | `plan_review` | `id`, `plan_content` | Creates a `ChatItem.PlanReviewItem` and enters a waiting state until the user answers with `PLAN_REVIEW_RESPONSE`. |
 | `files_received` | `id`, `files[].name`, `files[].path` | Creates a `ChatItem.FilesReceivedItem` listing files the agent returned; an absent `files` array yields an empty list. |
@@ -241,6 +241,34 @@ omits it the parser generates a UUID, so that frame cannot be correlated with a
 later update for the same item. `llm_result` and `tool_result` are stricter:
 with no `id` (or `tool_id`) there is nothing to update, so they parse to
 `ConnectionEvent.Unknown` rather than inventing one.
+
+### Compaction in the timeline
+
+When the agent's context window fills, the server compacts it: earlier turns
+are replaced by a summary. The server announces this with two `compact`
+frames that share one `id`, for example:
+
+```json
+{"type":"compact","id":"c1","status":"compacting","context_percent":91.2}
+{"type":"compact","id":"c1","status":"done","context_before":90.0,"context_after":32.951}
+```
+
+The percentages are floats from 0 to 100, so the client parses them as
+`Double`. Both frames parse to `ConnectionEvent.ChatItemUpdated`, so the
+second replaces the first in place. `CompactDivider` (in
+`ui/chat/components/StatusItemCards.kt`) draws the item as a thin, centred,
+outline-coloured line rather than a card, because nothing about it needs an
+answer:
+
+| Status | Divider text |
+| --- | --- |
+| `COMPACTING` | "Compacting context…" |
+| `DONE` | "Context compacted: 90% → 33%" (rounded), else `message`, else "Context compacted"; followed by a hint that earlier messages were summarised and the agent may not recall their details. |
+| `ERROR` | `error`, else "Compaction failed", in the error colour. There is no memory-loss hint, because nothing was summarised. |
+
+`CompactItem` is persisted with the transcript (`TranscriptItemPayload.Compact`),
+so a restored chat still shows where the agent's memory was cut. If the stream
+ends while an item is still `COMPACTING`, `resolveRunningItems()` marks it `DONE`.
 
 ## Runtime input
 
