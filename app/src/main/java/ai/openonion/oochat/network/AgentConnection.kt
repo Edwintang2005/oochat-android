@@ -17,6 +17,7 @@ import ai.openonion.oochat.data.protocol.PongMessage
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.data.protocol.SessionStatusQuery
 import ai.openonion.oochat.data.protocol.SessionStatusQuerySession
+import ai.openonion.oochat.data.protocol.SignedCommand
 import ai.openonion.oochat.data.protocol.UlwResponse
 import ai.openonion.oochat.di.sharedHttpClient
 import ai.openonion.oochat.domain.model.ChatItem
@@ -39,6 +40,9 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -408,19 +412,18 @@ class AgentConnection(
         val timestamp = nextConnectTimestamp()
         val directNow = isDirect
         val sessionId = _currentSession?.sessionId
+        val payload = ConnectPayload(
+            timestamp = timestamp,
+            to = if (!directNow) capturedAgentAddress else null,
+            nonce = SignedCommand.newNonce()
+        )
 
-        val signature = signPayload(
-            payloadFields = buildMap<String, Any> {
-                put("timestamp", timestamp)
-                if (!directNow) put("to", capturedAgentAddress)
-            }
-        ) ?: return
+        // Signed exactly as serialised, so the bytes the Host canonicalises
+        // are the bytes signed here, signed_commands included.
+        val signature = signPayload(json.encodeToJsonElement(payload).jsonObject) ?: return
 
         val connectMsg = ConnectMessage(
-            payload = ConnectPayload(
-                timestamp = timestamp,
-                to = if (!directNow) capturedAgentAddress else null
-            ),
+            payload = payload,
             from = k.address,
             signature = signature,
             timestamp = timestamp,
@@ -452,6 +455,36 @@ class AgentConnection(
         }
         val canonical = keyManager.canonicalJson(payloadFields)
         return signer(k, canonical)
+    }
+
+    /**
+     * [command] as a v2 signed command (see [SignedCommand]), ready to send,
+     * or null when there are no keys to sign with. The CONNECT on every socket
+     * enables the Host's command gate, so an unsigned command would be refused:
+     * callers drop the frame rather than send it unsigned.
+     *
+     * @param to the agent CONNECT named; the Host refuses any other recipient.
+     */
+    private inline fun <reified T> signedCommand(command: T, to: String = agentAddress): String? {
+        val k = keys ?: run {
+            FileLogger.e(LogTags.AGENT_CONN, "signedCommand: no keys loaded, dropping")
+            return null
+        }
+        val frame = SignedCommand.envelope(
+            command = json.encodeToJsonElement(command).jsonObject,
+            to = to,
+            timestamp = System.currentTimeMillis() / 1000,
+            nonce = SignedCommand.newNonce(),
+            from = k.address,
+            sign = { payload -> signer(k, keyManager.canonicalJson(payload)) }
+        )
+        return json.encodeToString(JsonObject.serializer(), frame)
+    }
+
+    /** Sign and send [command] on the live socket, if any; see [signedCommand]. */
+    private inline fun <reified T> sendSigned(command: T) {
+        val frame = signedCommand(command) ?: return
+        webSocket?.send(frame)
     }
 
     /**
@@ -500,9 +533,9 @@ class AgentConnection(
             files = files
         )
 
-        val msgStr = json.encodeToString(msg)
+        val msgStr = signedCommand(msg, to = agentAddress)
         FileLogger.i(LogTags.AGENT_CONN, "INPUT → ${LogSanitizer.contentSummary(prompt)}")
-        val accepted = webSocket?.send(msgStr) ?: false
+        val accepted = msgStr != null && webSocket?.send(msgStr) == true
         if (!accepted) {
             // The id would otherwise sit in the set forever, and an OUTPUT
             // arriving for some other send could be matched against it.
@@ -525,7 +558,7 @@ class AgentConnection(
     }
 
     fun respond(answer: String) {
-        webSocket?.send(json.encodeToString(AskUserResponse(answer = answer)))
+        sendSigned(AskUserResponse(answer = answer))
     }
 
     /**
@@ -537,21 +570,21 @@ class AgentConnection(
      */
     fun interrupt() {
         FileLogger.i(LogTags.AGENT_CONN, "INTERRUPT → socket=${webSocket != null}")
-        webSocket?.send(json.encodeToString(InterruptMessage()))
+        sendSigned(InterruptMessage())
     }
 
     fun respondToApproval(approved: Boolean, scope: String = "once", mode: String? = null, feedback: String? = null) {
-        webSocket?.send(json.encodeToString(ApprovalResponse(approved = approved, scope = scope, mode = mode, feedback = feedback)))
+        sendSigned(ApprovalResponse(approved = approved, scope = scope, mode = mode, feedback = feedback))
     }
 
     /** Reply to a [ChatItem.PlanReviewItem][ai.openonion.oochat.domain.model.ChatItem.PlanReviewItem] checkpoint. */
     fun respondToPlanReview(message: String) {
-        webSocket?.send(json.encodeToString(PlanReviewResponse(message = message)))
+        sendSigned(PlanReviewResponse(message = message))
     }
 
     /** Reply to a [ChatItem.UlwTurnsReachedItem][ai.openonion.oochat.domain.model.ChatItem.UlwTurnsReachedItem] checkpoint. */
     fun respondToUlwTurnsReached(action: String, turns: Int? = null, mode: String? = null) {
-        webSocket?.send(json.encodeToString(UlwResponse(action = action, turns = turns, mode = mode)))
+        sendSigned(UlwResponse(action = action, turns = turns, mode = mode))
     }
 
     /**
@@ -567,7 +600,7 @@ class AgentConnection(
      */
     fun setMode(mode: String, turns: Int? = null) {
         FileLogger.i(LogTags.AGENT_CONN, "mode_change → $mode${turns?.let { " ($it turns)" } ?: ""}")
-        webSocket?.send(json.encodeToString(ModeChangeMessage(mode = mode, turns = turns)))
+        sendSigned(ModeChangeMessage(mode = mode, turns = turns))
     }
 
     /**
@@ -1393,9 +1426,10 @@ class AgentConnection(
         /**
          * The next distinct second to sign a CONNECT with — never repeating,
          * never going backwards. The server refuses a signature it has already
-         * seen (auth.py `signature_already_used`) and the signed payload is
-         * `{timestamp(seconds), to}`, so same-second twins are rejected as a
-         * replay. Process-wide, not per-instance: ConnectionRepositoryImpl
+         * seen (auth.py `signature_already_used`). The payload's nonce already
+         * keeps same-second twins distinct; this stays as a second guard, since
+         * a pre-nonce payload of `{timestamp(seconds), to}` was exactly how
+         * twins got rejected as a replay. Process-wide, not per-instance: ConnectionRepositoryImpl
          * builds a fresh AgentConnection for every connect(), so an instance
          * field would reset exactly where two CONNECTs are closest together —
          * the stale-session retry.

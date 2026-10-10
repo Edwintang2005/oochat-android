@@ -141,7 +141,7 @@ class OutgoingMessagesTest {
         val encoded = json.encodeToString(
             ConnectMessage.serializer(),
             ConnectMessage(
-                payload = ConnectPayload(timestamp = 1_760_000_000L, to = "0xagent"),
+                payload = ConnectPayload(timestamp = 1_760_000_000L, to = "0xagent", nonce = "n-1"),
                 from = "0xme",
                 signature = "sig",
                 timestamp = 1_760_000_000L,
@@ -152,7 +152,7 @@ class OutgoingMessagesTest {
 
         assertEquals(
             """{"type":"CONNECT","protocol":{"name":"oip","version":"0.1","min_version":"0.1","max_version":"0.1"},""" +
-                """"payload":{"timestamp":1760000000,"to":"0xagent"},"from":"0xme","signature":"sig",""" +
+                """"payload":{"timestamp":1760000000,"to":"0xagent","nonce":"n-1","signed_commands":1},"from":"0xme","signature":"sig",""" +
                 """"timestamp":1760000000,"to":"0xagent","session_id":"sess-42"}""",
             encoded
         )
@@ -163,7 +163,7 @@ class OutgoingMessagesTest {
         val encoded = json.encodeToString(
             ConnectMessage.serializer(),
             ConnectMessage(
-                payload = ConnectPayload(timestamp = 1_760_000_000L, to = "0xagent"),
+                payload = ConnectPayload(timestamp = 1_760_000_000L, to = "0xagent", nonce = "n-1"),
                 from = "0xme",
                 signature = "sig",
                 timestamp = 1_760_000_000L,
@@ -173,10 +173,10 @@ class OutgoingMessagesTest {
             )
         )
 
-        // Next to session_id and outside the signed payload, which stays {timestamp, to}.
+        // Next to session_id and outside the signed payload, which carries only {timestamp, to, nonce, signed_commands}.
         assertEquals(
             """{"type":"CONNECT","protocol":{"name":"oip","version":"0.1","min_version":"0.1","max_version":"0.1"},""" +
-                """"payload":{"timestamp":1760000000,"to":"0xagent"},"from":"0xme","signature":"sig",""" +
+                """"payload":{"timestamp":1760000000,"to":"0xagent","nonce":"n-1","signed_commands":1},"from":"0xme","signature":"sig",""" +
                 """"timestamp":1760000000,"to":"0xagent","session_id":"sess-42","last_msg_id":"ev-9f12"}""",
             encoded
         )
@@ -187,7 +187,7 @@ class OutgoingMessagesTest {
         val encoded = json.encodeToString(
             ConnectMessage.serializer(),
             ConnectMessage(
-                payload = ConnectPayload(timestamp = 1_760_000_000L),
+                payload = ConnectPayload(timestamp = 1_760_000_000L, nonce = "n-1"),
                 from = "0xme",
                 signature = "sig",
                 timestamp = 1_760_000_000L
@@ -196,7 +196,7 @@ class OutgoingMessagesTest {
 
         assertEquals(
             """{"type":"CONNECT","protocol":{"name":"oip","version":"0.1","min_version":"0.1","max_version":"0.1"},""" +
-                """"payload":{"timestamp":1760000000},"from":"0xme","signature":"sig","timestamp":1760000000}""",
+                """"payload":{"timestamp":1760000000,"nonce":"n-1","signed_commands":1},"from":"0xme","signature":"sig","timestamp":1760000000}""",
             encoded
         )
     }

@@ -26,10 +26,24 @@ data class ConnectMessage(
     val session: SessionState? = null
 )
 
+/**
+ * The signed half of [ConnectMessage].
+ *
+ * [nonce] keeps two CONNECTs from one identity in the same second distinct:
+ * Ed25519 is deterministic and [timestamp] has one-second resolution, and the
+ * Host refuses a signature it has seen before (websocket-protocol.md, "A
+ * signature is single-use").
+ *
+ * [signedCommands] opts this connection into the Host's v2 command gate (see
+ * [SignedCommand]). It is inside the signature so a relay cannot strip it and
+ * downgrade the socket to unsigned commands. A pre-v2 Host ignores it.
+ */
 @Serializable
 data class ConnectPayload(
     val timestamp: Long,
-    val to: String? = null
+    val to: String? = null,
+    val nonce: String,
+    @SerialName("signed_commands") val signedCommands: Int = SignedCommand.CAPABILITY
 )
 
 @Serializable
