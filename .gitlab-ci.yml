@@ -63,12 +63,6 @@ stages:
   key:
     files:
       - gradle/wrapper/gradle-wrapper.properties
-  # Temporary: the cache main saved under the old build-script key, so the
-  # first pipelines on the new key start warm. GitLab appends -non_protected
-  # to a fallback key but not the 0_ index prefix, so the prefix is spelled out.
-  # Remove once main has saved the cache under the new key.
-  fallback_keys:
-    - 0_build_app/build-64e7d287432ceb074455feec6c84ab0098bc450c
   paths:
     - .gradle-home/caches/
     - .gradle-home/wrapper/
