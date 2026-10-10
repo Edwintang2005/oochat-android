@@ -70,8 +70,10 @@ class ConnectionRepositoryImpl(
     // Defaults to in-memory, matching the pre-outbox behaviour, so existing tests construct this unchanged.
     private val pendingMessageSink: PendingMessageSink = InMemoryPendingMessageSink(),
     // Factory, not a shared instance, so tests can inject an AgentConnection backed by a fake WebSocketFactory (see AgentConnectionRobolectricTest) instead of opening a real WebSocket.
+    // Whether the app is on screen; see AgentConnection's isAppVisible.
+    private val isAppVisible: () -> Boolean = { true },
     private val agentConnectionFactory: (KeyManager, String) -> AgentConnection = { km, url ->
-        AgentConnection(km, url, pendingMessageSink = pendingMessageSink)
+        AgentConnection(km, url, pendingMessageSink = pendingMessageSink, isAppVisible = isAppVisible)
     },
     // Reads the relay's directory for the agent's published skills. Defaults to
     // null so the existing tests construct this unchanged and make no HTTP call.
@@ -299,6 +301,14 @@ class ConnectionRepositoryImpl(
                             ),
                             retryable = false
                         )
+                    }
+                    is ConnectionEvent.ReconnectRefused -> {
+                        // Fatal although this attempt connected before: it is
+                        // the reconnect that was refused, so the session it
+                        // was resuming is gone and only the user can try again
+                        // (W16AAPPLE-82). Retryable, so Reconnect is offered.
+                        FileLogger.e(LogTags.CONN_REPO, "→ Error (reconnect refused): ${event.message}")
+                        _connectionState.value = ConnectionState.Error(message = ServerErrorText.humanize(event.message))
                     }
                     is ConnectionEvent.Disconnected -> {
                         FileLogger.i(LogTags.CONN_REPO, "→ Disconnected")

@@ -44,8 +44,7 @@ data class ConnectPayload(
     val timestamp: Long,
     val to: String? = null,
     val nonce: String,
-    @SerialName("signed_commands")
-    val signedCommands: Int = SignedCommand.CAPABILITY
+    @SerialName("signed_commands") val signedCommands: Int = SignedCommand.CAPABILITY
 )
 
 @Serializable
@@ -75,41 +74,21 @@ data class FileAttachment(
 )
 
 /**
- * Content for an EXEC payload.
+ * Run one named tool directly, with no LLM turn (ws_router/exec.py); answered
+ * by an `EXEC_RESULT` carrying the same [execId].
  *
- * [to] is the remote agent's address, including on direct connections.
- * [timestamp] is Unix time in seconds.
- * [nonce] is freshly generated for each call, representing 'number used once'.
+ * A v2 signed command like [InputMsg]: AgentConnection.signedCommand wraps it
+ * with [SignedCommand.envelope], which adds `to`, `timestamp` and `nonce` to the
+ * signed payload. [to] also stays at the top level, where a pre-v2 relay routes
+ * on it.
  */
 @Serializable
-data class ExecPayload(
+data class ExecMessage(
     @SerialName("exec_id") val execId: String,
     val tool: String,
     val args: JsonObject,
     val to: String,
-    val timestamp: Long,
-    val nonce: String,
     val type: String = "EXEC"
-)
-
-/**
- * Complete EXEC frame.
- *
- * The top-level command fields support compatibility hosts and relay
- * routing. Their defaults copy the signed payload so the send path
- * can construct this message from one payload.
- */
-@Serializable
-data class ExecMessage(
-    val payload: ExecPayload,
-    val from: String,
-    val signature: String,
-    val type: String = "EXEC",
-    @SerialName("exec_id") val execId: String = payload.execId,
-    val tool: String = payload.tool,
-    val args: JsonObject = payload.args,
-    val to: String = payload.to,
-    val timestamp: Long = payload.timestamp
 )
 
 @Serializable

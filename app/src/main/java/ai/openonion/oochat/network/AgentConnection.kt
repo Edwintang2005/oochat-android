@@ -5,6 +5,7 @@ import ai.openonion.oochat.data.protocol.ApprovalResponse
 import ai.openonion.oochat.data.protocol.AskUserResponse
 import ai.openonion.oochat.data.protocol.ConnectMessage
 import ai.openonion.oochat.data.protocol.ConnectPayload
+import ai.openonion.oochat.data.protocol.ExecMessage
 import ai.openonion.oochat.data.protocol.FileAttachment
 import ai.openonion.oochat.data.protocol.InputMsg
 import ai.openonion.oochat.data.protocol.InterruptMessage
@@ -22,6 +23,7 @@ import ai.openonion.oochat.data.protocol.UlwResponse
 import ai.openonion.oochat.di.sharedHttpClient
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.usecase.ServerErrorText
 import ai.openonion.oochat.domain.usecase.StaleSessionDetector
 import ai.openonion.oochat.util.FileLogger
 import ai.openonion.oochat.util.LogSanitizer
@@ -46,7 +48,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import okhttp3.OkHttpClient
@@ -81,9 +82,16 @@ class AgentConnection(
     // Defaults to in-memory so this class stays constructible with no Room
     // dependency; production wiring injects the Room-backed sink so a queued
     // message survives process death.
-    private val pendingMessageSink: PendingMessageSink = InMemoryPendingMessageSink()
+    private val pendingMessageSink: PendingMessageSink = InMemoryPendingMessageSink(),
+    // Whether the app is on screen. The slow retry against an offline agent
+    // (W16AAPPLE-79) only runs while it is: in the background it waits for
+    // retryNow(), which the chat screen calls when it comes back.
+    private val isAppVisible: () -> Boolean = { true }
 ) {
     @Volatile private var webSocket: WebSocket? = null
+
+    /** Every signed timestamp's source: the device clock, corrected by the server's (W16AAPPLE-90). */
+    private val hostClock = HostClock()
     @Volatile private var keys: KeyManager.AddressData? = null
     @Volatile private var _currentSession: SessionState? = null
     val currentSession: SessionState? get() = _currentSession
@@ -144,6 +152,31 @@ class AgentConnection(
     // it does against a live one — only CONNECTED separates them.
     @Volatile private var reachedAgentThisCycle = false
     @Volatile private var neverReachedReason: String? = null
+
+    // True from sending a CONNECT on the current socket until the Host answers
+    // it. An ERROR in that window is the answer, not a business error about a
+    // turn, which is what lets a refused reconnect end (W16AAPPLE-82).
+    @Volatile private var awaitingConnected = false
+
+    // Whether the current socket was opened after this cycle had already
+    // reached the agent: a reconnect, or a conversation switch. Captured when
+    // the socket opens, so the gate's own re-CONNECT on the first socket
+    // (reauthenticate) is never mistaken for one.
+    @Volatile private var socketIsReconnect = false
+
+    // Gives up on a reconnect socket whose CONNECT the Host never answers; see
+    // [awaitConnectedOrRetry].
+    @Volatile private var connectedWaitJob: Job? = null
+
+    // Whether the relay said "Agent not connected" on the current attempt, and
+    // whether the ladder has since run out and fallen back to [pollOfflineAgent]
+    // (W16AAPPLE-79). Reset by every attempt and by CONNECTED respectively.
+    @Volatile private var lastAttemptAgentOffline = false
+    @Volatile private var pollingOfflineAgent = false
+
+    // The relay's own words for the last "agent offline" verdict, which the
+    // ladder repeats when it gives up on a cycle that had reached the agent.
+    @Volatile private var offlineVerdict: String? = null
 
     // True from the moment the agent sends ONBOARD_REQUIRED until it
     // confirms ONBOARD_SUCCESS. While true, a dropped/failed socket is left
@@ -356,6 +389,10 @@ class AgentConnection(
      * own close as a [ConnectionEvent.Disconnected].
      */
     private fun retireSocket(reason: String) {
+        // Its CONNECT can no longer be answered, so nothing is waiting on it.
+        awaitingConnected = false
+        connectedWaitJob?.cancel()
+        connectedWaitJob = null
         settlePendingExecs("The agent connection was replaced")
         socketGeneration.incrementAndGet()
         webSocket?.close(1000, reason)
@@ -387,6 +424,8 @@ class AgentConnection(
             isReconnecting = false
             reachedAgentThisCycle = false
             neverReachedReason = null
+            lastAttemptAgentOffline = false
+            pollingOfflineAgent = false
             isConnectionReady = false
             onboardingPending = false
             submitWasRejected = false
@@ -419,8 +458,8 @@ class AgentConnection(
         // an envelope-timestamp of TS1+1 silently fails signature check.
         // Snapshot isDirect as well: switching it mid-call would produce
         // the same mismatch shape for the "to" field.
-        // Never repeats, never goes backwards — see nextConnectTimestamp.
-        val timestamp = nextConnectTimestamp()
+        // The server's time, not the device's (W16AAPPLE-90); see nextConnectTimestamp.
+        val timestamp = nextConnectTimestamp(hostClock.nowSeconds())
         val directNow = isDirect
         val sessionId = _currentSession?.sessionId
         val payload = ConnectPayload(
@@ -445,7 +484,33 @@ class AgentConnection(
 
         val msgStr = json.encodeToString(connectMsg)
         FileLogger.i(LogTags.AGENT_CONN, "CONNECT → $capturedAgentAddress sid=${connectMsg.sessionId ?: "<new>"}")
+        awaitingConnected = true
         ws.send(msgStr)
+        if (socketIsReconnect) awaitConnectedOrRetry()
+    }
+
+    /**
+     * Give a reconnect's CONNECT [CONNECTED_TIMEOUT_MS] to be answered, then
+     * treat the silence as a failed rung (W16AAPPLE-82). The Host keeps a
+     * socket open whatever it thinks of the CONNECT, so without this a reconnect
+     * it never answers sat on "Reconnecting…" until the user intervened.
+     *
+     * Only for reconnects: a first connect is already bounded by
+     * ConnectToAgentUseCase's own timeout, and a gate (ONBOARD_REQUIRED) answers
+     * in place of CONNECTED, which [trackOnboardingState] treats as an answer.
+     */
+    private fun awaitConnectedOrRetry() {
+        val generation = socketGeneration.get()
+        connectedWaitJob?.cancel()
+        connectedWaitJob = reconnectScope.launch {
+            delay(CONNECTED_TIMEOUT_MS)
+            synchronized(this@AgentConnection) {
+                if (!awaitingConnected || generation != socketGeneration.get()) return@launch
+                FileLogger.w(LogTags.AGENT_CONN, "No CONNECTED within ${CONNECTED_TIMEOUT_MS}ms — treating the reconnect as failed")
+                retireSocket("No answer to CONNECT")
+            }
+            attemptReconnect()
+        }
     }
 
     /**
@@ -484,7 +549,7 @@ class AgentConnection(
         val frame = SignedCommand.envelope(
             command = json.encodeToJsonElement(command).jsonObject,
             to = to,
-            timestamp = System.currentTimeMillis() / 1000,
+            timestamp = hostClock.nowSeconds(),
             nonce = SignedCommand.newNonce(),
             from = k.address,
             sign = { payload -> signer(k, keyManager.canonicalJson(payload)) }
@@ -541,20 +606,8 @@ class AgentConnection(
         tool: String,
         args: JsonObject,
         recipient: String
-    ): String? {
-        val command = JsonObject(
-            mapOf(
-                "type" to JsonPrimitive("EXEC"),
-                "exec_id" to JsonPrimitive(execId),
-                "tool" to JsonPrimitive(tool),
-                "args" to args,
-                // Keep the routing field at the top level for pre-v2 relays;
-                // the shared envelope also copies it into the signed payload.
-                "to" to JsonPrimitive(recipient)
-            )
-        )
-        return signedCommand(command, to = recipient)
-    }
+    ): String? =
+        signedCommand(ExecMessage(execId = execId, tool = tool, args = args, to = recipient), to = recipient)
 
     /** Wait for EXEC result, if timeout remove pending EXEC commands. */
     private suspend fun awaitExecResult(
@@ -606,6 +659,12 @@ class AgentConnection(
      * Some EXEC refusals arrive as a plain ERROR without an exec_id. The Host
      * uses these for requests that cannot be accepted at all, so complete the
      * waiting EXEC calls instead of leaving them to time out.
+     *
+     * @return true when the ERROR was about EXEC alone and has now been shown
+     *   on its cards, so the generic chat error would only repeat it. That is
+     *   `provider_station_only` (session.py's EXEC branch). "authenticate first"
+     *   refuses every command on the socket, so it settles the cards but still
+     *   returns false: a message refused alongside them must still be reported.
      */
     private fun failPendingExecsForRefusal(event: ConnectionEvent.ConnectionError): Boolean {
         // Keep this list narrow. A generic `unauthorized: ...` ERROR may have
@@ -623,7 +682,7 @@ class AgentConnection(
                 settled = true
             }
         }
-        return settled
+        return settled && providerRestriction
     }
 
     /** Release every caller waiting on a socket that can no longer answer. */
@@ -813,7 +872,7 @@ class AgentConnection(
             return
         }
 
-        val timestamp = System.currentTimeMillis() / 1000
+        val timestamp = hostClock.nowSeconds()
 
         val payloadFields = buildMap<String, Any> {
             put("timestamp", timestamp)
@@ -904,6 +963,9 @@ class AgentConnection(
         FileLogger.i(LogTags.AGENT_CONN, "Reconnect: retrying now (foreground)")
         reconnectJob?.cancel()
         reconnectAttempts = 0
+        // A fresh ladder, so if it runs out again the verdict is said again
+        // over the "Reconnecting…" it showed meanwhile.
+        pollingOfflineAgent = false
         reconnectJob = reconnectScope.launch {
             runCatchingCancellable {
                 // Re-checked under stopAfterProtocolRejection's lock: retryNow
@@ -939,13 +1001,22 @@ class AgentConnection(
             return
         }
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            FileLogger.w(LogTags.AGENT_CONN, "Max reconnect attempts reached ($MAX_RECONNECT_ATTEMPTS)")
             isConnectionReady = false
-            val reason = neverReachedReason
-            _events.tryEmit(
-                if (reason != null) ConnectionEvent.ConnectionError(reason)
-                else ConnectionEvent.Disconnected
-            )
+            if (lastAttemptAgentOffline && !onboardingPending) {
+                // The relay says the agent itself is gone, which is the one
+                // failure that ends by the agent coming back on its own (a
+                // Host restart, a laptop waking). Say so once, then keep
+                // looking at a slow pace instead of waiting for the user
+                // (W16AAPPLE-79).
+                if (!pollingOfflineAgent) {
+                    FileLogger.w(LogTags.AGENT_CONN, "Max reconnect attempts reached ($MAX_RECONNECT_ATTEMPTS), agent offline — polling every ${OFFLINE_POLL_INTERVAL_MS}ms")
+                    reportGaveUp()
+                }
+                pollOfflineAgent()
+                return
+            }
+            FileLogger.w(LogTags.AGENT_CONN, "Max reconnect attempts reached ($MAX_RECONNECT_ATTEMPTS)")
+            reportGaveUp()
             return
         }
 
@@ -968,6 +1039,94 @@ class AgentConnection(
                 attemptReconnect()
             }
         }
+    }
+
+    /**
+     * The ladder's last word. When the server explained why we never got
+     * through, the give-up repeats that explanation instead of a bare
+     * [ConnectionEvent.Disconnected], which the UI reads (correctly) as a
+     * network drop. On a cycle that had already reached the agent the
+     * explanation goes out as [ConnectionEvent.ReconnectRefused]: a plain
+     * ConnectionError there is read as a business error on a live session and
+     * leaves the banner on "Reconnecting…".
+     */
+    private fun reportGaveUp() {
+        val reason = neverReachedReason
+        val offline = offlineVerdict?.takeIf { lastAttemptAgentOffline }
+        _events.tryEmit(
+            when {
+                reason != null -> ConnectionEvent.ConnectionError(reason)
+                offline != null -> ConnectionEvent.ReconnectRefused(offline)
+                else -> ConnectionEvent.Disconnected
+            }
+        )
+    }
+
+    /**
+     * Try an offline agent again every [OFFLINE_POLL_INTERVAL_MS] once the
+     * ladder has run out (W16AAPPLE-79). Quiet: no [ConnectionEvent.Reconnecting]
+     * per try, so the screen keeps showing why it is not connected rather than
+     * flicking between that and "Reconnecting…" once a minute.
+     *
+     * Only while the app is on screen. A try that comes due in the background
+     * is skipped, and [isReconnecting] stays set so [retryNow], which the chat
+     * screen calls on its way back, goes at once with a fresh ladder.
+     */
+    private fun pollOfflineAgent() {
+        pollingOfflineAgent = true
+        isReconnecting = true
+        reconnectJob = reconnectScope.launch {
+            delay(OFFLINE_POLL_INTERVAL_MS)
+            if (!isReconnecting) return@launch
+            if (!isAppVisible()) {
+                FileLogger.i(LogTags.AGENT_CONN, "Agent offline, app in background — waiting for the foreground to try again")
+                return@launch
+            }
+            FileLogger.i(LogTags.AGENT_CONN, "Agent offline — trying again")
+            runCatchingCancellable {
+                // Same lock as stopAfterProtocolRejection; see retryNow.
+                synchronized(this@AgentConnection) {
+                    if (!protocolRejected) {
+                        retireSocket("Polling an offline agent")
+                        openWebSocket(agentAddress, directUrl)
+                    }
+                }
+            }.onFailure { e ->
+                FileLogger.e(LogTags.AGENT_CONN, "Offline poll failed: ${e.message}")
+                attemptReconnect()
+            }
+        }
+    }
+
+    /**
+     * End a reconnect whose CONNECT the server answered with ERROR
+     * (W16AAPPLE-82). The Host keeps the socket open after an ERROR, so no
+     * close ever arrived to climb the ladder, and the repository read the
+     * ERROR as a business error on a live session: the screen sat on
+     * "Reconnecting…" for good.
+     *
+     * The relay's "Agent not connected" is a failed rung like any dropped
+     * socket, since the agent can be back in a moment. Anything else is the
+     * Host refusing us (trust, signature, the clock), which another identical
+     * CONNECT will not change: the ladder stops and the refusal is reported
+     * as [ConnectionEvent.ReconnectRefused], so the screen shows why and offers
+     * Reconnect.
+     */
+    private fun endRefusedReconnect(message: String) {
+        if (lastAttemptAgentOffline) {
+            synchronized(this) { retireSocket("Agent offline") }
+            attemptReconnect()
+            return
+        }
+        FileLogger.w(LogTags.AGENT_CONN, "Reconnect refused by the server — stopping the ladder")
+        synchronized(this) {
+            isReconnecting = false
+            isConnectionReady = false
+            reconnectJob?.cancel()
+            reconnectJob = null
+            retireSocket("Reconnect refused")
+        }
+        _events.tryEmit(ConnectionEvent.ReconnectRefused(message))
     }
 
     /**
@@ -1088,6 +1247,11 @@ class AgentConnection(
         // Stale-callback guard, see socketGeneration doc.
         val generationForThisSocket = socketGeneration.incrementAndGet()
 
+        // A new attempt: nothing has been asked or answered on it yet.
+        awaitingConnected = false
+        lastAttemptAgentOffline = false
+        socketIsReconnect = reachedAgentThisCycle
+
         webSocket = webSocketFactory.create(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 // Deliberately does NOT reset the reconnect ladder — see the
@@ -1095,6 +1259,10 @@ class AgentConnection(
                 // a socket exists; whether the agent is on the other end of it
                 // is the next frame's news.
                 FileLogger.i(LogTags.AGENT_CONN, "WS opened, sending CONNECT")
+                // Before the CONNECT, so even the first signature on this
+                // socket carries the server's time. A replaced socket's reading
+                // is not this connection's any more.
+                if (generationForThisSocket == socketGeneration.get()) hostClock.observe(response)
                 sendConnectMessage(webSocket, addressForThisSocket)
             }
 
@@ -1173,6 +1341,10 @@ class AgentConnection(
         when (item) {
             is ChatItem.OnboardRequired -> {
                 onboardingPending = true
+                // The gate is the Host's answer to our CONNECT; the next one is
+                // the user's to give, however long that takes.
+                awaitingConnected = false
+                connectedWaitJob?.cancel()
                 // Only the first prompt of a cycle names the card; a re-prompt
                 // has already been pinned to it by [alignGateCardId].
                 lastOnboardRequiredId = lastOnboardRequiredId ?: item.id
@@ -1361,6 +1533,10 @@ class AgentConnection(
                     isReconnecting = false
                     reachedAgentThisCycle = true
                     neverReachedReason = null
+                    awaitingConnected = false
+                    connectedWaitJob?.cancel()
+                    lastAttemptAgentOffline = false
+                    pollingOfflineAgent = false
                     flushPendingMessages()
                     // The frame's session payload is forwarded, not dropped:
                     // it is the server's own transcript for this agent, and
@@ -1401,6 +1577,17 @@ class AgentConnection(
                     // Kept only while the handshake has never landed, so it can
                     // only ever explain a connection that never worked.
                     if (!reachedAgentThisCycle) neverReachedReason = event.message
+                    // With a CONNECT outstanding this ERROR is the answer to it:
+                    // the attempt is over, whatever happens next.
+                    val answersConnect = awaitingConnected
+                    if (answersConnect) {
+                        awaitingConnected = false
+                        connectedWaitJob?.cancel()
+                        if (ServerErrorText.isAgentOffline(event.message)) {
+                            lastAttemptAgentOffline = true
+                            offlineVerdict = event.message
+                        }
+                    }
                     // Submission rejection recovery; see schedulePostRejectionReconnect doc.
                     if (onboardingPending) {
                         submitWasRejected = true
@@ -1422,7 +1609,10 @@ class AgentConnection(
                                 ConnectionEvent.ChatItemReceived(
                                     ChatItem.OnboardingFailed(
                                         id = existingId,
-                                        reason = event.message
+                                        // The card is read by the user, so it gets the
+                                        // same wording a connection error would (a wrong
+                                        // clock refuses ONBOARD_SUBMIT too).
+                                        reason = ServerErrorText.humanize(event.message)
                                     )
                                 )
                             )
@@ -1445,6 +1635,10 @@ class AgentConnection(
                         // this class's own auto-reconnect ladder instead
                         // — a layer that use case never sees.
                         recoverFromStaleSession()
+                    } else if (answersConnect && socketIsReconnect) {
+                        // A reconnect refused, rather than a business error on
+                        // a live session; see endRefusedReconnect.
+                        endRefusedReconnect(event.message)
                     } else {
                         // Pre-onboarding ERRORs (mid-conversation server
                         // crash, signature mismatch on an unrelated frame,
@@ -1553,6 +1747,12 @@ class AgentConnection(
         /** Reconnect attempts before the ladder gives up; see attemptReconnect. */
         internal const val MAX_RECONNECT_ATTEMPTS = 5
 
+        /** How long a reconnect's CONNECT may go unanswered; see awaitConnectedOrRetry. */
+        internal const val CONNECTED_TIMEOUT_MS = 15_000L
+
+        /** How often an offline agent is tried once the ladder has run out; see pollOfflineAgent. */
+        internal const val OFFLINE_POLL_INTERVAL_MS = 60_000L
+
         /**
          * Per-agent cap on the *base64* bytes those messages carry, which the
          * row count says nothing about: 50 rows is 50 pointers or ~666MB of
@@ -1588,21 +1788,41 @@ class AgentConnection(
         /** The last timestamp signed into a CONNECT; see [nextConnectTimestamp]. */
         @Volatile private var lastConnectTimestamp = 0L
 
+        /** The clock reading that last timestamp was taken from; see [nextConnectTimestamp]. */
+        @Volatile private var lastConnectClock = 0L
+
         /**
-         * The next distinct second to sign a CONNECT with — never repeating,
-         * never going backwards. The server refuses a signature it has already
-         * seen (auth.py `signature_already_used`). The payload's nonce already
-         * keeps same-second twins distinct; this stays as a second guard, since
-         * a pre-nonce payload of `{timestamp(seconds), to}` was exactly how
-         * twins got rejected as a replay. Process-wide, not per-instance: ConnectionRepositoryImpl
-         * builds a fresh AgentConnection for every connect(), so an instance
-         * field would reset exactly where two CONNECTs are closest together —
-         * the stale-session retry.
+         * The second to sign a CONNECT with: [nowSeconds], bumped past the last
+         * one so CONNECTs in a burst never share a second. The server refuses a
+         * signature it has already seen (auth.py `signature_already_used`). The
+         * payload's nonce already keeps same-second twins distinct; this stays
+         * as a second guard, since a pre-nonce payload of `{timestamp(seconds), to}`
+         * was exactly how twins got rejected as a replay. Process-wide, not
+         * per-instance: ConnectionRepositoryImpl builds a fresh AgentConnection
+         * for every connect(), so an instance field would reset exactly where
+         * two CONNECTs are closest together — the stale-session retry.
+         *
+         * Except when the clock itself has gone back by more than
+         * [CLOCK_CORRECTION_SECONDS]: the user fixed a wrong date, or the
+         * server's correction arrived (W16AAPPLE-90). That is followed, not
+         * overridden. Holding every CONNECT past the old, wrong second is what
+         * kept a phone refused after its clock had been put right. It is the
+         * clock reading that is compared, not the last timestamp, which a burst
+         * can push well ahead of the clock without anything being wrong.
+         *
+         * @param nowSeconds the server-corrected time; see [HostClock].
          */
         @Synchronized
-        internal fun nextConnectTimestamp(): Long =
-            maxOf(System.currentTimeMillis() / 1000, lastConnectTimestamp + 1)
-                .also { lastConnectTimestamp = it }
+        internal fun nextConnectTimestamp(nowSeconds: Long = System.currentTimeMillis() / 1000): Long {
+            val clockWentBack = nowSeconds < lastConnectClock - CLOCK_CORRECTION_SECONDS
+            val next = if (clockWentBack) nowSeconds else maxOf(nowSeconds, lastConnectTimestamp + 1)
+            lastConnectClock = nowSeconds
+            lastConnectTimestamp = next
+            return next
+        }
+
+        /** How far the clock must move back to count as corrected; see [nextConnectTimestamp]. */
+        private const val CLOCK_CORRECTION_SECONDS = 5L
 
         /**
          * Exponential reconnect backoff: 2s, 4s, 8s, 16s, 32s, capped at 32s
