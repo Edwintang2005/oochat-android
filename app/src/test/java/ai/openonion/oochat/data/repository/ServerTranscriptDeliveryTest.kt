@@ -113,7 +113,7 @@ class ServerTranscriptDeliveryTest {
             relayUrl = "ws://test.invalid",
             sessionStore = MemoryStore(),
             pendingMessageSink = sink,
-            agentConnectionFactory = { km, url -> AgentConnection(km, url, factory, pendingMessageSink = sink) }
+            agentConnectionFactory = { km, url -> AgentConnection(km, url, factory, signer = { _, _ -> "fake-signature" }, pendingMessageSink = sink) }
         )
         // One long-lived subscriber, exactly as ChatViewModel does in init.
         scope.launch {

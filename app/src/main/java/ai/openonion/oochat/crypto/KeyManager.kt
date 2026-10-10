@@ -8,6 +8,7 @@ import android.content.SharedPreferences
 import cash.z.ecc.android.bip39.Mnemonics
 import cash.z.ecc.android.bip39.toSeed
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -314,6 +315,21 @@ class KeyManager internal constructor(
     private fun toJsonValue(value: Any?): JsonElement {
         return when (value) {
             null -> JsonNull
+            // Already-serialised values, e.g. a signed command's payload. Ahead
+            // of the Map/List branches because JsonObject is a Map and
+            // JsonArray a List; a primitive would otherwise reach toString()
+            // and be quoted twice.
+            is JsonObject -> buildJsonObject {
+                for ((k, v) in value.entries.sortedBy { it.key }) {
+                    put(k, toJsonValue(v))
+                }
+            }
+            is JsonArray -> buildJsonArray {
+                for (item in value) {
+                    add(toJsonValue(item))
+                }
+            }
+            is JsonElement -> value
             is String -> JsonPrimitive(value)
             is Boolean -> JsonPrimitive(value)
             is Int -> JsonPrimitive(value)

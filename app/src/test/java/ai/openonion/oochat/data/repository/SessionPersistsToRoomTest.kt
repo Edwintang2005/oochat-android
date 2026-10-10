@@ -82,7 +82,7 @@ class SessionPersistsToRoomTest {
             relayUrl = "ws://test.invalid",
             sessionStore = SessionStoreImpl(db.sessionStateDao()),
             pendingMessageSink = sink,
-            agentConnectionFactory = { km, url -> AgentConnection(km, url, factory, pendingMessageSink = sink) }
+            agentConnectionFactory = { km, url -> AgentConnection(km, url, factory, signer = { _, _ -> "fake-signature" }, pendingMessageSink = sink) }
         )
     }
 

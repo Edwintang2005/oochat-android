@@ -54,7 +54,7 @@ They are `@Serializable` Kotlin data classes and are encoded with
 | --- | --- |
 | `type` | Always `"CONNECT"`. |
 | `protocol` | The OIP protocol descriptor, `OipProtocol.DESCRIPTOR`. See below. |
-| `payload` | `ConnectPayload(timestamp, to)`; this is the signed payload. |
+| `payload` | `ConnectPayload(timestamp, to, nonce, signed_commands)`; this is the signed payload. `nonce` is a fresh random UUID; `signed_commands` is always `1`. See [Signed commands](#signed-commands). |
 | `from` | The local Ed25519 address. |
 | `signature` | Hex Ed25519 signature over the canonical payload JSON. |
 | `timestamp` | Unix time in seconds. The same value is used in `payload`. |
@@ -67,6 +67,11 @@ They are `@Serializable` Kotlin data classes and are encoded with
 `KeyManager.canonicalJson()` followed by `KeyManager.sign()` to create the
 signature. Keeping one timestamp for the signed payload and envelope avoids a
 signature mismatch.
+
+The Host refuses a CONNECT signature it has seen before. Ed25519 is
+deterministic and the timestamp is in whole seconds, so the `nonce` is what
+keeps two CONNECTs in the same second distinct. `AgentConnection.nextConnectTimestamp()`
+also never repeats a second, as a second guard.
 
 #### Protocol descriptor
 
@@ -151,9 +156,91 @@ A reconnect on the same
 [Reconnect and replay](#reconnect-and-replay).
 
 
+### Signed commands
+
+Every `CONNECT` signs `payload.signed_commands: 1`. This turns on the Host's
+v2 command gate for that socket. After that, every application command must
+carry its own Ed25519 signature, or the Host answers with an `ERROR` and does
+not act on it. Without the gate, anyone able to write to the socket, such as a
+relay, could inject commands or replay captured ones under the identity
+`CONNECT` authenticated. The capability is inside the signature, so it cannot
+be stripped to downgrade the socket. A pre-v2 Host ignores it.
+
+The envelope is built by `SignedCommand.envelope()` in
+`app/src/main/java/ai/openonion/oochat/data/protocol/SignedCommand.kt`, and
+`AgentConnection.signedCommand()` signs it with the connection's identity:
+
+```json
+{
+  "type": "APPROVAL_RESPONSE", "approved": true, "scope": "once",
+  "payload": {
+    "type": "APPROVAL_RESPONSE", "approved": true, "scope": "once",
+    "to": "0x3d40…", "timestamp": 1760000000, "nonce": "550e8400-…"
+  },
+  "from": "0xClientPublicKey",
+  "signature": "…"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| top-level fields | The command exactly as it was sent before v2, for a pre-v2 Host, which never reads `payload`. |
+| `payload` | The whole command plus `to`, `timestamp` and `nonce`. This is what is signed, and the only part a v2 Host executes. |
+| `payload.to` | The agent address `CONNECT` named. Signed on direct connections too, even though a direct `INPUT` carries no top-level `to`, so a command captured for one agent cannot be delivered to another. |
+| `payload.timestamp` | Unix time in seconds. The Host refuses one more than 300 seconds from its own clock. |
+| `payload.nonce` | A fresh random UUID per frame. Two identical commands in the same second would otherwise sign identical bytes, and the second would be refused as a replay. |
+| `from` | The local Ed25519 address. |
+| `signature` | Hex Ed25519 signature over `KeyManager.canonicalJson(payload)`: keys sorted at every depth, no whitespace, non-ASCII as UTF-8. |
+
+The Host's checks, in `authenticated_command_payload` in
+`connectonion/network/host/auth.py`, and the `ERROR` message each one sends:
+
+| Check | Refusal |
+| --- | --- |
+| Timestamp within 300 seconds | `unauthorized: signature expired` |
+| `payload.to` is the agent `CONNECT` named (relay connections) | `unauthorized: wrong recipient` |
+| Signature verifies against `from` | `unauthorized: invalid signature` |
+| `from` is the identity that opened the socket | `unauthorized: command signer does not own this connection` |
+| `payload.type` equals the frame's `type` | `unauthorized: signed command type mismatch` |
+| `payload.nonce` present | `unauthorized: signed command nonce required` |
+| Signature never used before (a shared, persistent ledger) | `unauthorized: signed command already used` |
+
+Signed: `INPUT`, `ASK_USER_RESPONSE`, `APPROVAL_RESPONSE`, `INTERRUPT`,
+`PLAN_REVIEW_RESPONSE`, `ULW_RESPONSE` and `mode_change`. These are the frames
+the Host leaves unsigned on purpose (`SignedCommand.EXEMPT_TYPES`, matching
+`exempt` in `ws_router/session.py`):
+
+- `CONNECT` and `ONBOARD_SUBMIT` carry their own signatures.
+- `PONG` is a transport frame.
+- `SESSION_STATUS` on a live socket uses the identity `CONNECT` verified.
+
+If no identity is loaded, a command is dropped rather than sent unsigned.
+
+**Costs and gaps.**
+
+- An `INPUT`'s images and files are carried twice: once at the top level and
+  once in the signed payload. A message with attachments is therefore about
+  twice its old size on the wire.
+- The client's clock must be within 300 seconds of the Host's. This was
+  already true for `CONNECT`; now every command is refused as well when the
+  clock is off.
+- A refusal comes back as an ordinary `ERROR`, so it surfaces as a
+  `ConnectionError` like any other. A correct client never triggers one.
+
+Covered by `SignedCommandTest`, which signs every command type with real Ed25519
+and checks it against a model of the Host's gate. That covers a byte-for-byte
+canonical form taken from Python's own `json.dumps`, a rejected replay, a fresh
+nonce for each repeated command, and refusal of an edited, relabelled,
+foreign-signed, misaddressed or stale command. Also covered by the W16AAPPLE-16
+section of `AgentConnectionRobolectricTest`, which checks the frames
+`AgentConnection` actually sends, the `CONNECT` capability and nonce, and that
+`PONG` and `SESSION_STATUS` stay unsigned.
+
 ### `INPUT` — `InputMsg`
 
-`INPUT` sends one user prompt.
+`INPUT` sends one user prompt. It is a [signed command](#signed-commands); the
+table below lists the command fields, which appear both at the top level and in
+the signed `payload`.
 
 | Field | Meaning |
 | --- | --- |
@@ -170,6 +257,10 @@ the latest `input_id`; an `OUTPUT` for a different input is ignored in relay
 mode.
 
 ### Control and response frames
+
+Every frame below except `PONG` is a [signed command](#signed-commands).
+`mode_change` (`ModeChangeMessage`, sent by `AgentConnection.setMode()`) is
+signed the same way.
 
 | Frame model | Wire `type` | When it is sent |
 | --- | --- | --- |
