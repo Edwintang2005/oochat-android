@@ -5,6 +5,7 @@ import ai.openonion.oochat.data.protocol.OipProtocol
 import ai.openonion.oochat.data.protocol.ProtocolDescriptor
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.domain.model.ChatItem
+import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.knownIssue
 import androidx.test.core.app.ApplicationProvider
@@ -13,6 +14,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -2289,9 +2291,11 @@ class AgentConnectionRobolectricTest {
         assertEquals(agent, connect["to"]?.jsonPrimitive?.content)
         assertEquals(timestamp, connect["timestamp"]?.jsonPrimitive?.content)
         assertEquals(keyManager.load()!!.address, connect["from"]?.jsonPrimitive?.content)
+        assertEquals(1, payload["signed_commands"]?.jsonPrimitive?.intOrNull)
+        assertTrue("CONNECT needs a nonce", !payload["nonce"]?.jsonPrimitive?.content.isNullOrEmpty())
         assertEquals(
             "the relay verifies the signature over exactly these bytes",
-            """{"nonce":"$nonce","signed_commands":1,"timestamp":$timestamp,"to":"$agent"}""",
+            keyManager.canonicalJson(payload),
             signed.single()
         )
         conn.teardown()
@@ -2305,12 +2309,12 @@ class AgentConnectionRobolectricTest {
 
         val connect = openAndReadConnect()
         val payload = connect["payload"]!!.jsonObject
-        val timestamp = payload["timestamp"]!!.jsonPrimitive.content
-        val nonce = payload["nonce"]!!.jsonPrimitive.content
 
         assertFalse("payload: $payload", payload.containsKey("to"))
         assertFalse("envelope: $connect", connect.containsKey("to"))
-        assertEquals("""{"nonce":"$nonce","signed_commands":1,"timestamp":$timestamp}""", signed.single())
+        assertEquals(1, payload["signed_commands"]?.jsonPrimitive?.intOrNull)
+        assertTrue("CONNECT needs a nonce", !payload["nonce"]?.jsonPrimitive?.content.isNullOrEmpty())
+        assertEquals(keyManager.canonicalJson(payload), signed.single())
         conn.teardown()
     }
 
@@ -2620,6 +2624,227 @@ class AgentConnectionRobolectricTest {
 
         assertEquals("the new cycle's ladder must run", 3, factory.socketCount)
         conn.teardown()
+    }
+
+    @Test
+    fun `executeTool does not send when connection is not ready`() = runTest {
+        connection.connect("0xAGENT")
+
+        val outcome = connection.executeTool(
+            execId = "exec-1",
+            tool = "shell",
+            args = Json.parseToJsonElement("""{"command":"pwd"}""").jsonObject,
+            recipient = "0xAGENT"
+        )
+
+        assertEquals(
+            ExecOutcome.NotSent("The agent connection is not ready"),
+            outcome
+        )
+        assertTrue(factory.lastWebSocket!!.sentMessages.isEmpty())
+    }
+
+    @Test
+    fun `executeTool sends signed EXEC and returns matching success`() = runTest {
+        connection.connect("0xAGENT")
+        simulateConnected()
+        factory.lastWebSocket!!.sentMessages.clear()
+
+        val pendingOutcome = async {
+            connection.executeTool(
+                execId = "exec-success",
+                tool = "shell",
+                args = Json.parseToJsonElement("""{"command":"pwd"}""").jsonObject,
+                recipient = "0xAGENT"
+            )
+        }
+        runCurrent()
+
+        val frame = Json.parseToJsonElement(
+            factory.lastWebSocket!!.sentMessages.single()
+        ).jsonObject
+        val payload = frame.getValue("payload").jsonObject
+
+        assertEquals(
+            json("""{"type":"EXEC","exec_id":"exec-success","tool":"shell","args":{"command":"pwd"}}"""),
+            signedCommand(factory.lastWebSocket!!.sentMessages.single())
+        )
+        assertEquals("EXEC", frame.getValue("type").jsonPrimitive.content)
+        assertEquals("exec-success", frame.getValue("exec_id").jsonPrimitive.content)
+        assertEquals("shell", frame.getValue("tool").jsonPrimitive.content)
+        assertEquals("pwd", frame.getValue("args").jsonObject["command"]!!.jsonPrimitive.content)
+        assertEquals("0xAGENT", frame.getValue("to").jsonPrimitive.content)
+        assertEquals("exec-success", payload.getValue("exec_id").jsonPrimitive.content)
+        assertTrue("EXEC needs a nonce", !payload.getValue("nonce").jsonPrimitive.content.isNullOrEmpty())
+        assertEquals("fake-signature", frame.getValue("signature").jsonPrimitive.content)
+
+        factory.lastListener!!.onMessage(
+            factory.lastWebSocket!!,
+            """
+            {
+              "type": "EXEC_RESULT",
+              "exec_id": "exec-success",
+              "status": "success",
+              "result": "/workspace",
+              "duration_ms": 12
+            }
+            """.trimIndent()
+        )
+
+        assertEquals(
+            ExecOutcome.Success(result = "/workspace", durationMs = 12.0),
+            pendingOutcome.await()
+        )
+    }
+
+    @Test
+    fun `executeTool returns matching error`() = runTest {
+        connection.connect("0xAGENT")
+        simulateConnected()
+        factory.lastWebSocket!!.sentMessages.clear()
+
+        val pendingOutcome = async {
+            connection.executeTool(
+                execId = "exec-error",
+                tool = "shell",
+                args = Json.parseToJsonElement("""{"command":"missing-command"}""").jsonObject,
+                recipient = "0xAGENT"
+            )
+        }
+        runCurrent()
+
+        factory.lastListener!!.onMessage(
+            factory.lastWebSocket!!,
+            """
+            {
+              "type": "EXEC_RESULT",
+              "exec_id": "exec-error",
+              "status": "error",
+              "error": "Command not found",
+              "duration_ms": 4
+            }
+            """.trimIndent()
+        )
+
+        assertEquals(
+            ExecOutcome.Error(message = "Command not found", durationMs = 4.0),
+            pendingOutcome.await()
+        )
+    }
+
+    @Test
+    fun `pending EXEC is settled when the connection is torn down`() = runTest {
+        connection.connect("0xAGENT")
+        simulateConnected()
+
+        val pendingOutcome = async {
+            connection.executeTool(
+                execId = "exec-closed",
+                tool = "shell",
+                args = Json.parseToJsonElement("""{"command":"pwd"}""").jsonObject,
+                recipient = "0xAGENT"
+            )
+        }
+        runCurrent()
+
+        connection.teardown()
+
+        assertEquals(
+            ExecOutcome.Unknown("The agent connection was closed"),
+            withTimeoutOrNull(1_000) { pendingOutcome.await() }
+        )
+    }
+
+    @Test
+    fun `provider station refusal completes pending EXEC as an error`() = runTest {
+        connection.connect("0xAGENT")
+        simulateConnected()
+        val events = collectEvents()
+
+        val pendingOutcome = async {
+            connection.executeTool(
+                execId = "exec-work-room",
+                tool = "shell",
+                args = Json.parseToJsonElement("""{"command":"pwd"}""").jsonObject,
+                recipient = "0xAGENT"
+            )
+        }
+        runCurrent()
+
+        factory.lastListener!!.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"ERROR","code":"provider_station_only","message":"Use the Claude Work Room"}"""
+        )
+
+        assertEquals(
+            ExecOutcome.Error("Use the Claude Work Room"),
+            withTimeoutOrNull(1_000) { pendingOutcome.await() }
+        )
+        events.awaitDrained()
+        assertTrue(events.seen.none { it is ConnectionEvent.ConnectionError })
+    }
+
+    @Test
+    fun `authentication refusal completes pending EXEC as an error`() = runTest {
+        connection.connect("0xAGENT")
+        simulateConnected()
+
+        val pendingOutcome = async {
+            connection.executeTool(
+                execId = "exec-auth",
+                tool = "shell",
+                args = Json.parseToJsonElement("""{"command":"pwd"}""").jsonObject,
+                recipient = "0xAGENT"
+            )
+        }
+        runCurrent()
+
+        factory.lastListener!!.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"ERROR","message":"authenticate first"}"""
+        )
+
+        assertEquals(
+            ExecOutcome.Error("authenticate first"),
+            withTimeoutOrNull(1_000) { pendingOutcome.await() }
+        )
+    }
+
+    @Test
+    fun `EXEC results are matched when commands finish out of order`() = runTest {
+        connection.connect("0xAGENT")
+        simulateConnected()
+        factory.lastWebSocket!!.sentMessages.clear()
+
+        val first = async {
+            connection.executeTool(
+                execId = "exec-1",
+                tool = "shell",
+                args = Json.parseToJsonElement("""{"command":"first"}""").jsonObject,
+                recipient = "0xAGENT"
+            )
+        }
+        val second = async {
+            connection.executeTool(
+                execId = "exec-2",
+                tool = "shell",
+                args = Json.parseToJsonElement("""{"command":"second"}""").jsonObject,
+                recipient = "0xAGENT"
+            )
+        }
+        runCurrent()
+
+        factory.lastListener!!.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"EXEC_RESULT","exec_id":"exec-2","status":"success","result":"second result"}"""
+        )
+        factory.lastListener!!.onMessage(
+            factory.lastWebSocket!!,
+            """{"type":"EXEC_RESULT","exec_id":"exec-1","status":"success","result":"first result"}"""
+        )
+
+        assertEquals(ExecOutcome.Success("first result"), first.await())
+        assertEquals(ExecOutcome.Success("second result"), second.await())
     }
 
     private companion object {

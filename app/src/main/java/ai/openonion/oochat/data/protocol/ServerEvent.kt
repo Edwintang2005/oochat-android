@@ -14,6 +14,7 @@ data class ServerEvent(
     val type: String,
     val result: String? = null,
     @SerialName("input_id") val inputId: String? = null,
+    @SerialName("exec_id") val execId: String? = null,
     @SerialName("session_id") val sessionId: String? = null,
     val session: SessionState? = null,
     // CONNECTED only: the Host's copy of the session is newer than the one this CONNECT carried, and

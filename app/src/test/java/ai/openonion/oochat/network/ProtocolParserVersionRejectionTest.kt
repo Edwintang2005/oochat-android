@@ -109,7 +109,13 @@ class ProtocolParserVersionRejectionTest {
         // session.py's Work Room refusal: the other ERROR that carries a code.
         val result = parse("""{"type":"ERROR","code":"provider_station_only","message":"Use the Claude Work Room"}""")
 
-        assertEquals(ConnectionEvent.ConnectionError("Use the Claude Work Room"), result.event)
+        assertEquals(
+            ConnectionEvent.ConnectionError(
+                message = "Use the Claude Work Room",
+                code = "provider_station_only"
+            ),
+            result.event
+        )
     }
 
     @Test

@@ -6,6 +6,8 @@ import ai.openonion.oochat.data.repository.AgentRepository
 import ai.openonion.oochat.data.repository.ConnectionConfigRepository
 import ai.openonion.oochat.data.repository.DefaultAgentRepositoryContract
 import ai.openonion.oochat.domain.model.AgentProfile
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import android.app.Application
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -140,6 +142,7 @@ class AgentViewModelTest {
         override fun liveSessionIdFor(agentAddress: String): String? = null
         override fun observeEvents(): Flow<ai.openonion.oochat.domain.model.ChatEvent> = kotlinx.coroutines.flow.emptyFlow()
         override suspend fun sendMessage(content: String, agentAddress: String, images: List<String>?, files: List<ai.openonion.oochat.domain.model.OutgoingFileAttachment>?) {}
+        override suspend fun executeTool(request: ExecRequest): ExecOutcome = ExecOutcome.NotSent("Not used in AgentViewModel tests")
         override suspend fun respond(answer: String) {}
         override suspend fun interrupt() {}
         override suspend fun respondToApproval(approved: Boolean, scope: String, mode: String?, feedback: String?) {}

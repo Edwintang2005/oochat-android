@@ -145,7 +145,15 @@ class ConnectionRepositorySessionPersistenceTest {
             relayUrl = "ws://test.invalid",
             sessionStore = store,
             pendingMessageSink = sink,
-            agentConnectionFactory = { km, url -> AgentConnection(km, url, factory, signer = { _, _ -> "fake-signature" }, pendingMessageSink = sink) }
+            agentConnectionFactory = { km, url ->
+                AgentConnection(
+                    km,
+                    url,
+                    factory,
+                    signer = { _, _ -> "fake-signature" },
+                    pendingMessageSink = sink
+                )
+            }
         )
     }
 

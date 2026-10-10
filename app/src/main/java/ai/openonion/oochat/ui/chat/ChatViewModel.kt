@@ -18,6 +18,8 @@ import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ChatListFlags
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.PlanEntry
 import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.SessionUsageTotals
@@ -73,6 +75,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.UUID
 
 /**
  * How long an unproven recognizer gets to say anything at all before the
@@ -289,6 +292,13 @@ open class ChatViewModel @JvmOverloads constructor(
         .map { it.error }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    // Direct EXEC commands have their own short-lived UI list rather than
+    // becoming ordinary chat transcript items. Each item keeps its execId so
+    // concurrent commands can complete in any order without updating the
+    // wrong result card.
+    private val _execItems = MutableStateFlow<List<ExecUiItem>>(emptyList())
+    val execItems: StateFlow<List<ExecUiItem>> = _execItems.asStateFlow()
+
     // Connection state from use case (single source of truth)
     val connectionState: StateFlow<ConnectionState> = connectUseCase.connectionState
 
@@ -382,6 +392,8 @@ open class ChatViewModel @JvmOverloads constructor(
     val hapticFeedbackEnabled: StateFlow<Boolean> = appSettings.hapticFeedback
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
     val soundEffectsEnabled: StateFlow<Boolean> = appSettings.soundEffects
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val developerToolsEnabled: StateFlow<Boolean> = appSettings.developerToolsEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     // Backing var kept for the many internal reads below (unchanged call
@@ -1061,6 +1073,7 @@ open class ChatViewModel @JvmOverloads constructor(
      * lost when this runs a second time from the Connected handler.
      */
     private suspend fun restoreLocalSession(agentAddress: String, forceNew: Boolean) {
+        val previousSessionId = conversationHistory.activeSessionId.value
         when (val resume = conversationHistory.ensureActiveSession(agentAddress, viewModelScope, forceNew)) {
             is SessionResume.Unchanged -> {}
             // A new conversation starts empty, except for an onboarding gate
@@ -1083,6 +1096,9 @@ open class ChatViewModel @JvmOverloads constructor(
                 )
                 _uiState.update { it.copy(chatItems = merged) }
             }
+        }
+        if (conversationHistory.activeSessionId.value != previousSessionId) {
+            clearExecItems()
         }
         // Now that a conversation is resolved, a replay that landed before it
         // finally has somewhere to go.
@@ -1458,6 +1474,7 @@ open class ChatViewModel @JvmOverloads constructor(
             // same guard in connectToAgent.
             failRunningThinking(persist = false)
             if (conversationHistory.startNewSession()) {
+                clearExecItems()
                 _uiState.update { it.copy(chatItems = emptyList()) }
                 // The id is minted here, not at the first message, so the
                 // re-CONNECT already names this chat's own session.
@@ -1473,7 +1490,9 @@ open class ChatViewModel @JvmOverloads constructor(
      */
     fun switchToSession(sessionId: String) {
         launchScoped {
-            if (conversationHistory.activeSessionId.value != sessionId) {
+            val switchingConversation = conversationHistory.activeSessionId.value != sessionId
+            if (switchingConversation) {
+                clearExecItems()
                 failRunningThinking(persist = false)
             }
             val items = conversationHistory.switchToSession(sessionId)
@@ -2279,6 +2298,64 @@ open class ChatViewModel @JvmOverloads constructor(
     }
 
     /**
+     * Send a direct tool command and expose its eventual EXEC_RESULT to the
+     * UI. The pending item is added synchronously so the user sees immediate
+     * feedback while the connection waits for the agent.
+     */
+    fun executeTool(tool: String, argsJson: String) {
+        val execId = UUID.randomUUID().toString()
+        val agentAddress = _targetAgentAddress
+
+        _execItems.update { items ->
+            items + ExecUiItem(execId = execId, tool = tool)
+        }
+
+        if (agentAddress.isBlank()) {
+            completeExec(execId, ExecOutcome.NotSent("No agent is connected"))
+            return
+        }
+
+        val request = ExecRequest(
+            execId = execId,
+            tool = tool,
+            argsJson = argsJson,
+            agentAddress = agentAddress
+        )
+
+        launchScoped {
+            val outcome = executeRequestSafely(request)
+            completeExec(request.execId, outcome)
+        }
+    }
+
+    private suspend fun executeRequestSafely(request: ExecRequest): ExecOutcome {
+        return runCatchingCancellable {
+            connectUseCase.executeTool(request)
+        }.getOrElse { error ->
+            ExecOutcome.Unknown(error.message ?: "EXEC command failed")
+        }
+    }
+
+    private fun completeExec(execId: String, outcome: ExecOutcome) {
+        _execItems.update { items ->
+            items.map { item ->
+                if (item.execId == execId) item.copy(outcome = outcome) else item
+            }
+        }
+    }
+
+    /** Remove one direct EXEC card from the current conversation's UI. */
+    fun dismissExec(execId: String) {
+        _execItems.update { items ->
+            items.filterNot { it.execId == execId }
+        }
+    }
+
+    private fun clearExecItems() {
+        _execItems.value = emptyList()
+    }
+
+    /**
      * Ask the agent to gracefully stop its current run — it finishes the
      * current step and returns a closing message rather than stopping
      * mid-tool-call (see [ai.openonion.oochat.data.protocol.InterruptMessage]'s
@@ -2408,6 +2485,7 @@ open class ChatViewModel @JvmOverloads constructor(
             // Wipe the active session's persisted log too, so the drawer's
             // preview/count for this conversation reflects the clear.
             conversationHistory.clearActiveSession()
+            clearExecItems()
             _uiState.update { it.copy(chatItems = emptyList()) }
         }
     }

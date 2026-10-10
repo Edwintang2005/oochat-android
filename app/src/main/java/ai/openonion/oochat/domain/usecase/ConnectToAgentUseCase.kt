@@ -9,6 +9,8 @@ import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.PlanEntry
 import ai.openonion.oochat.network.AgentConnection
@@ -235,6 +237,10 @@ class ConnectToAgentUseCase(
 
     override suspend fun sendMessage(content: String, agentAddress: String, images: List<String>?, files: List<OutgoingFileAttachment>?) {
         getOrCreateRepository().sendMessage(content, agentAddress, images, files)
+    }
+
+    override suspend fun executeTool(request: ExecRequest): ExecOutcome {
+        return getOrCreateRepository().executeTool(request)
     }
 
     override fun observeEvents(): Flow<ChatEvent> {

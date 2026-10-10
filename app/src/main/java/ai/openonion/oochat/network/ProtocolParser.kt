@@ -488,6 +488,35 @@ object ProtocolParser {
                 setWaiting = true
             )
 
+            "EXEC_RESULT" -> {
+                val execId = event.execId?.takeIf { it.isNotBlank() }
+                    ?: return ParseResult(event = ConnectionEvent.Unknown)
+
+                val status = event.status
+                    ?: return ParseResult(event = ConnectionEvent.Unknown)
+
+                val hasRequiredContent = when (status) {
+                    "success" -> event.result != null
+                    "error" -> event.error != null
+                    else -> false
+                }
+
+                if (!hasRequiredContent) {
+                    return ParseResult(event = ConnectionEvent.Unknown)
+                }
+
+                ParseResult(
+                    event = ConnectionEvent.ExecResultReceived(
+                        execId = execId,
+                        status = status,
+                        result = event.result,
+                        error = event.error,
+                        tool = event.tool,
+                        durationMs = event.durationMs
+                    )
+                )
+            }
+
             "OUTPUT" -> {
                 val isForUs = isDirect || event.inputId == null || event.inputId in outstandingInputIds
                 if (isForUs) {
@@ -539,7 +568,8 @@ object ProtocolParser {
                 else ->
                     ParseResult(
                         event = ConnectionEvent.ConnectionError(
-                            message = event.message ?: event.error ?: "Unknown error"
+                            message = event.message ?: event.error ?: "Unknown error",
+                            code = event.code.takeIf { it.isNotBlank() }
                         )
                     )
             }
@@ -883,6 +913,21 @@ sealed class ConnectionEvent {
     data class OutputReceived(val result: String, val session: ai.openonion.oochat.data.protocol.SessionState?) : ConnectionEvent()
 
     /**
+     * A direct tool invocation's response.
+     *
+     * [execId] matches the pending EXEC request. This event does not
+     * complete an INPUT turn or update the conversation's session.
+     */
+    data class ExecResultReceived(
+        val execId: String,
+        val status: String,
+        val result: String? = null,
+        val error: String? = null,
+        val tool: String? = null,
+        val durationMs: Double? = null
+    ) : ConnectionEvent()
+
+    /**
      * The connection's session changed, from whichever frame carried it —
      * CONNECTED, OUTPUT or session_sync. Emitted so persistence has one thing
      * to listen to instead of guessing which frame types carry a session.
@@ -931,7 +976,11 @@ sealed class ConnectionEvent {
      * [RuntimeInputAcknowledged].
      */
     data class RuntimeInputRejected(val sessionId: String?, val retryable: Boolean, val message: String?) : ConnectionEvent()
-    data class ConnectionError(val message: String) : ConnectionEvent()
+    data class ConnectionError(
+        val message: String,
+        /** Machine-readable ERROR code, when the Host supplied one. */
+        val code: String? = null
+    ) : ConnectionEvent()
     /**
      * The Host rejected this client's OIP version (ERROR code -32010). Final
      * for the connection: retrying sends the same descriptor and is refused

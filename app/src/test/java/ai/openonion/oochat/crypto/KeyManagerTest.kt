@@ -1,6 +1,7 @@
 package ai.openonion.oochat.crypto
 
 import android.app.Application
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -106,6 +107,27 @@ class KeyManagerTest {
         val payloadB = linkedMapOf<String, Any>("timestamp" to 100L, "to" to "0xabc")
 
         assertEquals(keyManager.canonicalJson(payloadA), keyManager.canonicalJson(payloadB))
+    }
+
+    @Test
+    fun `canonicalJson preserves JSON argument types and sorts nested object keys`() {
+        val args = Json.parseToJsonElement(
+            """
+            {
+                "z": [{"z": 2, "a": 1}, true, null, "text", 0.5],
+                "a": 9223372036854775807
+            }
+            """.trimIndent()
+        )
+
+        val actual = keyManager.canonicalJson(
+            mapOf<String, Any>("args" to args)
+        )
+
+        assertEquals(
+            """{"args":{"a":9223372036854775807,"z":[{"a":1,"z":2},true,null,"text",0.5]}}""",
+            actual
+        )
     }
 
     // ── keysFromHex ──────────────────────────────────────────────────

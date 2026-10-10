@@ -110,6 +110,7 @@ fun ChatScreen(
     val agentProfile by viewModel.agentProfile.collectAsState()
     val approvalMode by viewModel.approvalMode.collectAsState()
     val modePending by viewModel.modePending.collectAsState()
+    val availableTools = agentProfile?.tools.orEmpty()
 
     val dashboardHtml by viewModel.dashboardHtml.collectAsState()
     val plan by viewModel.plan.collectAsState()
@@ -126,7 +127,7 @@ fun ChatScreen(
     val wasCleared by viewModel.wasCleared.collectAsState()
     val sessionUsage by viewModel.sessionUsage.collectAsState()
     val error by viewModel.error.collectAsState()
-
+    val execItems by viewModel.execItems.collectAsState()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
     // ModalNavigationDrawer composes its drawerContent whether or not the
@@ -148,6 +149,7 @@ fun ChatScreen(
     val renderMarkdown by viewModel.renderMarkdown.collectAsState()
     val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsState()
     val soundEffectsEnabled by viewModel.soundEffectsEnabled.collectAsState()
+    val developerToolsEnabled by viewModel.developerToolsEnabled.collectAsState()
     val haptics = LocalHapticFeedback.current
 
     // The user's font-size preference is applied app-wide by ConnectOnionTheme
@@ -349,6 +351,18 @@ fun ChatScreen(
                     .weight(1f)
                     .fillMaxWidth()
             )
+
+            ExecResultList(
+                items = execItems,
+                onDismiss = viewModel::dismissExec
+            )
+
+            if (developerToolsEnabled && availableTools.isNotEmpty()) {
+                ExecToolPanel(
+                    tools = availableTools,
+                    onExecute = viewModel::executeTool
+                )
+            }
 
             // With the composer, not in the transcript: the transcript scrolls
             // away and this is the one notice that has to still be there when

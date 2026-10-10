@@ -5,6 +5,8 @@ import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.NO_PLAN
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.PlanEntry
@@ -126,6 +128,14 @@ interface ConnectionRepository {
      * @param files Non-image file attachments (name + base64 data URL each)
      */
     suspend fun sendMessage(content: String, agentAddress: String, images: List<String>? = null, files: List<OutgoingFileAttachment>? = null)
+
+    /**
+     * Send one direct tool command and wait for its matching EXEC_RESULT.
+     *
+     * The outcome distinguishes commands that were never sent from commands
+     * whose final state became unknown after transmission.
+     */
+    suspend fun executeTool(request: ExecRequest): ExecOutcome
 
     /**
      * Respond to ask_user event.

@@ -16,6 +16,8 @@ import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ChatMessage
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.Role
 import ai.openonion.oochat.domain.model.ToolStatus
@@ -353,6 +355,7 @@ internal class RecompFakeConnectUseCase : ConnectToAgentUseCaseContract {
     override fun liveSessionIdFor(agentAddress: String): String? = liveSessionId
     override suspend fun switchConversation(conversationId: String?) { liveSessionId = conversationId }
     override suspend fun sendMessage(content: String, agentAddress: String, images: List<String>?, files: List<OutgoingFileAttachment>?) = Unit
+    override suspend fun executeTool(request: ExecRequest): ExecOutcome = ExecOutcome.NotSent("Not used in recomposition tests")
     override suspend fun respond(answer: String) = Unit
     override suspend fun interrupt() = Unit
     override suspend fun respondToApproval(approved: Boolean, scope: String, mode: String?, feedback: String?) = Unit
@@ -495,4 +498,8 @@ internal class RecompFakeAppSettings : AppSettings {
     override suspend fun setAnalyticsEnabled(value: Boolean) { analyticsEnabledFlow.value = value }
     override val safeModeEnabled: Flow<Boolean> = safeModeEnabledFlow
     override suspend fun setSafeModeEnabled(value: Boolean) { safeModeEnabledFlow.value = value }
+
+    private val developerToolsEnabledFlow = MutableStateFlow(false)
+    override val developerToolsEnabled: Flow<Boolean> = developerToolsEnabledFlow
+    override suspend fun setDeveloperToolsEnabled(value: Boolean) { developerToolsEnabledFlow.value = value }
 }
