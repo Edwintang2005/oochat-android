@@ -1097,7 +1097,7 @@ class AgentConnection(
             // id is applied whenever it differs — keying off `== null` meant a
             // server-reissued id was dropped once a session already existed.
             val sessionBefore = _currentSession
-            result.updateSession?.let { _currentSession = it }
+            result.updateSession?.let { _currentSession = it.keepingPlanOf(sessionBefore) }
             result.updateSessionId?.let { sid ->
                 if (_currentSession?.sessionId != sid) {
                     _currentSession = (_currentSession ?: SessionState()).copy(sessionId = sid)
@@ -1106,6 +1106,12 @@ class AgentConnection(
                 // learned about from a CONNECTED is still one we have been
                 // on, and [isWrongSession] cannot recognise it otherwise.
                 rememberSession(sid)
+            }
+            // A `plan` frame is session state too: kept on the session so it is
+            // saved with it and echoed on the next CONNECT, which the Host
+            // adopts as the session — a stale plan there would be the agent's.
+            (result.event as? ConnectionEvent.PlanUpdated)?.let { update ->
+                _currentSession = _currentSession?.copy(plan = ProtocolParser.encodePlan(update.entries))
             }
             _currentSession?.takeIf { it != sessionBefore }?.let {
                 _events.tryEmit(ConnectionEvent.SessionUpdated(it))
@@ -1289,6 +1295,11 @@ class AgentConnection(
                     FileLogger.i(LogTags.AGENT_CONN, "SESSION_STATUS ← ${event.status}")
                     _events.tryEmit(event)
                 }
+                is ConnectionEvent.PlanUpdated -> {
+                    // Count only — the entries are the agent's own task text.
+                    FileLogger.d(LogTags.AGENT_CONN, "plan ✓ ${event.entries.size} entries")
+                    _events.tryEmit(event)
+                }
                 is ConnectionEvent.RuntimeInputAcknowledged -> {
                     FileLogger.i(LogTags.AGENT_CONN, "RUNTIME_INPUT_ACK ✓")
                     _events.tryEmit(event)
@@ -1403,5 +1414,18 @@ class AgentConnection(
          */
         internal fun reconnectBackoffMs(attemptNumber: Int): Long =
             (2000L * (1 shl (attemptNumber - 1))).coerceAtMost(32000L)
+    }
+
+    /**
+     * This snapshot, with the plan it should carry. A snapshot whose plan is
+     * missing or malformed says nothing about the plan, so the one already
+     * held for the same session stands — the web client's rule
+     * (remote-agent.ts's _applySessionSnapshot); a different session's plan
+     * is never carried over.
+     */
+    private fun SessionState.keepingPlanOf(previous: SessionState?): SessionState = when {
+        ProtocolParser.decodePlan(plan) != null -> this
+        previous != null && previous.sessionId == sessionId -> copy(plan = previous.plan)
+        else -> copy(plan = null)
     }
 }

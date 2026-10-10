@@ -88,8 +88,19 @@ sealed class ChatItem {
         // Context window occupancy at that same llm_result, as a 0.0-1.0
         // fraction (see ServerEvent.contextPercent's own doc for why this
         // isn't the 0-100 scale CompactItem's fields use).
-        val contextPercent: Double? = null
-    ) : ChatItem()
+        val contextPercent: Double? = null,
+        /**
+         * Set only on the agent's own reasoning — a `thinking` frame with
+         * text (re_act.py's `intent`, reflect.py's `reflect`), as opposed to
+         * an llm_call status or a connection error that also lands in
+         * [content]. Non-null means [content] is something the agent thought,
+         * rendered as reasoning rather than as a reply or a failure.
+         */
+        val kind: String? = null
+    ) : ChatItem() {
+        /** True for a reasoning item — see [kind]. */
+        val isReasoning: Boolean get() = kind != null
+    }
 
     /**
      * One complete assistant "turn": the model thought about it ([thinking])
