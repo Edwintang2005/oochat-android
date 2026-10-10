@@ -24,6 +24,7 @@ belongs in one of those classes, or its class belongs in that list.
 | Slash-command palette | `SlashCommandMatcherTest`, `SlashCommandPaletteComposeTest` (plus `ConnectionRepositoryImplTest`) | Skills filled from the relay directory, looked up by the agent's address; a picked command is sent as plain text; hidden when disconnected |
 | Dictation | `DictationMergeTest`, `InputBarDictationComposeTest`, `ChatViewModelTest`, `SpeechRecognizerIntentTest`, `SpeechRecognitionLevelTest`, `VoiceTranscriptionInstructionTest`, `VoiceTranscriptionServiceTest`, `VoiceRecorderStoreTest` | Nothing is ever sent on its own, including when the fallback path fails; one token refresh after a 401 |
 | Low-balance bar | `LowBalanceBarComposeTest` (plus `ConnectionRepositoryImplTest`) | Threshold, wording at zero and below, the tap opening the purchase page, the balance reaching the live profile |
+| Session resume | `ProcessDeathResumeTest` | Killed mid-stream: the relaunch CONNECTs on the same `session_id` with no `last_msg_id` and the replayed turn lands once in Room and on screen; a dropped socket names the last event it handled; a turn that finished while the app was dead arrives once |
 
 ## Where the test data comes from
 
@@ -56,6 +57,7 @@ purpose. At that point, remove the wrapper, and the test guards the fix.
 | Slash palette | Skills from the directory are not de-duplicated, and "No description" is not dropped | `ConnectionRepositoryImplTest` |
 | Slash palette | Two skills with the same name crash the composer when `/` is typed | `SlashCommandPaletteComposeTest` |
 | Low balance | The amount follows the phone's locale: `$0,42` on a German phone | `LowBalanceBarComposeTest` |
+| Session resume | A tool call saved as running when the app died spins forever if its turn ended before the relaunch (`CONNECTED` status is not read) | `ProcessDeathResumeTest` |
 
 ## Not covered, and why
 
@@ -71,4 +73,7 @@ purpose. At that point, remove the wrapper, and the test guards the fix.
   SLIP-0010 instead, so the same phrase gives a different address in the CLI.
   Which one the web client uses needs confirming.
 - **Anything needing a device.** CI runs no instrumented tests, and the
-  screenshot baselines are not verified (see the README).
+  screenshot baselines are not verified (see the README). Process death is
+  therefore modelled in `ProcessDeathResumeTest`: the first launch's objects
+  are abandoned without a flush and the relaunch is rebuilt on the same Room
+  file, rather than the app being killed on an emulator.
