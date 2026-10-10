@@ -35,10 +35,12 @@ object ProtocolParser {
      * Frames the Host writes straight to the socket instead of appending to the agent log it replays
      * from a CONNECT's `last_msg_id`. Any other frame that carries an `id` is a log frame (the Host
      * stamps one on every entry), so a new event type needs no entry here to take part in replay.
+     * `RUNTIME_INPUT_ACK` is the one host frame that has an `id` of its own: a fresh UUID the Host
+     * mints for the queued input, which names nothing in its log.
      */
     private val HOST_FRAME_TYPES = setOf(
         "PING", "CONNECTED", "AGENT_PROFILE", "DASHBOARD_SNAPSHOT", "ONBOARD_REQUIRED",
-        "ONBOARD_SUCCESS", "OUTPUT", "ERROR", "SESSION_STATUS"
+        "ONBOARD_SUCCESS", "OUTPUT", "ERROR", "SESSION_STATUS", "RUNTIME_INPUT_ACK"
     )
 
 

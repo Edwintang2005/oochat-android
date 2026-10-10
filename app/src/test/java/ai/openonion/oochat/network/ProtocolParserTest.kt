@@ -682,7 +682,8 @@ class ProtocolParserTest {
             """{"type":"ONBOARD_SUCCESS","id":"h1","level":"contact"}""",
             """{"type":"OUTPUT","id":"h1","result":"done"}""",
             """{"type":"ERROR","id":"h1","message":"nope"}""",
-            """{"type":"SESSION_STATUS","id":"h1","session_id":"s1","status":"running"}"""
+            """{"type":"SESSION_STATUS","id":"h1","session_id":"s1","status":"running"}""",
+            """{"type":"RUNTIME_INPUT_ACK","id":"h1","session_id":"s1"}"""
         )
 
         frames.forEach { frame -> assertNull(frame, parse(frame).msgId) }

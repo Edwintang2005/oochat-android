@@ -349,8 +349,9 @@ session) sends no `last_msg_id`.
 **What moves the cursor.** Any frame that carries an `id`, except the frames the
 Host writes straight to the socket instead of appending to its log: `CONNECTED`,
 `OUTPUT`, `ERROR`, `PING`, `AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`,
-`SESSION_STATUS`, `ONBOARD_REQUIRED` and `ONBOARD_SUCCESS` (`HOST_FRAME_TYPES` in
-`ProtocolParser`). The Host stamps an `id` on every entry in its log, so this
+`SESSION_STATUS`, `RUNTIME_INPUT_ACK` (whose `id` is a UUID the Host mints for the
+queued input, not a log entry), `ONBOARD_REQUIRED` and `ONBOARD_SUCCESS`
+(`HOST_FRAME_TYPES` in `ProtocolParser`). The Host stamps an `id` on every entry in its log, so this
 follows new event types (`plan`, `turn_result`, `provider_message`, and so on)
 without a list to maintain, whether or not the client decodes them;
 `ProtocolParser` puts it in `ParseResult.msgId`. An id on one of the excluded
@@ -368,9 +369,10 @@ still the current one; `reset()` clears it.
 | Not found | `status: "new"` | None |
 
 The Host finds the id by searching its log from the start and resumes after the
-*first* frame that carries it. A call and its result share one id, so a replay
-can start earlier than the client expects and re-send frames it already has. The
-Host leaves de-duplication to the client.
+*first* frame that carries it. An `llm_call` and its `llm_result` share one id, as
+do the statuses of a `compact` or an `eval`, so a replay can start earlier than
+the client expects and re-send frames it already has. The Host leaves
+de-duplication to the client.
 
 **De-duplication.** `ProtocolParser` gives each frame that becomes a chat item
 (or updates one) a `dedupeKey`: a SHA-256 of the frame as the client decodes it,
@@ -380,9 +382,10 @@ after parsing, before the session is updated and before `Waiting` or any chat
 event is emitted, so a repeat changes nothing. The key is not the raw text:
 through the relay every frame carries a `conn_id` that is new for each client
 socket, so the same logged event reads differently after a reconnect. Nor is it
-the `id` alone: the Host reuses one id for `llm_call` and `llm_result`, for
-`tool_call` and `tool_result`, and for every status of a `compact` or an `eval`,
-so comparing ids would drop real updates. Three kinds of frame have no key and
+the `id` alone: the Host reuses one id for `llm_call` and `llm_result` and for
+every status of a `compact` or an `eval`, so comparing ids would drop real
+updates. (`tool_call` and `tool_result` share a `tool_id`, but each frame has its
+own `id`.) Three kinds of frame have no key and
 are never dropped: the snapshots the Host re-sends on every `CONNECT`
 (`AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`); `session_sync`, whose replay carries the
 session as it is now and so never equals the original, and which is already safe

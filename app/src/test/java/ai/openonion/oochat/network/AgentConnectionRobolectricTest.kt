@@ -1886,6 +1886,19 @@ class AgentConnectionRobolectricTest {
     }
 
     @Test
+    fun `an acknowledgement of runtime input does not become the replay position`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val logged = """{"type":"tool_call","id":"ev-1","tool_id":"t1","name":"bash"}"""
+        // The Host mints this id for the queued input and sends the frame directly; it is not in its log.
+        val ack = """{"type":"RUNTIME_INPUT_ACK","session_id":"sess-1","id":"host-made-up"}"""
+
+        reconnectAfter(conn, listOf(logged, ack))
+
+        assertEquals("ev-1", sentConnect()["last_msg_id"]?.jsonPrimitive?.content)
+        conn.teardown()
+    }
+
+    @Test
     fun `the socket a switch replaces cannot report its own close as a disconnect`() = runTest {
         // reopenSocket closes synchronously but opens from a launch, and the
         // generation the stale-callback guard compares against was only bumped

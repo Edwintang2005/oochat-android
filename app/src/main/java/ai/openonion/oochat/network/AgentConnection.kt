@@ -83,8 +83,8 @@ class AgentConnection(
      * Keys ([ParseResult.dedupeKey]) of the agent-log frames already handled, oldest first. After a
      * reconnect the Host re-sends frames this connection has seen, so repeats are dropped before they
      * reach anything with a side effect. The key is the frame's decoded content, not its raw text or
-     * its id: the relay stamps a different conn_id on every socket, and the Host reuses one id for a
-     * call and its result and for each status of a compaction.
+     * its id: the relay stamps a different conn_id on every socket, and the Host reuses one id for an
+     * llm_call and its llm_result and for each status of a compact or an eval.
      */
     private val seenFrames = LinkedHashSet<String>()
 

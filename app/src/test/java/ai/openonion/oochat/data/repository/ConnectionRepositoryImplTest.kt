@@ -19,6 +19,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -243,10 +244,12 @@ class ConnectionRepositoryImplTest {
         repeat(burst) { simulateToolCall("t$it") }
         delay(300) // lets the repository's own collector pass every frame on while the consumer is stuck
         release.complete(Unit)
-        withTimeoutOrNull(5000L) { while (delivered.count { it.startsWith("t") } < burst) delay(20) }
-        collector.cancel()
+        // The collector is still adding on another thread, and iterating a synchronizedList needs its lock held.
+        fun arrived() = synchronized(delivered) { delivered.count { it.startsWith("t") } }
+        withTimeoutOrNull(5000L) { while (arrived() < burst) delay(20) }
+        collector.cancelAndJoin()
 
-        assertEquals((0 until burst).map { "t$it" }, delivered.filter { it.startsWith("t") })
+        assertEquals((0 until burst).map { "t$it" }, synchronized(delivered) { delivered.filter { it.startsWith("t") } })
     }
 
     @Test
