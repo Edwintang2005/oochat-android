@@ -159,6 +159,30 @@ class OutgoingMessagesTest {
     }
 
     @Test
+    fun `a reconnect CONNECT names the last message handled at the envelope top level`() {
+        val encoded = json.encodeToString(
+            ConnectMessage.serializer(),
+            ConnectMessage(
+                payload = ConnectPayload(timestamp = 1_760_000_000L, to = "0xagent"),
+                from = "0xme",
+                signature = "sig",
+                timestamp = 1_760_000_000L,
+                to = "0xagent",
+                sessionId = "sess-42",
+                lastMsgId = "ev-9f12"
+            )
+        )
+
+        // Next to session_id and outside the signed payload, which stays {timestamp, to}.
+        assertEquals(
+            """{"type":"CONNECT","protocol":{"name":"oip","version":"0.1","min_version":"0.1","max_version":"0.1"},""" +
+                """"payload":{"timestamp":1760000000,"to":"0xagent"},"from":"0xme","signature":"sig",""" +
+                """"timestamp":1760000000,"to":"0xagent","session_id":"sess-42","last_msg_id":"ev-9f12"}""",
+            encoded
+        )
+    }
+
+    @Test
     fun `a direct CONNECT for a new session still declares the OIP descriptor`() {
         val encoded = json.encodeToString(
             ConnectMessage.serializer(),

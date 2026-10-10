@@ -76,6 +76,27 @@ class AgentConnection(
     @Volatile private var keys: KeyManager.AddressData? = null
     @Volatile private var _currentSession: SessionState? = null
     val currentSession: SessionState? get() = _currentSession
+    private data class ReplayCursor(val sessionId: String, val msgId: String)
+    @Volatile private var replayCursor: ReplayCursor? = null
+
+    /**
+     * Keys ([ParseResult.dedupeKey]) of the agent-log frames already handled, oldest first. After a
+     * reconnect the Host re-sends frames this connection has seen, so repeats are dropped before they
+     * reach anything with a side effect. The key is the frame's decoded content, not its raw text or
+     * its id: the relay stamps a different conn_id on every socket, and the Host reuses one id for an
+     * llm_call and its llm_result and for each status of a compact or an eval.
+     */
+    private val seenFrames = LinkedHashSet<String>()
+
+    /** True the first time [key] is seen, false for a repeat; see [seenFrames]. */
+    private fun isFirstSighting(key: String): Boolean {
+        synchronized(seenFrames) {
+            if (!seenFrames.add(key)) return false
+            while (seenFrames.size > MAX_SEEN_FRAMES) seenFrames.remove(seenFrames.first())
+            return true
+        }
+    }
+
     /**
      * Every INPUT whose reply is still owed, not just the newest one.
      *
@@ -229,7 +250,7 @@ class AgentConnection(
     // whichever one was ready first. ChatItem/Output frames that the
     // state collector won were silently dropped by its `else -> {}`.
     private val _events = MutableSharedFlow<ConnectionEvent>(
-        extraBufferCapacity = 64,
+        extraBufferCapacity = EVENT_BUFFER_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     // SharedFlow, not Flow: replay is 0, so a subscriber has to be able to
@@ -386,6 +407,7 @@ class AgentConnection(
         // Never repeats, never goes backwards — see nextConnectTimestamp.
         val timestamp = nextConnectTimestamp()
         val directNow = isDirect
+        val sessionId = _currentSession?.sessionId
 
         val signature = signPayload(
             payloadFields = buildMap<String, Any> {
@@ -403,7 +425,8 @@ class AgentConnection(
             signature = signature,
             timestamp = timestamp,
             to = if (!directNow) capturedAgentAddress else null,
-            sessionId = _currentSession?.sessionId
+            sessionId = sessionId,
+            lastMsgId = replayCursor?.takeIf { it.sessionId == sessionId }?.msgId
         )
 
         val msgStr = json.encodeToString(connectMsg)
@@ -675,6 +698,8 @@ class AgentConnection(
 
     fun reset() {
         _currentSession = null
+        replayCursor = null
+        synchronized(seenFrames) { seenFrames.clear() }
         outstandingInputIds.clear()
         pendingMessageSink.clear(agentAddress)
     }
@@ -1027,6 +1052,14 @@ class AgentConnection(
             // iteration, and toSet() iterates.
             val outstanding = synchronized(outstandingInputIds) { outstandingInputIds.toSet() }
             val result = ProtocolParser.parse(text, outstanding, isDirect)
+            // A replay re-sends frames already handled; drop repeats before any side effect. Only
+            // frames with a dedupeKey are compared, so snapshots re-sent on every CONNECT still pass.
+            val dedupeKey = result.dedupeKey
+            if (dedupeKey != null && !isFirstSighting(dedupeKey)) {
+                FileLogger.d(LogTags.AGENT_CONN, "Dropping replayed frame: ${LogSanitizer.jsonTypeSummary(text)}")
+                return
+            }
+
             // The run these ids belonged to has answered (or given up), so the
             // next send starts from an empty set rather than inheriting them.
             if (result.event is ConnectionEvent.OutputReceived ||
@@ -1076,6 +1109,9 @@ class AgentConnection(
             }
             _currentSession?.takeIf { it != sessionBefore }?.let {
                 _events.tryEmit(ConnectionEvent.SessionUpdated(it))
+            }
+            result.msgId?.let { id ->
+                _currentSession?.sessionId?.let { sid -> replayCursor = ReplayCursor(sid, id) }
             }
 
             // Set waiting state
@@ -1322,6 +1358,18 @@ class AgentConnection(
 
         /** How many superseded session ids one connection remembers; see knownSessionIds. */
         private const val MAX_REMEMBERED_SESSIONS = 16
+
+        /**
+         * Slots in each event buffer between the socket and the chat (this class's, and the
+         * repository's chat bus). A replay can hand over a whole turn at once; a consumer slower
+         * than the socket makes a full buffer drop its oldest event, and with the cursor already
+         * past it that message is gone for good. DROP_OLDEST stays, so a stuck collector can
+         * never stall the socket.
+         */
+        internal const val EVENT_BUFFER_CAPACITY = 1024
+
+        /** How many handled frames are remembered for replay de-duplication; see seenFrames. */
+        private const val MAX_SEEN_FRAMES = 4096
 
         /** Interjections per run before the oldest id stops being recognised; see outstandingInputIds. */
         private const val MAX_OUTSTANDING_INPUT_IDS = 16

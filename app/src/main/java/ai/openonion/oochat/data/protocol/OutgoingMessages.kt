@@ -22,6 +22,7 @@ data class ConnectMessage(
     val timestamp: Long,
     val to: String? = null,
     @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("last_msg_id") val lastMsgId: String? = null,
     val session: SessionState? = null
 )
 

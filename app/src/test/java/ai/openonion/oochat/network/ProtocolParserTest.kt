@@ -644,4 +644,92 @@ class ProtocolParserTest {
         assertFalse(result.setWaiting)
         assertNull(result.updateSession)
     }
+
+    // ── msgId: the Host's id for a frame in its replay log ───────────
+
+    @Test
+    fun `frames from the agent log carry their id as msgId`() {
+        val frames = listOf(
+            """{"type":"llm_call","id":"m1","model":"x"}""",
+            """{"type":"llm_result","id":"m1","status":"done"}""",
+            """{"type":"thinking","id":"m1","content":"hmm"}""",
+            """{"type":"tool_call","id":"m1","tool_id":"t1","name":"bash"}""",
+            """{"type":"tool_result","id":"m1","tool_id":"t1","status":"success","result":"ok"}""",
+            """{"type":"assistant","id":"m1","content":"hello"}""",
+            """{"type":"session_sync","id":"m1","session":{"session_id":"s1","messages":[]}}""",
+            """{"type":"approval_needed","id":"m1","tool":"bash"}""",
+            """{"type":"ask_user","id":"m1","question":"ok?"}""",
+            // Types the client does not decode still take part in replay.
+            """{"type":"plan","id":"m1","entries":[]}""",
+            """{"type":"turn_result","id":"m1"}""",
+            """{"type":"mode_budget_changed","id":"m1"}""",
+            """{"type":"provider_activity","id":"m1"}""",
+            """{"type":"provider_message","id":"m1"}"""
+        )
+
+        frames.forEach { frame -> assertEquals(frame, "m1", parse(frame).msgId) }
+    }
+
+    @Test
+    fun `frames written straight to the socket never carry a msgId`() {
+        // None of these are in the Host's replay log, so an id on one names nothing it could rewind to.
+        val frames = listOf(
+            """{"type":"PING","id":"h1"}""",
+            """{"type":"CONNECTED","id":"h1","session_id":"s1"}""",
+            """{"type":"AGENT_PROFILE","id":"h1","name":"a","model":"m"}""",
+            """{"type":"DASHBOARD_SNAPSHOT","id":"h1","html":"<p>hi</p>"}""",
+            """{"type":"ONBOARD_REQUIRED","id":"h1","methods":["invite_code"]}""",
+            """{"type":"ONBOARD_SUCCESS","id":"h1","level":"contact"}""",
+            """{"type":"OUTPUT","id":"h1","result":"done"}""",
+            """{"type":"ERROR","id":"h1","message":"nope"}""",
+            """{"type":"SESSION_STATUS","id":"h1","session_id":"s1","status":"running"}""",
+            """{"type":"RUNTIME_INPUT_ACK","id":"h1","session_id":"s1"}"""
+        )
+
+        frames.forEach { frame -> assertNull(frame, parse(frame).msgId) }
+    }
+
+    @Test
+    fun `a log frame without a usable id has no msgId`() {
+        assertNull(parse("""{"type":"tool_call","tool_id":"t1","name":"bash"}""").msgId)
+        assertNull(parse("""{"type":"tool_call","id":"  ","tool_id":"t1","name":"bash"}""").msgId)
+    }
+
+    @Test
+    fun `a frame has the same dedupe key whichever socket the relay carried it on`() {
+        // The relay stamps its own session_id and a per-socket conn_id on every frame it forwards.
+        val first = parse("""{"session_id":"relay-1","type":"tool_call","id":"ev-1","tool_id":"t1","name":"bash","conn_id":"conn-a"}""")
+        val again = parse("""{"session_id":"relay-2","type":"tool_call","id":"ev-1","tool_id":"t1","name":"bash","conn_id":"conn-b"}""")
+
+        assertNotNull(first.dedupeKey)
+        assertEquals(first.dedupeKey, again.dedupeKey)
+    }
+
+    @Test
+    fun `frames that differ in type, status or content have different dedupe keys`() {
+        val keys = listOf(
+            """{"type":"llm_call","id":"L1","model":"m"}""",
+            """{"type":"llm_result","id":"L1","model":"m","status":"done"}""",
+            """{"type":"compact","id":"C1","status":"compacting"}""",
+            """{"type":"compact","id":"C1","status":"done"}""",
+            """{"type":"thinking","id":"T1","content":"a"}""",
+            """{"type":"thinking","id":"T1","content":"ab"}"""
+        ).map { parse(it).dedupeKey }
+
+        assertTrue(keys.all { it != null })
+        assertEquals(keys.size, keys.toSet().size)
+    }
+
+    @Test
+    fun `session snapshots, host frames and frames the client does not decode have no dedupe key`() {
+        val frames = listOf(
+            """{"type":"session_sync","id":"m1","session":{"session_id":"s1","messages":[{"role":"assistant","content":"hi"}]}}""",
+            """{"type":"AGENT_PROFILE","id":"h1","name":"a","model":"m"}""",
+            """{"type":"DASHBOARD_SNAPSHOT","id":"h1","html":"<p>hi</p>"}""",
+            """{"type":"plan","id":"m1","entries":[]}""",
+            """{"type":"tool_call","tool_id":"t1","name":"bash"}"""
+        )
+
+        frames.forEach { frame -> assertNull(frame, parse(frame).dedupeKey) }
+    }
 }
