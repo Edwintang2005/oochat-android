@@ -53,11 +53,23 @@ stages:
 # GitLab keeps those caches apart by default, so a merge request would never
 # see main's. Merge requests only read it, so they cannot change what main uses.
 .gradle-cache: &gradle-cache
-  # Dependencies change when a build script does; key on those.
+  # Keyed on the Gradle version only, not the build scripts. A merge request
+  # cannot write the cache, so with the scripts in the key any MR that edits
+  # one (adding a test to the regression suite, say) found no cache at all,
+  # downloaded every dependency and ran out of time. A cache that is a few
+  # dependencies behind costs only those downloads. Main rewrites it on every
+  # pipeline, and Gradle deletes entries unused for 30 days, so it does not
+  # grow without bound.
   key:
     files:
-      - build.gradle.kts
-      - app/build.gradle.kts
+      - gradle/wrapper/gradle-wrapper.properties
+  # Temporary: the cache main saved under the old build-script key, so the
+  # first pipelines on the new key start warm. Both spellings, as GitLab may or
+  # may not add the index prefix and protection suffix to a fallback key.
+  # Remove once main has saved the cache under the new key.
+  fallback_keys:
+    - build_app/build-64e7d287432ceb074455feec6c84ab0098bc450c
+    - 0_build_app/build-64e7d287432ceb074455feec6c84ab0098bc450c-non_protected
   paths:
     - .gradle-home/caches/
     - .gradle-home/wrapper/
