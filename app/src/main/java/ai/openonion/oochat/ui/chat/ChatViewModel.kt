@@ -18,6 +18,7 @@ import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ChatListFlags
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.domain.model.ThinkingStatus
 import ai.openonion.oochat.domain.model.UserMessageState
@@ -963,6 +964,38 @@ open class ChatViewModel @JvmOverloads constructor(
         // back to "Connecting to agent…" over a gate still waiting for a code
         // (W16AAPPLE-80). The Connected transition reaches here again.
         if (connectionState.value is ConnectionState.Connected) _awaitingOnboardCode.value = false
+        // And only now, with the conversation resolved above, can the Host's answer be matched to it.
+        (connectionState.value as? ConnectionState.Connected)?.let { actOnHostAnswer(it) }
+    }
+
+    /**
+     * Act, once, on what the Host's CONNECTED said about the session just joined. Reached from both
+     * callers of [onConnectedTo], so it covers a socket opened for this screen and a live one it joined.
+     * The answer is released afterwards: it describes the moment of the CONNECT, and the connection
+     * would hand it to the next screen created on the same socket as if it were news.
+     */
+    private fun actOnHostAnswer(joined: ConnectionState.Connected) {
+        if (joined.status == ServerSessionStatus.RUNNING) {
+            onHostTurnRunning()
+            connectUseCase.releaseSessionStatus()
+        }
+    }
+
+    /**
+     * The Host is still running a turn on this session: it survived a drop, or the app was relaunched
+     * into it. Undo the "Failed" a drop put on its items without asking again, and hold the composer
+     * behind the turn exactly as if this process had sent its INPUT, so a message typed now rides the
+     * turn and is answered (RUNTIME_INPUT_ACK) instead of going out as a plain INPUT that nothing is
+     * waiting on.
+     */
+    private fun onHostTurnRunning() {
+        serverTurnActive.value = true
+        val ids = disconnectFailedIds
+        if (ids.isNotEmpty() && conversationHistory.activeSessionId.value == disconnectFailedSessionId) {
+            unfailDisconnectedItems(ids)
+        }
+        disconnectFailedIds = emptySet()
+        disconnectFailedSessionId = null
     }
 
     /**
