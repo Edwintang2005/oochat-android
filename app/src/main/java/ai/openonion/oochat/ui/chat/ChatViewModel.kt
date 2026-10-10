@@ -983,6 +983,7 @@ open class ChatViewModel @JvmOverloads constructor(
         when (joined.status) {
             ServerSessionStatus.RUNNING -> onHostTurnRunning()
             ServerSessionStatus.CONNECTED -> onHostIdle()
+            ServerSessionStatus.NEW -> onHostHasNoRecord()
             else -> return
         }
         connectUseCase.releaseSessionStatus()
@@ -995,17 +996,34 @@ open class ChatViewModel @JvmOverloads constructor(
      * the way the OUTPUT would have, and save the result so the spinner does not come back with the
      * next launch.
      *
-     * A turn the drop already failed is not in progress, so it is left for the SESSION_STATUS reply
-     * ([ChatEvent.SessionStatusReceived]) to settle: whether its reply arrived is for the replay to say.
+     * Only what is in progress is settled. A turn the drop already failed is not, and must stay failed
+     * until the SESSION_STATUS reply ([ChatEvent.SessionStatusReceived]) says whether its answer
+     * arrived: resolveRunningItems on the whole list would turn it back into a success, since it also
+     * closes every Turn that has no reply yet.
      */
     private fun onHostIdle() {
-        val before = _uiState.value.chatItems
-        val after = before.resolveRunningItems()
-        val settled = after.filterIndexed { index, item -> item != before[index] }
-        if (settled.isEmpty()) return
-        _uiState.update { it.copy(chatItems = after) }
+        val inProgress = _uiState.value.chatItems.filter { it.isInProgress() }
+        if (inProgress.isEmpty()) return
+        val settled = inProgress.resolveRunningItems().associateBy { it.id }
+        _uiState.update { state -> state.copy(chatItems = state.chatItems.map { settled[it.id] ?: it }) }
         val owningSessionId = conversationHistory.activeSessionId.value
-        settled.forEach { item -> launchScoped { conversationHistory.persistMessage(item, owningSessionId) } }
+        settled.values.forEach { item -> launchScoped { conversationHistory.persistMessage(item, owningSessionId) } }
+    }
+
+    /**
+     * The Host has no record of this session: it restarted, or the session expired while the app was
+     * away, or this is a conversation that has never been used. What the screen shows stays, because
+     * the conversation is the user's. But a turn still in flight here can never finish, so it says
+     * Failed and Retry is the move, and any other card that was spinning stops.
+     *
+     * A turn a drop already failed was right to be failed. "Not found" is the answer SESSION_STATUS
+     * would have given, so nothing is asked.
+     */
+    private fun onHostHasNoRecord() {
+        failRunningThinking()
+        onHostIdle()
+        disconnectFailedIds = emptySet()
+        disconnectFailedSessionId = null
     }
 
     /**
