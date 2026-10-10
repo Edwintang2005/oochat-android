@@ -1,6 +1,8 @@
 package ai.openonion.oochat.data.protocol
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -19,6 +21,62 @@ class OutgoingMessagesTest {
     private val json = Json {
         encodeDefaults = true
         explicitNulls = false
+    }
+
+    @Test
+    fun `EXEC includes signed payload and matching top-level command fields`() {
+        // create command with arguments
+        val args = json.parseToJsonElement(
+            """{"command":"co status","timeout":30,"verbose":false}"""
+        ).jsonObject
+
+        val payload = ExecPayload(
+            execId = "exec-123",
+            tool = "bash",
+            args = args,
+            to = "0xagent",
+            timestamp = 1_760_000_000L,
+            nonce = "nonce-123"
+        )
+
+        val message = ExecMessage(
+            payload = payload,
+            from = "0xclient",
+            signature = "test-signature"
+        )
+
+        // serialize message then inspect fields
+        val encodedMessage = json.encodeToString(
+            ExecMessage.serializer(),
+            message
+        )
+        val frame = json.parseToJsonElement(encodedMessage).jsonObject
+        val signedPayload = frame.getValue("payload").jsonObject
+
+        // check contentss
+        assertEquals(JsonPrimitive("EXEC"), signedPayload["type"])
+        assertEquals(JsonPrimitive("exec-123"), signedPayload["exec_id"])
+        assertEquals(JsonPrimitive("bash"), signedPayload["tool"])
+        assertEquals(args, signedPayload["args"])
+        assertEquals(JsonPrimitive("0xagent"), signedPayload["to"])
+        assertEquals(
+            JsonPrimitive(1_760_000_000L),
+            signedPayload["timestamp"]
+        )
+        assertEquals(JsonPrimitive("nonce-123"), signedPayload["nonce"])
+
+        // 4. The outer frame must repeat the same command fields.
+        val repeatedFields = listOf(
+            "type", "exec_id", "tool", "args", "to", "timestamp"
+        )
+
+        for (field in repeatedFields) {
+            assertEquals(
+                "$field must match the signed payload",
+                signedPayload.getValue(field),
+                frame[field]
+            )
+        }
     }
 
     @Test
@@ -173,7 +231,8 @@ class OutgoingMessagesTest {
             )
         )
 
-        // Next to session_id and outside the signed payload, which carries only {timestamp, to, nonce, signed_commands}.
+        // Next to session_id and outside the signed payload, which carries the
+        // signed-command capability and replay-prevention nonce.
         assertEquals(
             """{"type":"CONNECT","protocol":{"name":"oip","version":"0.1","min_version":"0.1","max_version":"0.1"},""" +
                 """"payload":{"timestamp":1760000000,"to":"0xagent","nonce":"n-1","signed_commands":1},"from":"0xme","signature":"sig",""" +

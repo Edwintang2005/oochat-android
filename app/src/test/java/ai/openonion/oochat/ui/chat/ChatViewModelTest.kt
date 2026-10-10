@@ -21,6 +21,8 @@ import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ChatMessage
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.Role
 import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.ServerTranscriptEntry
@@ -184,6 +186,16 @@ class ChatViewModelTest {
             onSend?.invoke()
         }
 
+        val executeToolCalls = mutableListOf<ExecRequest>()
+        var executeToolHandler: suspend (ExecRequest) -> ExecOutcome = {
+            ExecOutcome.NotSent("No result configured")
+        }
+
+        override suspend fun executeTool(request: ExecRequest): ExecOutcome {
+            executeToolCalls += request
+            return executeToolHandler(request)
+        }
+
         /** Runs while a send is still in flight — lets a test have the host answer before it returns. */
         var onSend: (() -> Unit)? = null
 
@@ -329,6 +341,10 @@ class ChatViewModelTest {
         override suspend fun setAnalyticsEnabled(value: Boolean) { analyticsEnabledFlow.value = value }
         override val safeModeEnabled: Flow<Boolean> = safeModeEnabledFlow
         override suspend fun setSafeModeEnabled(value: Boolean) { safeModeEnabledFlow.value = value }
+
+        private val developerToolsEnabledFlow = MutableStateFlow(false)
+        override val developerToolsEnabled: Flow<Boolean> = developerToolsEnabledFlow
+        override suspend fun setDeveloperToolsEnabled(value: Boolean) { developerToolsEnabledFlow.value = value }
     }
 
     /** Records every call instead of touching NotificationManager — see the "maybeNotifyAgentReply gating" tests below. */
@@ -658,6 +674,76 @@ class ChatViewModelTest {
         val state = vm.uiState.value
         assertTrue(state.chatItems.isEmpty())
         assertNull(state.error)
+    }
+
+    @Test
+    fun `executeTool shows pending item and then success result`() = runTest(testDispatcher) {
+        vm.connectToAgent(validHexAddress())
+
+        val result = CompletableDeferred<ExecOutcome>()
+        connectUseCase.executeToolHandler = { result.await() }
+
+        vm.executeTool(
+            tool = "read_file",
+            argsJson = """{"path":"README.md"}"""
+        )
+
+        val pending = vm.execItems.value.single()
+        assertTrue(pending.isRunning)
+        assertEquals("read_file", pending.tool)
+        assertEquals(1, connectUseCase.executeToolCalls.size)
+        assertEquals("read_file", connectUseCase.executeToolCalls.single().tool)
+
+        result.complete(ExecOutcome.Success("file contents", 42.0))
+        testScheduler.advanceUntilIdle()
+
+        val completed = vm.execItems.value.single()
+        assertFalse(completed.isRunning)
+        assertEquals(ExecOutcome.Success("file contents", 42.0), completed.outcome)
+    }
+
+    @Test
+    fun `executeTool displays agent error result`() = runTest(testDispatcher) {
+        vm.connectToAgent(validHexAddress())
+        connectUseCase.executeToolHandler = {
+            ExecOutcome.Error("Permission denied", 18.0)
+        }
+
+        vm.executeTool(
+            tool = "delete_file",
+            argsJson = """{"path":"protected.txt"}"""
+        )
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(
+            ExecOutcome.Error("Permission denied", 18.0),
+            vm.execItems.value.single().outcome
+        )
+    }
+
+    @Test
+    fun `dismissing an EXEC card removes only that card`() = runTest(testDispatcher) {
+        vm.connectToAgent(validHexAddress())
+        vm.executeTool("read_file", "{}")
+        vm.executeTool("list_files", "{}")
+
+        val dismissedId = vm.execItems.value.first().execId
+        vm.dismissExec(dismissedId)
+
+        assertEquals(1, vm.execItems.value.size)
+        assertEquals("list_files", vm.execItems.value.single().tool)
+    }
+
+    @Test
+    fun `starting a new conversation clears EXEC cards`() = runTest(testDispatcher) {
+        vm.connectToAgent(validHexAddress())
+        vm.executeTool("read_file", "{}")
+        assertEquals(1, vm.execItems.value.size)
+
+        vm.startNewSession()
+        testScheduler.runCurrent()
+
+        assertTrue(vm.execItems.value.isEmpty())
     }
 
     // ── sendMessage ────────────────────────────────────────────────────

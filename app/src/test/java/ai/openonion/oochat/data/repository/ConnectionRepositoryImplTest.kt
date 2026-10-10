@@ -8,6 +8,8 @@ import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.PlanStatus
 import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.knownIssue
@@ -18,6 +20,7 @@ import ai.openonion.oochat.network.QueuedMessage
 import ai.openonion.oochat.network.WebSocketFactory
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -51,6 +54,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Unit tests for [ConnectionRepositoryImpl]'s [ConnectionRepositoryImpl.connect]
@@ -71,7 +75,7 @@ import org.robolectric.annotation.Config
 class ConnectionRepositoryImplTest {
 
     private class FakeWebSocket : WebSocket {
-        val sentMessages = mutableListOf<String>()
+        val sentMessages = CopyOnWriteArrayList<String>()
         override fun request(): Request = Request.Builder().url("wss://fake.example.com/ws").build()
         override fun queueSize(): Long = 0
         override fun send(text: String): Boolean { sentMessages += text; return true }
@@ -106,7 +110,13 @@ class ConnectionRepositoryImplTest {
             relayUrl = "ws://test.invalid",
             pendingMessageSink = sink,
             agentConnectionFactory = { km, url ->
-                AgentConnection(km, url, factory, signer = { _, _ -> "fake-signature" }, pendingMessageSink = sink)
+                AgentConnection(
+                    keyManager = km,
+                    relayUrl = url,
+                    webSocketFactory = factory,
+                    signer = { _, _ -> "fake-signature" },
+                    pendingMessageSink = sink
+                )
             }
         )
     }
@@ -386,6 +396,94 @@ class ConnectionRepositoryImplTest {
 
         assertTrue(factory.lastWebSocket!!.sentMessages.any { it.contains("hello") })
     }
+
+    @Test
+    fun `executeTool converts arguments and returns matching result`() =
+        runBlocking {
+            repository.connect(
+                agentAddress = "0xAGENT",
+                conversationId = "conversation-1"
+            )
+            awaitUntil(retry = { simulateConnected("conversation-1") }) {
+                repository.isConnected()
+            }
+
+            val pendingOutcome = async(start = CoroutineStart.UNDISPATCHED) {
+                repository.executeTool(
+                    ExecRequest(
+                        execId = "exec-1",
+                        tool = "shell",
+                        argsJson = """{"command":"pwd"}""",
+                        agentAddress = "0xAGENT"
+                    )
+                )
+            }
+
+            awaitUntil { factory.lastWebSocket!!.sentMessages.isNotEmpty() }
+            assertTrue(
+                factory.lastWebSocket!!.sentMessages.any {
+                    it.contains("\"exec_id\":\"exec-1\"")
+                }
+            )
+
+            factory.lastListener!!.onMessage(
+                factory.lastWebSocket!!,
+                """
+                {
+                  "type": "EXEC_RESULT",
+                  "exec_id": "exec-1",
+                  "status": "success",
+                  "result": "/workspace"
+                }
+                """.trimIndent()
+            )
+
+            assertEquals(
+                ExecOutcome.Success("/workspace"),
+                pendingOutcome.await()
+            )
+        }
+
+    @Test
+    fun `executeTool does not require the local conversation to match`() =
+        runBlocking {
+            repository.connect(
+                agentAddress = "0xAGENT",
+                conversationId = "conversation-1"
+            )
+            awaitUntil(retry = { simulateConnected("conversation-1") }) {
+                repository.isConnected()
+            }
+            val pendingOutcome = async(start = CoroutineStart.UNDISPATCHED) {
+                repository.executeTool(
+                    ExecRequest(
+                        execId = "exec-2",
+                        tool = "shell",
+                        argsJson = """{"command":"pwd"}""",
+                        agentAddress = "0xAGENT"
+                    )
+                )
+            }
+
+            awaitUntil { factory.lastWebSocket!!.sentMessages.any { it.contains("\"exec_id\":\"exec-2\"") } }
+
+            factory.lastListener!!.onMessage(
+                factory.lastWebSocket!!,
+                """
+                {
+                  "type": "EXEC_RESULT",
+                  "exec_id": "exec-2",
+                  "status": "success",
+                  "result": "/workspace"
+                }
+                """.trimIndent()
+            )
+
+            assertEquals(
+                ExecOutcome.Success("/workspace"),
+                pendingOutcome.await()
+            )
+        }
 
     @Test
     fun `interrupt sends an INTERRUPT frame on the underlying AgentConnection`() = runTest(testDispatcher) {
@@ -865,12 +963,14 @@ class ConnectionRepositoryImplTest {
         assertEquals(ApprovalMode.ULW, repository.approvalMode.value)
         // A v2 signed command: the Host executes the signed payload.
         val expected = Json.parseToJsonElement("""{"type":"mode_change","mode":"ulw","turns":12}""")
-        assertTrue(
-            factory.lastWebSocket!!.sentMessages.any {
+         assertTrue(
+             factory.lastWebSocket!!.sentMessages.any {
                 val payload = Json.parseToJsonElement(it).jsonObject["payload"]?.jsonObject
-                payload != null && JsonObject(payload - setOf("to", "timestamp", "nonce")) == expected
-            }
-        )
+                payload != null &&
+                    JsonObject(payload - setOf("to", "timestamp", "nonce")) == expected &&
+                    it.contains("\"signature\"")
+             }
+         )
     }
 
     @Test

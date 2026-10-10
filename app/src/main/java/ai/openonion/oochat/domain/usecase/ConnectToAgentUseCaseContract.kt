@@ -4,6 +4,8 @@ import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.NO_PLAN
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.PlanEntry
@@ -116,6 +118,11 @@ interface ConnectToAgentUseCaseContract {
      * @param files Non-image file attachments (name + base64 data URL each)
      */
     suspend fun sendMessage(content: String, agentAddress: String, images: List<String>? = null, files: List<OutgoingFileAttachment>? = null)
+
+    /**
+     * Send a direct tool command and wait for the corresponding EXEC_RESULT.
+     */
+    suspend fun executeTool(request: ExecRequest): ExecOutcome
 
     /**
      * Reply to an `ask_user` event.

@@ -21,11 +21,13 @@ import ai.openonion.oochat.data.protocol.SignedCommand
 import ai.openonion.oochat.data.protocol.UlwResponse
 import ai.openonion.oochat.di.sharedHttpClient
 import ai.openonion.oochat.domain.model.ChatItem
+import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.usecase.StaleSessionDetector
 import ai.openonion.oochat.util.FileLogger
 import ai.openonion.oochat.util.LogSanitizer
 import ai.openonion.oochat.util.LogTags
 import ai.openonion.oochat.util.runCatchingCancellable
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,14 +35,18 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import okhttp3.OkHttpClient
@@ -48,6 +54,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -112,6 +119,9 @@ class AgentConnection(
      * ProtocolParser dropped it, leaving the composer stuck mid-turn.
      */
     private val outstandingInputIds = java.util.Collections.synchronizedSet(LinkedHashSet<String>())
+
+    /** EXEC calls waiting for the EXEC_RESULT carrying the same exec_id. */
+    private val pendingExecs = ConcurrentHashMap<String, CompletableDeferred<ExecOutcome>>()
     @Volatile private var isDirect: Boolean = false
     @Volatile private var agentAddress: String = ""
     @Volatile private var directUrl: String? = null
@@ -346,6 +356,7 @@ class AgentConnection(
      * own close as a [ConnectionEvent.Disconnected].
      */
     private fun retireSocket(reason: String) {
+        settlePendingExecs("The agent connection was replaced")
         socketGeneration.incrementAndGet()
         webSocket?.close(1000, reason)
         webSocket = null
@@ -481,10 +492,151 @@ class AgentConnection(
         return json.encodeToString(JsonObject.serializer(), frame)
     }
 
-    /** Sign and send [command] on the live socket, if any; see [signedCommand]. */
+    /** Sign and send an application command on the live socket. */
     private inline fun <reified T> sendSigned(command: T) {
-        val frame = signedCommand(command) ?: return
-        webSocket?.send(frame)
+        signedCommand(command)?.let { webSocket?.send(it) }
+    }
+
+    /**
+     * Send one direct EXEC command and wait for its matching EXEC_RESULT.
+     *
+     * EXEC is never queued or retried: once the socket accepts the frame, a
+     * timeout or disconnect cannot tell us whether the remote tool ran.
+     */
+    suspend fun executeTool(
+        execId: String,
+        tool: String,
+        args: JsonObject,
+        recipient: String,
+        timeoutMs: Long = EXEC_TIMEOUT_MS
+    ): ExecOutcome {
+        val socket = webSocket?.takeIf { isConnectionReady }
+            ?: return ExecOutcome.NotSent("The agent connection is not ready")
+
+        val message = createExecMessage(
+            execId = execId,
+            tool = tool,
+            args = args,
+            recipient = recipient
+        ) ?: return ExecOutcome.NotSent("The client identity is unavailable")
+
+        val result = CompletableDeferred<ExecOutcome>()
+        if (pendingExecs.putIfAbsent(execId, result) != null) {
+            return ExecOutcome.NotSent("Duplicate EXEC id: $execId")
+        }
+
+        val accepted = socket.send(message)
+        if (!accepted) {
+            pendingExecs.remove(execId, result)
+            return ExecOutcome.NotSent("The WebSocket rejected the EXEC frame")
+        }
+
+        FileLogger.i(LogTags.AGENT_CONN, "EXEC → tool=$tool exec_id=${execId.take(8)}")
+        return awaitExecResult(execId, result, timeoutMs)
+    }
+
+    /** Build the signed EXEC frame through the shared command envelope. */
+    private fun createExecMessage(
+        execId: String,
+        tool: String,
+        args: JsonObject,
+        recipient: String
+    ): String? {
+        val command = JsonObject(
+            mapOf(
+                "type" to JsonPrimitive("EXEC"),
+                "exec_id" to JsonPrimitive(execId),
+                "tool" to JsonPrimitive(tool),
+                "args" to args,
+                // Keep the routing field at the top level for pre-v2 relays;
+                // the shared envelope also copies it into the signed payload.
+                "to" to JsonPrimitive(recipient)
+            )
+        )
+        return signedCommand(command, to = recipient)
+    }
+
+    /** Wait for EXEC result, if timeout remove pending EXEC commands. */
+    private suspend fun awaitExecResult(
+        execId: String,
+        result: CompletableDeferred<ExecOutcome>,
+        timeoutMs: Long
+    ): ExecOutcome =
+        try {
+            // Generic signed-command refusals intentionally wait for the
+            // normal timeout. They may belong to an INPUT, so treating every
+            // `unauthorized: ...` frame as an EXEC failure would blame the
+            // wrong card. Known EXEC-only refusals are settled above.
+            withTimeoutOrNull(timeoutMs) {
+                result.await()
+            } ?: run {
+                currentCoroutineContext().ensureActive()
+                ExecOutcome.Unknown("No EXEC_RESULT received within ${timeoutMs}ms")
+            }
+        } finally {
+            pendingExecs.remove(execId, result)
+        }
+
+    /** Complete the caller waiting for this result. */
+    private fun completeExecResult(event: ConnectionEvent.ExecResultReceived) {
+        val outcome = when (event.status) {
+            "success" -> ExecOutcome.Success(
+                result = event.result.orEmpty(),
+                durationMs = event.durationMs
+            )
+            "error" -> ExecOutcome.Error(
+                message = event.error.orEmpty(),
+                durationMs = event.durationMs
+            )
+            else -> ExecOutcome.Unknown("Unsupported EXEC_RESULT status: ${event.status}")
+        }
+
+        val waiter = pendingExecs.remove(event.execId)
+        if (waiter == null) {
+            FileLogger.w(
+                LogTags.AGENT_CONN,
+                "Ignoring EXEC_RESULT for unknown exec_id=${event.execId.take(8)}"
+            )
+        } else {
+            waiter.complete(outcome)
+        }
+    }
+
+    /**
+     * Some EXEC refusals arrive as a plain ERROR without an exec_id. The Host
+     * uses these for requests that cannot be accepted at all, so complete the
+     * waiting EXEC calls instead of leaving them to time out.
+     */
+    private fun failPendingExecsForRefusal(event: ConnectionEvent.ConnectionError): Boolean {
+        // Keep this list narrow. A generic `unauthorized: ...` ERROR may have
+        // rejected an INPUT rather than an EXEC, so matching every refusal
+        // would incorrectly settle unrelated tool cards.
+        val providerRestriction = event.code.equals("provider_station_only", ignoreCase = true)
+        val authenticationRequired = event.message.contains("authenticate first", ignoreCase = true)
+        if (!providerRestriction && !authenticationRequired) return false
+
+        val outcome = ExecOutcome.Error(event.message)
+        var settled = false
+        pendingExecs.entries.forEach { (execId, waiter) ->
+            if (pendingExecs.remove(execId, waiter)) {
+                waiter.complete(outcome)
+                settled = true
+            }
+        }
+        return settled
+    }
+
+    /** Release every caller waiting on a socket that can no longer answer. */
+    private fun settlePendingExecs(reason: String) {
+        val unknown = ExecOutcome.Unknown(reason)
+        pendingExecs.entries.forEach { (execId, waiter) ->
+            // Remove the exact entry before completing it. A concurrent
+            // EXEC added after this iteration began must not be removed by a
+            // broad clear() without also being notified.
+            if (pendingExecs.remove(execId, waiter)) {
+                waiter.complete(unknown)
+            }
+        }
     }
 
     /**
@@ -697,6 +849,7 @@ class AgentConnection(
         synchronized(this) {
             isReconnecting = false
             isConnectionReady = false
+            settlePendingExecs("The agent connection was closed")
             reconnectJob?.cancel()
             reconnectJob = null
             reconnectAttempts = 0
@@ -968,6 +1121,7 @@ class AgentConnection(
                 // handleMessage: one identical failure per ladder rung.
                 FileLogger.eRepeating(LogTags.AGENT_CONN, "WS failed: ${t.message}")
                 isConnectionReady = false
+                settlePendingExecs("The agent connection failed")
                 // Server keeps socket open after ERROR, so error reconnect is
                 // scheduled from handleMessage, not here; see schedulePostRejectionReconnect doc.
                 //
@@ -991,6 +1145,7 @@ class AgentConnection(
                 }
                 FileLogger.i(LogTags.AGENT_CONN, "WS closed: $code $reason")
                 isConnectionReady = false
+                settlePendingExecs("The agent connection closed")
                 // See onFailure's comment above — same fix, same reason:
                 // always climb the ladder on a non-deliberate close.
                 when {
@@ -1225,6 +1380,9 @@ class AgentConnection(
                     FileLogger.i(LogTags.AGENT_CONN, "OUTPUT ✓ ${LogSanitizer.contentSummary(event.result)}")
                     _events.tryEmit(event)
                 }
+                is ConnectionEvent.ExecResultReceived -> {
+                    completeExecResult(event)
+                }
                 is ConnectionEvent.ProtocolRejected -> {
                     FileLogger.e(
                         LogTags.AGENT_CONN,
@@ -1239,6 +1397,7 @@ class AgentConnection(
                     // rejection on every rung, and an unbounded loop of it is
                     // what filled app.log before the ladder was capped.
                     FileLogger.eRepeating(LogTags.AGENT_CONN, "ERROR: ${event.message}")
+                    val execRefusalHandled = failPendingExecsForRefusal(event)
                     // Kept only while the handshake has never landed, so it can
                     // only ever explain a connection that never worked.
                     if (!reachedAgentThisCycle) neverReachedReason = event.message
@@ -1274,6 +1433,10 @@ class AgentConnection(
                         // covered both responsibilities above and below.
                         schedulePostRejectionReconnect()
                         _events.tryEmit(ConnectionEvent.Reconnecting)
+                    } else if (execRefusalHandled) {
+                        // The refusal has already been delivered to the EXEC
+                        // card; emitting a second ConnectionError would show
+                        // the same failure in the generic chat error UI.
                     } else if (!staleSessionRecoveryAttempted && StaleSessionDetector.isStaleSessionError(event.message)) {
                         // See recoverFromStaleSession's doc: the same
                         // "session already attached" rejection
@@ -1290,7 +1453,7 @@ class AgentConnection(
                         // invite-code-rejection path and a single
                         // stale-session recovery attempt get contextual
                         // treatment instead.
-                        _events.tryEmit(ConnectionEvent.ConnectionError(event.message))
+                        _events.tryEmit(ConnectionEvent.ConnectionError(event.message, event.code))
                     }
                 }
                 is ConnectionEvent.ChatItemReceived -> {
@@ -1360,6 +1523,8 @@ class AgentConnection(
         const val READ_TIMEOUT_SECONDS = 600L
         const val WRITE_TIMEOUT_SECONDS = 30L
         const val PING_INTERVAL_SECONDS = 15L
+        /** Maximum time to wait for a shell-capable Host to return EXEC_RESULT. */
+        const val EXEC_TIMEOUT_MS = 60_000L
 
         /**
          * The WebSocket-tuned view of [sharedHttpClient], built once.

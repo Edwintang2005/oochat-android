@@ -151,6 +151,10 @@ class SettingsViewModelTest {
         override suspend fun setAnalyticsEnabled(value: Boolean) { analyticsEnabledFlow.value = value }
         override val safeModeEnabled: Flow<Boolean> = safeModeEnabledFlow
         override suspend fun setSafeModeEnabled(value: Boolean) { safeModeEnabledFlow.value = value }
+
+        private val developerToolsEnabledFlow = MutableStateFlow(false)
+        override val developerToolsEnabled: Flow<Boolean> = developerToolsEnabledFlow
+        override suspend fun setDeveloperToolsEnabled(value: Boolean) { developerToolsEnabledFlow.value = value }
     }
 
     private class FakeConfigRepository : ConnectionConfigRepository {
@@ -470,12 +474,14 @@ class SettingsViewModelTest {
         vm.setFontSizeIndex(3)
         vm.setCustomInstructions("be brief")
         vm.setNotificationSound("Bell")
+        vm.setDeveloperToolsEnabled(true)
         testScheduler.runCurrent()
 
         assertEquals(false, appSettings.streamingResponses.firstValue())
         assertEquals(3, appSettings.fontSizeIndex.firstValue())
         assertEquals("be brief", appSettings.customInstructions.firstValue())
         assertEquals("Bell", appSettings.notificationSound.firstValue())
+        assertEquals(true, appSettings.developerToolsEnabled.firstValue())
     }
 
     private fun <T> Flow<T>.firstValue(): T = (this as MutableStateFlow<T>).value

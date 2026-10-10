@@ -23,6 +23,8 @@ import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatMessage
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.UserProfile
 import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCaseContract
 import ai.openonion.oochat.domain.usecase.PersistenceTransaction
@@ -266,6 +268,10 @@ class FakeAppSettings : AppSettings {
     private val safeModeEnabledFlow = MutableStateFlow(false)
     override val safeModeEnabled: Flow<Boolean> = safeModeEnabledFlow
     override suspend fun setSafeModeEnabled(value: Boolean) { safeModeEnabledFlow.value = value }
+
+    private val developerToolsEnabledFlow = MutableStateFlow(false)
+    override val developerToolsEnabled: Flow<Boolean> = developerToolsEnabledFlow
+    override suspend fun setDeveloperToolsEnabled(value: Boolean) { developerToolsEnabledFlow.value = value }
 }
 
 class FakeAgentReplyNotifier : AgentReplyNotifier {
@@ -290,6 +296,7 @@ class FakeConnectToAgentUseCase : ConnectToAgentUseCaseContract {
     override suspend fun disconnect() {}
     override fun isConnected() = false
     override suspend fun sendMessage(content: String, agentAddress: String, images: List<String>?, files: List<ai.openonion.oochat.domain.model.OutgoingFileAttachment>?) {}
+    override suspend fun executeTool(request: ExecRequest): ExecOutcome = ExecOutcome.NotSent("Not used in instrumented tests")
     override suspend fun respond(answer: String) {}
     override suspend fun interrupt() {}
     override suspend fun respondToApproval(approved: Boolean, scope: String, mode: String?, feedback: String?) {}

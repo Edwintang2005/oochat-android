@@ -11,6 +11,8 @@ import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.PlanEntry
 import ai.openonion.oochat.domain.model.ServerSessionStatus
@@ -47,6 +49,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Implementation of ConnectionRepository.
@@ -580,6 +584,48 @@ class ConnectionRepositoryImpl(
             connection?.sendMessage(content, agentAddress, images, wireFiles)
         }
     }
+
+    override suspend fun executeTool(request: ExecRequest): ExecOutcome =
+        withContext(Dispatchers.IO) {
+            val activeConnection = connection
+                ?: return@withContext ExecOutcome.NotSent(
+                    "There is no active agent connection"
+                )
+
+            if (request.agentAddress != currentAgentAddress) {
+                return@withContext ExecOutcome.NotSent(
+                    "The EXEC target is not the connected agent"
+                )
+            }
+
+            if (request.execId.isBlank()) {
+                return@withContext ExecOutcome.NotSent(
+                    "The EXEC id cannot be blank"
+                )
+            }
+
+            if (request.tool.isBlank()) {
+                return@withContext ExecOutcome.NotSent(
+                    "The EXEC tool cannot be blank"
+                )
+            }
+
+            val parsedArgs = runCatching {
+                Json.parseToJsonElement(request.argsJson)
+            }.getOrNull()
+
+            val args = parsedArgs as? JsonObject
+                ?: return@withContext ExecOutcome.NotSent(
+                    "EXEC arguments must be a JSON object"
+                )
+
+            activeConnection.executeTool(
+                execId = request.execId,
+                tool = request.tool,
+                args = args,
+                recipient = request.agentAddress
+            )
+        }
 
     override suspend fun interrupt() {
         withContext(Dispatchers.IO) {

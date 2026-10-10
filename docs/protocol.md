@@ -205,7 +205,7 @@ The Host's checks, in `authenticated_command_payload` in
 | `payload.nonce` present | `unauthorized: signed command nonce required` |
 | Signature never used before (a shared, persistent ledger) | `unauthorized: signed command already used` |
 
-Signed: `INPUT`, `ASK_USER_RESPONSE`, `APPROVAL_RESPONSE`, `INTERRUPT`,
+Signed: `INPUT`, `EXEC`, `ASK_USER_RESPONSE`, `APPROVAL_RESPONSE`, `INTERRUPT`,
 `PLAN_REVIEW_RESPONSE`, `ULW_RESPONSE` and `mode_change`. These are the frames
 the Host leaves unsigned on purpose (`SignedCommand.EXEMPT_TYPES`, matching
 `exempt` in `ws_router/session.py`):
@@ -265,9 +265,50 @@ passes their data URLs through the connection layer. `AgentConnection` tracks
 the latest `input_id`; an `OUTPUT` for a different input is ignored in relay
 mode.
 
+### `EXEC` — `ExecMessage`
+
+`EXEC` asks the agent to run one named tool immediately with a JSON object of
+arguments. It is a client-requested tool command, separate from a conversational
+`INPUT` that may cause the agent to choose and run several tools itself.
+
+| Field | Meaning |
+| --- | --- |
+| `type` | Always `"EXEC"`. |
+| `exec_id` | UUID identifying this tool command. |
+| `tool` | Name of the tool to run. |
+| `args` | JSON object containing the tool arguments. |
+| `to` | Target agent address. |
+| `timestamp` | Unix time in seconds. |
+| `from` | Local Ed25519 address. |
+| `signature` | Ed25519 signature over the canonical payload JSON. |
+
+The signed `payload` contains the command and a fresh `nonce`:
+
+```json
+{
+  "type": "EXEC",
+  "exec_id": "request-id",
+  "tool": "read_file",
+  "args": {
+    "path": "README.md"
+  },
+  "to": "agent-address",
+  "timestamp": 1730000000,
+  "nonce": "fresh-request-value"
+}
+```
+
+The `nonce` (number used once) makes each signed request unique, even when the same tool and
+arguments are sent more than once. The top-level command fields copy the
+corresponding payload fields for relay and host compatibility.
+
+The Android client waits for the server's `EXEC_RESULT` with the same `exec_id`.
+See [EXEC_RESULT](#exec_result) in the server-to-client section. It does
+not retry the command automatically after a timeout.
+
 ### Control and response frames
 
-Every frame below except `PONG` is a [signed command](#signed-commands).
+Every control frame below except `PONG` is a signed command.
 `mode_change` (`ModeChangeMessage`, sent by `AgentConnection.setMode()`) is
 signed the same way.
 
@@ -329,7 +370,43 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `ulw_turns_reached` | `id`, `turns_used`, `max_turns` | Creates a `ChatItem.UlwTurnsReachedItem` and enters a waiting state until the user answers with `ULW_RESPONSE`. Both counters default to `0`. |
 | `RUNTIME_INPUT_ACK` | `session_id`, `id` | Emits `ConnectionEvent.RuntimeInputAcknowledged`: the host queued an `INPUT` that arrived mid-turn for the running turn's next iteration. `id` is the host's own UUID for the queued item, **not** the `input_id` we sent, so it cannot name the message it answers — see [Runtime input](#runtime-input). Not an `OUTPUT`: it does not end the turn. |
 | `OUTPUT` | `input_id`, `result`, `session` | Emits the final output when it belongs to the current input, or for any direct connection; updates the session snapshot. |
+| `EXEC_RESULT` | `exec_id`, `status`, `result`, `error`, `tool`, `duration_ms` | Completes the pending direct `EXEC` request with a success or error outcome. |
 | `ERROR` | `code`, `protocol`, `retryable`, `session_id`, `message`, `error` | With `code` `-32010`, emits `ProtocolRejected` (see [Incompatible protocol version](#incompatible-protocol-version)). With `code` `"RUNTIME_INPUT_REJECTED"`, emits `RuntimeInputRejected` instead of an error: the socket and the running turn are healthy, and `ConnectionError` could start the reconnect ladder (see [Runtime input](#runtime-input)). `retryable` is read as true only for a literal boolean `true`. Every other `ERROR` emits `ConnectionError` using `message`, then `error`, then `"Unknown error"`. |
+
+### `EXEC_RESULT`
+
+`EXEC_RESULT` reports the outcome of one client-requested tool command. The
+`exec_id` connects the result to the pending `EXEC` request.
+
+A successful result has this form:
+
+```json
+{
+  "type": "EXEC_RESULT",
+  "exec_id": "request-id",
+  "status": "success",
+  "tool": "read_file",
+  "result": "file contents",
+  "duration_ms": 42.0
+}
+```
+
+An error result has this form:
+
+```json
+{
+  "type": "EXEC_RESULT",
+  "exec_id": "request-id",
+  "status": "error",
+  "tool": "delete_file",
+  "error": "Permission denied",
+  "duration_ms": 18.0
+}
+```
+
+The parser accepts a success only when `result` is present and accepts an
+error only when `error` is present. Frames with a missing `exec_id`, missing
+required content, or an unsupported status are ignored as unknown frames.
 
 For `assistant`, `thinking` text, `agent_image`, and `session_sync`, the parser
 uses `stableAssistantId()` to make replayed messages idempotent. This prevents

@@ -234,6 +234,7 @@ open class SettingsViewModel @JvmOverloads constructor(
     val notificationSound: Flow<String> = appSettings.notificationSound
     val analyticsEnabled: Flow<Boolean> = appSettings.analyticsEnabled
     val safeModeEnabled: Flow<Boolean> = appSettings.safeModeEnabled
+    val developerToolsEnabled: Flow<Boolean> = appSettings.developerToolsEnabled
 
     fun setStreamingResponses(value: Boolean) = persist { appSettings.setStreamingResponses(value) }
     fun setRenderMarkdown(value: Boolean) = persist { appSettings.setRenderMarkdown(value) }
@@ -246,6 +247,7 @@ open class SettingsViewModel @JvmOverloads constructor(
     fun setNotificationSound(value: String) = persist { appSettings.setNotificationSound(value) }
     fun setAnalyticsEnabled(value: Boolean) = persist { appSettings.setAnalyticsEnabled(value) }
     fun setSafeModeEnabled(value: Boolean) = persist { appSettings.setSafeModeEnabled(value) }
+    fun setDeveloperToolsEnabled(value: Boolean) = persist { appSettings.setDeveloperToolsEnabled(value) }
 
     // Thin alias over the shared [launchScoped] fire-and-forget helper,
     // kept for the many `set…` delegators above that read as `persist { … }`.

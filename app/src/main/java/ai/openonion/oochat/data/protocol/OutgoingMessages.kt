@@ -2,6 +2,7 @@ package ai.openonion.oochat.data.protocol
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Outgoing WebSocket messages sent to the server.
@@ -43,7 +44,8 @@ data class ConnectPayload(
     val timestamp: Long,
     val to: String? = null,
     val nonce: String,
-    @SerialName("signed_commands") val signedCommands: Int = SignedCommand.CAPABILITY
+    @SerialName("signed_commands")
+    val signedCommands: Int = SignedCommand.CAPABILITY
 )
 
 @Serializable
@@ -70,6 +72,44 @@ data class InputMsg(
 data class FileAttachment(
     val name: String,
     val data: String
+)
+
+/**
+ * Content for an EXEC payload.
+ *
+ * [to] is the remote agent's address, including on direct connections.
+ * [timestamp] is Unix time in seconds.
+ * [nonce] is freshly generated for each call, representing 'number used once'.
+ */
+@Serializable
+data class ExecPayload(
+    @SerialName("exec_id") val execId: String,
+    val tool: String,
+    val args: JsonObject,
+    val to: String,
+    val timestamp: Long,
+    val nonce: String,
+    val type: String = "EXEC"
+)
+
+/**
+ * Complete EXEC frame.
+ *
+ * The top-level command fields support compatibility hosts and relay
+ * routing. Their defaults copy the signed payload so the send path
+ * can construct this message from one payload.
+ */
+@Serializable
+data class ExecMessage(
+    val payload: ExecPayload,
+    val from: String,
+    val signature: String,
+    val type: String = "EXEC",
+    @SerialName("exec_id") val execId: String = payload.execId,
+    val tool: String = payload.tool,
+    val args: JsonObject = payload.args,
+    val to: String = payload.to,
+    val timestamp: Long = payload.timestamp
 )
 
 @Serializable
