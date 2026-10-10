@@ -24,59 +24,24 @@ class OutgoingMessagesTest {
     }
 
     @Test
-    fun `EXEC includes signed payload and matching top-level command fields`() {
-        // create command with arguments
+    fun `EXEC carries the command ws_router-exec reads, with the args object untouched`() {
+        // The unsigned command only: AgentConnection signs it with
+        // SignedCommand.envelope like every other command, which
+        // SignedCommandTest covers (EXEC included).
         val args = json.parseToJsonElement(
             """{"command":"co status","timeout":30,"verbose":false}"""
         ).jsonObject
 
-        val payload = ExecPayload(
-            execId = "exec-123",
-            tool = "bash",
-            args = args,
-            to = "0xagent",
-            timestamp = 1_760_000_000L,
-            nonce = "nonce-123"
-        )
+        val frame = json.parseToJsonElement(
+            json.encodeToString(ExecMessage.serializer(), ExecMessage(execId = "exec-123", tool = "bash", args = args, to = "0xagent"))
+        ).jsonObject
 
-        val message = ExecMessage(
-            payload = payload,
-            from = "0xclient",
-            signature = "test-signature"
-        )
-
-        // serialize message then inspect fields
-        val encodedMessage = json.encodeToString(
-            ExecMessage.serializer(),
-            message
-        )
-        val frame = json.parseToJsonElement(encodedMessage).jsonObject
-        val signedPayload = frame.getValue("payload").jsonObject
-
-        // check contentss
-        assertEquals(JsonPrimitive("EXEC"), signedPayload["type"])
-        assertEquals(JsonPrimitive("exec-123"), signedPayload["exec_id"])
-        assertEquals(JsonPrimitive("bash"), signedPayload["tool"])
-        assertEquals(args, signedPayload["args"])
-        assertEquals(JsonPrimitive("0xagent"), signedPayload["to"])
-        assertEquals(
-            JsonPrimitive(1_760_000_000L),
-            signedPayload["timestamp"]
-        )
-        assertEquals(JsonPrimitive("nonce-123"), signedPayload["nonce"])
-
-        // 4. The outer frame must repeat the same command fields.
-        val repeatedFields = listOf(
-            "type", "exec_id", "tool", "args", "to", "timestamp"
-        )
-
-        for (field in repeatedFields) {
-            assertEquals(
-                "$field must match the signed payload",
-                signedPayload.getValue(field),
-                frame[field]
-            )
-        }
+        assertEquals(setOf("type", "exec_id", "tool", "args", "to"), frame.keys)
+        assertEquals(JsonPrimitive("EXEC"), frame["type"])
+        assertEquals(JsonPrimitive("exec-123"), frame["exec_id"])
+        assertEquals(JsonPrimitive("bash"), frame["tool"])
+        assertEquals(args, frame["args"])
+        assertEquals(JsonPrimitive("0xagent"), frame["to"])
     }
 
     @Test

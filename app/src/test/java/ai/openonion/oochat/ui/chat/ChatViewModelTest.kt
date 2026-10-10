@@ -2884,6 +2884,64 @@ class ChatViewModelTest {
         assertEquals("TLS handshake failed", thinking.content)
     }
 
+    // ── W16AAPPLE-74: an error already current when the screen is created ──
+
+    /** A second chat screen on the same shared connection, as recreating the screen makes. */
+    private fun newChatViewModel() = ChatViewModel(
+        application = Application(),
+        agentDiscovery = AgentDiscoveryService(),
+        connectUseCase = connectUseCase,
+        agentRepository = agentRepo,
+        configRepository = configRepo,
+        ignoredIdsManager = IgnoredIdsManager(storage),
+        imageAttachmentStore = imageStore,
+        fileAttachmentStore = fileStore,
+        voiceRecorderStore = voiceRecorderStore,
+        voiceTranscriptionService = voiceTranscriptionService,
+        speechRecognitionService = speechRecognition,
+        appSettings = appSettings,
+        messageRepository = messageRepo,
+        conversationHistory = ConversationHistoryUseCase(
+            agentRepo, sessionRepo, messageRepo,
+            FakePersistenceTransaction(messageRepo, sessionRepo)
+        ),
+        initialMyAddress = "0xTEST",
+        networkMonitor = networkMonitor,
+        agentReplyNotifier = agentReplyNotifier,
+        requiresNotificationPermission = true,
+        hasNotificationPermission = { notificationPermissionGranted },
+        isAppInForeground = { appInForeground },
+    )
+
+    private fun ChatViewModel.errorItems() =
+        uiState.value.chatItems.filterIsInstance<ChatItem.Thinking>().filter { it.status == ThinkingStatus.ERROR }
+
+    @Test
+    fun `an error the shared connection already had is not added again by a newly created chat screen`() = runTest(testDispatcher) {
+        connectUseCase.forceState(ConnectionState.Error(message = "boom"))
+        testScheduler.runCurrent()
+
+        val recreated = newChatViewModel()
+        testScheduler.runCurrent()
+
+        assertEquals("the old error is the banner's to show, not a new chat item", emptyList<ChatItem>(), recreated.errorItems())
+    }
+
+    @Test
+    fun `an error that happens after the screen is created is still added, once`() = runTest(testDispatcher) {
+        connectUseCase.forceState(ConnectionState.Error(message = "boom"))
+        testScheduler.runCurrent()
+        val recreated = newChatViewModel()
+        testScheduler.runCurrent()
+
+        connectUseCase.forceState(ConnectionState.Reconnecting)
+        testScheduler.runCurrent()
+        connectUseCase.forceState(ConnectionState.Error(message = "again"))
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("again"), recreated.errorItems().map { it.content })
+    }
+
     @Test
     fun `starting a new session fails a turn still running in the one being left`() = runTest(testDispatcher) {
         val thinkingId = "thinking-switch-1"

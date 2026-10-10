@@ -652,7 +652,13 @@ open class ChatViewModel @JvmOverloads constructor(
 
         // Collect connection state changes ONCE
         viewModelScope.launch {
+            // A StateFlow hands a new collector its current value first. That
+            // value is how the shared connection already stood when this screen
+            // was created, not something that just happened to it (W16AAPPLE-74).
+            var alreadyCurrent = true
             connectionState.collect { state ->
+                val atCreation = alreadyCurrent
+                alreadyCurrent = false
                 when (state) {
                     is ConnectionState.Connected -> {
                         FileLogger.i(LogTags.CHAT_VM, "Connected to ${state.addressOrNull()?.take(16)}")
@@ -684,7 +690,13 @@ open class ChatViewModel @JvmOverloads constructor(
                         // the one thing the user must see, and its text can carry
                         // the Host's own words (the OIP version rejection), which
                         // must not be able to match the detector and hide it.
-                        if (!state.retryable || !StaleSessionDetector.isStaleSessionError(state.message)) {
+                        //
+                        // Not for an error that was already current when this
+                        // screen was created: the screen that was open when it
+                        // happened already reported it, and the banner still
+                        // shows it. Adding it again put a second copy beside
+                        // any new one (W16AAPPLE-74).
+                        if (!atCreation && (!state.retryable || !StaleSessionDetector.isStaleSessionError(state.message))) {
                             if (!failRunningThinking(content = state.message)) {
                                 appendStandaloneError(state.message)
                             }

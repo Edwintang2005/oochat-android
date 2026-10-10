@@ -188,7 +188,17 @@ class SignedCommandTest {
             command(InterruptMessage()),
             command(PlanReviewResponse(message = "go")),
             command(UlwResponse(action = "continue", turns = 100)),
-            command(ModeChangeMessage(mode = "ulw", turns = 25))
+            command(ModeChangeMessage(mode = "ulw", turns = 25)),
+            // Nested args: the one command whose payload carries a JSON object
+            // of the user's own, which has to canonicalise as the Host does.
+            command(
+                ExecMessage(
+                    execId = "exec-1",
+                    tool = "bash",
+                    args = Json.parseToJsonElement("""{"command":"ls","opts":{"all":true,"depth":2}}""").jsonObject,
+                    to = "0xagent"
+                )
+            )
         )
         val host = gate()
         commands.forEach { c ->

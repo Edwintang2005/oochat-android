@@ -49,6 +49,8 @@ class ConnectToAgentUseCase(
     private val sessionStore: SessionStore? = null,
     private val agentDiscovery: AgentDiscoveryService = AgentDiscoveryService(),
     private val pendingMessageSink: PendingMessageSink = InMemoryPendingMessageSink(),
+    // Whether the app is on screen; see AgentConnection's isAppVisible.
+    private val isAppVisible: () -> Boolean = { true },
     // Factory (not a shared instance) so getOrCreateRepository() below still
     // creates at most one repository per use-case instance. Defaults to the
     // real ConnectionRepositoryImpl; tests substitute a fake ConnectionRepository
@@ -59,6 +61,7 @@ class ConnectToAgentUseCase(
             relayUrl,
             sessionStore,
             pendingMessageSink,
+            isAppVisible = isAppVisible,
             agentDiscovery = agentDiscovery
         )
     }

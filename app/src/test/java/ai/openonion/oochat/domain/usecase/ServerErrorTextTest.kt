@@ -1,6 +1,5 @@
 package ai.openonion.oochat.domain.usecase
 
-import ai.openonion.oochat.knownIssue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -72,23 +71,21 @@ class ServerErrorTextTest {
      * more than 300s from the Host's clock. Since W16AAPPLE-16 signs every
      * command, a phone with a wrong clock has every message refused, and a
      * correct client hits this error for no other reason, so the user should be
-     * told to check their date and time. Wording is left to the fix; this only
-     * asks that it names the cause.
+     * told to check their date and time (W16AAPPLE-90). This only asks that the
+     * wording names the cause.
      */
     @Test
-    fun `known issue - an expired signature is not explained as the device clock`() {
-        knownIssue("an expired-signature refusal shows the Host's raw text instead of pointing at the device clock") {
-            val shown = ServerErrorText.humanize("unauthorized: signature expired")
-            assertTrue("shown: $shown", shown.contains("date and time", ignoreCase = true))
-        }
+    fun `an expired signature is explained as the device clock`() {
+        val shown = ServerErrorText.humanize("unauthorized: signature expired")
+        assertTrue("shown: $shown", shown.contains("date and time", ignoreCase = true))
     }
 
     @Test
     fun `an expired signature is neither a stale session nor an offline agent`() {
         // Either reading would send the connection down a recovery path
         // (a fresh session, or waiting for the agent) that cannot fix a clock.
-        // Checked on the humanized line, so it keeps guarding once the
-        // known issue above is fixed.
+        // Checked on the humanized line, so it guards the wording
+        // the user actually reads.
         val shown = ServerErrorText.humanize("unauthorized: signature expired")
         assertFalse(StaleSessionDetector.isStaleSessionError(shown))
         assertFalse(ServerErrorText.isOfflineVerdict(shown))

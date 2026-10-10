@@ -221,16 +221,30 @@ If no identity is loaded, a command is dropped rather than sent unsigned.
 - An `INPUT`'s images and files are carried twice: once at the top level and
   once in the signed payload. A message with attachments is therefore about
   twice its old size on the wire.
-- The client's clock must be within 300 seconds of the Host's. This was
-  already true for `CONNECT`; now every command is refused as well when the
-  clock is off. The client does not correct for the offset, and the refusal
-  (`unauthorized: signature expired`) reaches the user as the Host's raw text
-  rather than as advice to check the device's date and time. Tracked as a
-  known issue by `ServerErrorTextTest`'s
-  `known issue - an expired signature is not explained as the device clock`.
-- Every refusal comes back as an ordinary `ERROR`, so it surfaces as a
-  `ConnectionError` like any other. A correct client never triggers one
-  except through the clock.
+- Every signed timestamp must be within 300 seconds of the Host's clock, and
+  a phone's clock can be off by more. So the client signs with the server's
+  time (W16AAPPLE-90). `network/HostClock` reads the HTTP `Date` header of each
+  WebSocket upgrade and applies the difference to `CONNECT`, every signed
+  command and `ONBOARD_SUBMIT` on that socket:
+  - No `Date` header: the device clock, as before.
+  - Each new socket takes its own reading.
+  - The correction is bounded to 30 minutes (`HostClock.MAX_OFFSET_MS`). On
+    the relay path the header comes from the relay, and the Host records a
+    signature as used only once it has passed the expiry check. A relay that
+    moved the clock forward could therefore hold a command and deliver it up
+    to that much later. Past the bound the device clock is used.
+  - `nextConnectTimestamp()` follows a clock that has gone back by more than
+    5 seconds (the user fixed the date, or the correction arrived) instead of
+    holding every later `CONNECT` past the old, wrong second.
+
+  When the correction cannot help, the refusal (`unauthorized: signature
+  expired`) is shown as `ServerErrorText.CLOCK_WRONG`, advice to check the
+  device's date and time. That covers a connection error, a refused reconnect
+  and a refused invite code.
+- Every refusal comes back as an ordinary `ERROR`. On a live session it
+  surfaces as a `ConnectionError` like any other; in reply to a reconnect's
+  `CONNECT` it ends the reconnect (see [When a reconnect fails](#when-a-reconnect-fails)).
+  A correct client never triggers one except through the clock.
 - A command dropped for want of an identity is only logged; the UI is
   not told. CONNECT needs the same keys, so this cannot happen on a live
   connection in practice.
@@ -271,40 +285,52 @@ mode.
 arguments. It is a client-requested tool command, separate from a conversational
 `INPUT` that may cause the agent to choose and run several tools itself.
 
+It is a [signed command](#signed-commands), built like every other one:
+`AgentConnection.signedCommand()` wraps `ExecMessage` in `SignedCommand.envelope()`.
+The table lists the command fields, which appear both at the top level and in
+the signed `payload`:
+
 | Field | Meaning |
 | --- | --- |
 | `type` | Always `"EXEC"`. |
 | `exec_id` | UUID identifying this tool command. |
 | `tool` | Name of the tool to run. |
 | `args` | JSON object containing the tool arguments. |
-| `to` | Target agent address. |
-| `timestamp` | Unix time in seconds. |
-| `from` | Local Ed25519 address. |
-| `signature` | Ed25519 signature over the canonical payload JSON. |
+| `to` | Target agent address. Kept at the top level too, for a pre-v2 relay that routes on it. |
 
-The signed `payload` contains the command and a fresh `nonce`:
+The envelope then adds `timestamp` and `nonce` to the signed `payload`, and
+`from` and `signature` beside it, exactly as for `INPUT`:
 
 ```json
 {
-  "type": "EXEC",
-  "exec_id": "request-id",
-  "tool": "read_file",
-  "args": {
-    "path": "README.md"
+  "type": "EXEC", "exec_id": "request-id", "tool": "read_file",
+  "args": { "path": "README.md" }, "to": "agent-address",
+  "payload": {
+    "type": "EXEC", "exec_id": "request-id", "tool": "read_file",
+    "args": { "path": "README.md" }, "to": "agent-address",
+    "timestamp": 1730000000, "nonce": "fresh-request-value"
   },
-  "to": "agent-address",
-  "timestamp": 1730000000,
-  "nonce": "fresh-request-value"
+  "from": "0xClientPublicKey",
+  "signature": "…"
 }
 ```
 
-The `nonce` (number used once) makes each signed request unique, even when the same tool and
-arguments are sent more than once. The top-level command fields copy the
-corresponding payload fields for relay and host compatibility.
+The Host's `ws_router/exec.py` reads `exec_id`, `tool` and `args`.
 
 The Android client waits for the server's `EXEC_RESULT` with the same `exec_id`.
 See [EXEC_RESULT](#exec_result) in the server-to-client section. It does
 not retry the command automatically after a timeout.
+
+Two refusals arrive as a plain `ERROR` with no `exec_id`, and both fail every
+waiting EXEC card at once instead of leaving it to time out:
+
+- `code: "provider_station_only"`: a Work Room Host takes no EXEC. It concerns
+  EXEC alone, so it is shown on the cards only, not again as a chat error.
+- `"authenticate first"`: refuses every command on the socket, so it is still
+  reported in the chat as well, in case a message was refused alongside.
+
+Any other refusal, such as a signed-command `unauthorized: …`, could belong to
+an `INPUT` instead, so a waiting EXEC is left to its timeout.
 
 ### Control and response frames
 
@@ -696,6 +722,42 @@ repeats are dropped once and in order, also when the relay names the new socket
 differently; snapshots still arrive; `reset()` and a switch away and back; a
 200-frame burst arrives whole), and `ConnectionRepositoryImplTest` (the same
 burst through the chat bus).
+
+### When a reconnect fails
+
+A dropped socket climbs `AgentConnection`'s reconnect ladder: five tries, 2, 4,
+8, 16 and 32 seconds apart (`MAX_RECONNECT_ATTEMPTS`, `reconnectBackoffMs`). Only
+`CONNECTED` resets it. Three things end a try early:
+
+| What happens on the reconnect socket | What the client does |
+| --- | --- |
+| `ERROR` from the relay saying the agent is offline (`Agent not connected: …`) | A failed rung, like a dropped socket. Closes the socket and climbs. No chat error per rung. |
+| Any other `ERROR` in reply to its `CONNECT` (trust, signature, the clock) | Stops the ladder, closes the socket, emits `ConnectionEvent.ReconnectRefused`. The repository shows it as `ConnectionState.Error`, humanised, with Reconnect. |
+| No `CONNECTED` within `CONNECTED_TIMEOUT_MS` (15 s) | A failed rung. Closes the socket and climbs. |
+
+This applies only to a socket opened after the cycle had reached the agent: a
+ladder retry, `retryNow()`, or a conversation switch. The Host keeps a socket
+open after an `ERROR`, so before this (W16AAPPLE-82) no close arrived to climb
+the ladder, and the repository read the `ERROR` as a business error on a live
+session: the screen sat on "Reconnecting…" for good. An `ERROR` after
+`CONNECTED` is still a non-fatal `ConnectionErrorOccurred`. So is the reply to
+the re-`CONNECT` after an invite code on the first socket (W16AAPPLE-83), which
+is not a reconnect.
+
+**An offline agent (W16AAPPLE-79).** When the ladder runs out and the last try
+ended with the relay's offline verdict, the client says so once (the relay's
+reason, or `ReconnectRefused` with it if the cycle had connected before), then
+tries again every `OFFLINE_POLL_INTERVAL_MS` (60 s). These tries are quiet: no
+`Reconnecting` per try, so the screen keeps showing why it is not connected.
+They run only while the app is on screen (`ConnectOnionApplication.isInForeground`,
+passed down as `isAppVisible`). A try that comes due in the background is
+skipped, and `retryNow()`, which the chat screen calls when it comes back,
+goes at once with a fresh ladder. A plain network failure still stops at the
+cap with `Disconnected`, as before.
+
+Covered by `AgentConnectionRobolectricTest` (the W16AAPPLE-82 and -79
+sections, on a virtual clock) and `ConnectionRepositoryImplTest` (a refused
+reconnect ends in `Error` although the attempt had connected).
 
 ### CONNECTED status
 

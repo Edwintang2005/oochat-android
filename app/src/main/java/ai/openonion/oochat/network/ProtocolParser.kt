@@ -990,6 +990,18 @@ sealed class ConnectionEvent {
      *   when its descriptor was missing or unreadable.
      */
     data class ProtocolRejected(val hostProtocol: String?) : ConnectionEvent()
+
+    /**
+     * A reconnect the server would not let back in: its CONNECT was answered
+     * with an ERROR, or the ladder ran out against an agent the relay says is
+     * offline (W16AAPPLE-82, -79). Distinct from [ConnectionError], which on a
+     * cycle that has reached the agent is a business error on a live session:
+     * this one ends the connection, so the screen can say why and offer
+     * Reconnect instead of staying on "Reconnecting…".
+     *
+     * @param message the server's own words, not yet humanised.
+     */
+    data class ReconnectRefused(val message: String) : ConnectionEvent()
     data object Disconnected : ConnectionEvent()
     data object Reconnecting : ConnectionEvent()
     data object Waiting : ConnectionEvent()

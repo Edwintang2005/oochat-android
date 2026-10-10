@@ -12,6 +12,7 @@ import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.PlanStatus
 import ai.openonion.oochat.domain.model.ServerSessionStatus
+import ai.openonion.oochat.domain.usecase.ServerErrorText
 import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.network.AgentConnection
 import ai.openonion.oochat.network.AgentDiscoveryService
@@ -36,7 +37,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okhttp3.mockwebserver.Dispatcher
@@ -645,6 +648,37 @@ class ConnectionRepositoryImplTest {
             "connectionState must stay Connected for a post-connection business error",
             repository.connectionState.value is ConnectionState.Connected
         )
+    }
+
+    // ── W16AAPPLE-82, -90: a refused reconnect ends in Error ────────
+
+    @Test
+    fun `a reconnect refused for the clock ends in Error naming the date and time, though the attempt had connected`() = runBlocking {
+        // Unlike the business error above: the ERROR answers the reconnect's
+        // own CONNECT, so the session is not coming back. Before, this left
+        // the state on Reconnecting for good.
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+        val first = factory.lastWebSocket
+
+        // A conversation switch opens the new socket at once, with no backoff to wait out.
+        repository.switchConversation("conv-2")
+        awaitUntil { factory.lastWebSocket !== first }
+        factory.lastListener!!.onOpen(
+            factory.lastWebSocket!!,
+            Response.Builder()
+                .request(Request.Builder().url("wss://fake.example.com/ws").build())
+                .protocol(Protocol.HTTP_1_1)
+                .code(101)
+                .message("Switching Protocols")
+                .build()
+        )
+        simulateError("unauthorized: signature expired")
+
+        awaitUntil { repository.connectionState.value is ConnectionState.Error }
+        val state = repository.connectionState.value as ConnectionState.Error
+        assertEquals(ServerErrorText.CLOCK_WRONG, state.message)
+        assertTrue("Reconnect is offered", state.retryable)
     }
 
     // ── AGENT_PROFILE ────────────────────────────────────────────────
