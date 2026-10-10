@@ -57,6 +57,23 @@ sealed class ChatEvent {
      * something rendered in the message list.
      */
     data class SessionStatusReceived(val sessionId: String?, val status: String) : ChatEvent()
+
+    /**
+     * The host queued a message that was sent while a turn was running
+     * (`RUNTIME_INPUT_ACK`). Not a [ChatItem]: it settles the delivery state of
+     * a message already on screen, which the caller owns. Carries no message
+     * id because the wire has none — see
+     * [ai.openonion.oochat.network.ConnectionEvent.RuntimeInputAcknowledged].
+     */
+    data class RuntimeInputAcknowledged(val sessionId: String?) : ChatEvent()
+
+    /**
+     * The running turn refused a mid-turn message (`RUNTIME_INPUT_REJECTED`);
+     * nothing was queued. [retryable] means the text will be taken as an
+     * ordinary INPUT once the turn ends. Like [RuntimeInputAcknowledged], it
+     * answers the oldest message still awaiting an answer.
+     */
+    data class RuntimeInputRejected(val sessionId: String?, val retryable: Boolean) : ChatEvent()
 }
 
 /**

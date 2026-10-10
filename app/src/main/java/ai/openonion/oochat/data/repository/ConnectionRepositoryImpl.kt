@@ -343,6 +343,12 @@ class ConnectionRepositoryImpl(
                     is ConnectionEvent.SessionStatusReceived -> {
                         _chatEvents.tryEmit(ChatEvent.SessionStatusReceived(event.sessionId, event.status))
                     }
+                    is ConnectionEvent.RuntimeInputAcknowledged -> {
+                        _chatEvents.tryEmit(ChatEvent.RuntimeInputAcknowledged(event.sessionId))
+                    }
+                    is ConnectionEvent.RuntimeInputRejected -> {
+                        _chatEvents.tryEmit(ChatEvent.RuntimeInputRejected(event.sessionId, event.retryable))
+                    }
                     else -> { }
                 }
             }

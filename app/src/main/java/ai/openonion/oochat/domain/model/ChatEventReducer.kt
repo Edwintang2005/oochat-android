@@ -212,6 +212,11 @@ object ChatEventReducer {
             // its own. See ChatEvent.SessionStatusReceived's own doc.
             is ChatEvent.SessionStatusReceived -> ReduceResult(current)
 
+            // Delivery state of an existing user message, settled by the
+            // caller — see ChatEvent.RuntimeInputAcknowledged's own doc.
+            is ChatEvent.RuntimeInputAcknowledged -> ReduceResult(current)
+            is ChatEvent.RuntimeInputRejected -> ReduceResult(current)
+
             is ChatEvent.ConnectionErrorOccurred -> {
                 // Attach to whichever Turn/Thinking bubble was in flight —
                 // reads as "the agent's reply was this error" — or synthesize

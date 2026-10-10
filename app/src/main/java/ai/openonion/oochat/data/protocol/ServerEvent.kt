@@ -3,6 +3,8 @@ package ai.openonion.oochat.data.protocol
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 
 /**
  * Server events received via WebSocket.
@@ -140,8 +142,12 @@ data class ServerEvent(
     // fields this client doesn't model (websocket_path, extensions), and a
     // descriptor missing one we do must not drop the frame that explains
     // why the connection failed.
-    val protocol: JsonElement? = null
-)
+    val protocol: JsonElement? = null,
+    val retryable: JsonElement? = null
+) {
+    /** True only for an explicit boolean `true`; anything else is "not retryable". */
+    val isRetryable: Boolean get() = (retryable as? JsonPrimitive)?.booleanOrNull == true
+}
 
 @Serializable
 data class TokenUsageWire(
