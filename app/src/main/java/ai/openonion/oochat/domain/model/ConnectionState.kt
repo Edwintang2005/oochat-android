@@ -21,7 +21,15 @@ sealed class ConnectionState {
 
     data class Connected(
         val address: String,
-        val session: SessionSnapshot? = null
+        val session: SessionSnapshot? = null,
+        /**
+         * What the Host said about the session just joined. UNKNOWN from a Host that says nothing, and
+         * again once the answer is out of date: a screen has acted on it, the connection moved to
+         * another conversation, or a turn finished (ConnectionRepository.releaseSessionStatus).
+         */
+        val status: ServerSessionStatus = ServerSessionStatus.UNKNOWN,
+        /** The Host's copy of the session was newer than ours, and [session] is the Host's. */
+        val serverNewer: Boolean = false
     ) : ConnectionState()
 
     /**

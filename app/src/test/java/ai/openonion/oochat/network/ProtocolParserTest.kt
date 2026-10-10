@@ -2,6 +2,7 @@ package ai.openonion.oochat.network
 
 import ai.openonion.oochat.domain.model.AgentSkill
 import ai.openonion.oochat.domain.model.ChatItem
+import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.ToolStatus
 import ai.openonion.oochat.domain.model.stableAssistantId
 import org.junit.Assert.assertEquals
@@ -59,6 +60,62 @@ class ProtocolParserTest {
 
         val ev = result.event as ConnectionEvent.Connected
         assertEquals("", ev.address)
+    }
+
+    @Test
+    fun `CONNECTED reports whether the Host sees the session as new, connected or running`() {
+        val expected = mapOf(
+            "new" to ServerSessionStatus.NEW,
+            "connected" to ServerSessionStatus.CONNECTED,
+            "running" to ServerSessionStatus.RUNNING
+        )
+
+        expected.forEach { (wire, status) ->
+            val ev = parse("""{"type":"CONNECTED","session_id":"s1","status":"$wire"}""").event as ConnectionEvent.Connected
+            assertEquals(wire, status, ev.status)
+        }
+    }
+
+    @Test
+    fun `CONNECTED with no status, or one this client does not know, is UNKNOWN`() {
+        val frames = listOf(
+            """{"type":"CONNECTED","session_id":"s1"}""",
+            """{"type":"CONNECTED","session_id":"s1","status":"index"}""",
+            """{"type":"CONNECTED","session_id":"s1","status":"Running"}"""
+        )
+
+        frames.forEach { frame ->
+            val ev = parse(frame).event as ConnectionEvent.Connected
+            assertEquals(frame, ServerSessionStatus.UNKNOWN, ev.status)
+        }
+    }
+
+    @Test
+    fun `CONNECTED passes server_newer through and defaults it to false`() {
+        val newer = parse("""{"type":"CONNECTED","session_id":"s1","status":"connected","server_newer":true}""")
+        val plain = parse("""{"type":"CONNECTED","session_id":"s1","status":"connected"}""")
+
+        assertTrue((newer.event as ConnectionEvent.Connected).serverNewer)
+        assertFalse((plain.event as ConnectionEvent.Connected).serverNewer)
+    }
+
+    @Test
+    fun `a full CONNECTED frame as the Host sends it still decodes`() {
+        // Everything websocket-protocol.md lists, including fields this client does not read.
+        val result = parse(
+            """{"type":"CONNECTED","session_id":"550e8400","status":"connected","protocol":{"name":"oip","version":"0.1"},
+              |"session_modes":{"currentModeId":"auto","turnsLeft":null,"availableModes":[{"id":"auto","name":"Auto"}]},
+              |"server_newer":true,"session":{"session_id":"550e8400","turn":2,
+              |"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]},
+              |"chat_items":[{"id":"a1","type":"agent","content":"hello"}]}"""
+                .trimMargin()
+        )
+
+        val ev = result.event as ConnectionEvent.Connected
+        assertEquals(ServerSessionStatus.CONNECTED, ev.status)
+        assertTrue(ev.serverNewer)
+        assertEquals("550e8400", ev.sessionId)
+        assertEquals(2, ev.session?.messages?.size)
     }
 
     // ── AGENT_PROFILE ────────────────────────────────────────────────

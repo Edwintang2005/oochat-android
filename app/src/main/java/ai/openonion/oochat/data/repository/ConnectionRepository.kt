@@ -88,6 +88,18 @@ interface ConnectionRepository {
     fun releaseServerTranscript() {}
 
     /**
+     * Forget what the Host said about the session just joined
+     * ([ConnectionState.Connected.status] and [ConnectionState.Connected.serverNewer]),
+     * once a screen has acted on it. The answer describes the moment of the CONNECT, but
+     * the state stays Connected for the life of the socket and every screen created on it
+     * starts from that state, so without this a screen opened an hour later would act on a
+     * turn that ended long ago. The connection also forgets it by itself when it moves to
+     * another conversation and when a turn finishes. Default no-op so a fake that never
+     * reports a status does not have to say so.
+     */
+    fun releaseSessionStatus() {}
+
+    /**
      * Connect to an agent, resuming [conversationId]'s own server session.
      *
      * @param agentAddress Agent address or server URL

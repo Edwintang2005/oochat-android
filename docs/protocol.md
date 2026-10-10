@@ -305,7 +305,7 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | Server `type` | Fields used by this client | Client behaviour |
 | --- | --- | --- |
 | `PING` | — | Emits `Ping`; `AgentConnection` sends `PONG`. |
-| `CONNECTED` | `session_id`, `session` | Marks the connection ready and persists the supplied session. |
+| `CONNECTED` | `session_id`, `status`, `server_newer`, `session` | Marks the connection ready and persists the supplied session. `status` and `server_newer` reach the chat screen, which acts on them once: see [CONNECTED status](#connected-status). |
 | `llm_call` | `id`, `model` | Creates a running `ChatItem.Turn` / thinking item. |
 | `llm_result` | `id`, `status`, `model`, `duration_ms` | Updates the matching thinking item to done or error. |
 | `thinking` | `id`, `content`, `kind`, `model` | With `content`, the agent's reasoning: a `ChatItem.Thinking` under the frame's `id` with `kind` set (`intent`, `reflect`, or `reasoning` when absent), rendered as a collapsible "Thought" rather than as a reply. Without `content`, completed thinking metadata on a `ChatItem.Turn`. See [Streaming frames](#streaming-frames). |
@@ -619,6 +619,69 @@ repeats are dropped once and in order, also when the relay names the new socket
 differently; snapshots still arrive; `reset()` and a switch away and back; a
 200-frame burst arrives whole), and `ConnectionRepositoryImplTest` (the same
 burst through the chat bus).
+
+### CONNECTED status
+
+`CONNECTED` answers a `CONNECT` and says what the Host holds for the session.
+`ProtocolParser` reads `status` into `ServerSessionStatus` (`new`, `connected` or
+`running`; anything else, or none, is `UNKNOWN`) and `server_newer` into a
+boolean, and `ConnectionState.Connected` carries both to the chat screen.
+`ChatViewModel.actOnHostAnswer` acts on them once the screen knows which
+conversation it is on, whether it opened the socket or joined one that was
+already live.
+
+| `status` | The Host | The app |
+| --- | --- | --- |
+| `running` | Is mid-turn on this session and replays what the client missed (see above). | Holds the composer behind the turn exactly as if this process had sent its `INPUT`: a message typed now waits for the turn, or rides it as runtime input (see [Runtime input](#runtime-input)). A turn that a dropped connection marked Failed is un-failed, and `SESSION_STATUS` is not asked. |
+| `connected` | Is idle: alive, or restored from disk. | Whatever the screen still shows in progress belongs to a turn that ended unheard, and no frame will ever finish it. It is settled the way an `OUTPUT` would settle it and saved, so the spinner does not come back with the next launch. A turn a drop already failed stays failed until the `SESSION_STATUS` reply and the replay say whether its answer arrived. |
+| `new` | Has no record: no id was sent, the id is unknown (same id), or it is another caller's (a new id, which the app adopts). | The conversation stays on screen. A turn still in flight can never finish, so it is marked Failed (Retry), other spinning cards stop, and `SESSION_STATUS` is not asked. A conversation with nothing in flight is left alone, which is every first connect of a new conversation. |
+| none, or `index` | An older Host, or a session-index socket. | Nothing. The `SESSION_STATUS` question after a drop is the only recovery. |
+
+**The answer has a lifetime.** `ConnectionState.Connected` stays in place for as long
+as the socket does, and every chat screen created on it starts from it, so a screen
+opened an hour later would act on a turn that ended long ago. The screen therefore
+acts once and calls `releaseSessionStatus()`, which sets `status` back to `UNKNOWN`
+and `server_newer` to false. The repository also releases it by itself when the
+connection moves to another conversation (the answer was about the old one) and when
+an `OUTPUT` arrives, before the event is emitted (the turn `running` described has
+ended). A release shows up as one more `Connected` state with no status, so after a
+drop that failed a turn the Host may be asked `SESSION_STATUS` twice instead of
+once. The second reply finds nothing left to do.
+
+**`server_newer`.** `CONNECT` carries no `session`, so to the Host the client's copy is
+empty and `server_newer` is true whenever the Host has history. `CONNECTED` then
+carries the Host's `session` and `chat_items`; the app does not read `chat_items`.
+It merges the assistant replies of `session.messages` into the conversation
+(`ConversationHistoryUseCase.mergeServerTranscript`), matched by their
+content-derived id. The merge only adds what is missing and never removes or
+rewrites a local row. A message the user has not sent yet, or one that failed, is
+untouched, and applying the same transcript twice, or after the live stream already
+delivered the reply, adds nothing. The text in the composer is state of the input
+bar alone, so no connection event touches it.
+
+**The outbox.** A message typed while the socket is down is shown as queued ("Waiting
+to send…") and parked in the connection's outbox, which flushes the moment
+`CONNECTED` lands. When the screen next sees `Connected` it marks those messages
+sent, which also unpins them from the bottom of the list so the reply lands below
+the question. A message held behind a running turn stays queued: it is waiting for
+the turn, not for the socket.
+
+**Known gaps.**
+
+- Tool calls, cards and footers of a turn that finished while the app was away are
+  not rebuilt. The app merges the transcript's assistant replies only.
+- The merge matches replies by content, so two identical replies in one
+  conversation count as one.
+- After `new` the Host's agent no longer has the earlier conversation while the app
+  still shows it: `CONNECT` carries no history for the Host to adopt, as the web
+  client's does.
+
+Covered by `ProtocolParserTest` (`status` and `server_newer` off the frame),
+`AgentConnectionRobolectricTest` (they reach the connection's event),
+`ConnectionRepositoryImplTest` (they reach the state, and are released),
+`ChatViewModelTest` (each status, the failed turn that stays failed, the outbox and
+the merge) and `ProcessDeathResumeTest` (a relaunch against the fake Host's three
+answers).
 
 ## HTTP exception
 

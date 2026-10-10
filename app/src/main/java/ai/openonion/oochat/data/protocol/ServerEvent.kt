@@ -16,6 +16,10 @@ data class ServerEvent(
     @SerialName("input_id") val inputId: String? = null,
     @SerialName("session_id") val sessionId: String? = null,
     val session: SessionState? = null,
+    // CONNECTED only: the Host's copy of the session is newer than the one this CONNECT carried, and
+    // `session` is the Host's. Always the case for this client, which sends no session, so to the Host
+    // it looks empty.
+    @SerialName("server_newer") val serverNewer: Boolean? = null,
     val message: String? = null,
     val error: String? = null,
     val id: String? = null,

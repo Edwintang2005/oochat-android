@@ -22,6 +22,7 @@ import ai.openonion.oochat.domain.model.ChatMessage
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.ConnectionState
 import ai.openonion.oochat.domain.model.Role
+import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.ServerTranscriptEntry
 import ai.openonion.oochat.domain.model.ThinkingStatus
 import ai.openonion.oochat.domain.model.ToolStatus
@@ -231,6 +232,16 @@ class ChatViewModelTest {
         var querySessionStatusCalls = 0
         override suspend fun querySessionStatus() { querySessionStatusCalls++ }
 
+        /** Mirrors the repository: what the Host said is gone once a screen has acted on it. */
+        var releasedStatuses = 0
+        override fun releaseSessionStatus() {
+            releasedStatuses++
+            val state = _connectionState.value
+            if (state is ConnectionState.Connected) {
+                _connectionState.value = state.copy(status = ServerSessionStatus.UNKNOWN, serverNewer = false)
+            }
+        }
+
         override suspend fun disconnect() { disconnectCount++ }
 
         var resetCount = 0
@@ -256,8 +267,8 @@ class ChatViewModelTest {
             _events.tryEmit(event)
         }
 
-        fun markConnected(address: String = "0xAGENT") {
-            _connectionState.value = ConnectionState.Connected(address = address)
+        fun markConnected(address: String = "0xAGENT", status: ServerSessionStatus = ServerSessionStatus.UNKNOWN) {
+            _connectionState.value = ConnectionState.Connected(address = address, status = status)
             isConnectedResult = true
         }
 
@@ -4302,6 +4313,453 @@ class ChatViewModelTest {
         testScheduler.runCurrent()
 
         assertEquals(0, connectUseCase.querySessionStatusCalls)
+    }
+
+    // ── CONNECTED status: running ───────────────────────────────────────
+
+    @Test
+    fun `a message typed after joining a running turn is held for it, then rides it and waits for the ACK`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            // Relaunched into a turn the Host is still running: this process never sent its INPUT.
+            connectUseCase.markConnected(address, status = ServerSessionStatus.RUNNING)
+            testScheduler.runCurrent()
+
+            vm.sendMessage("and check the logs too")
+            testScheduler.runCurrent()
+
+            assertEquals(
+                "held behind the running turn rather than going out as a plain INPUT",
+                emptyList<String>(),
+                connectUseCase.sentMessages.map { it.content }
+            )
+            assertEquals(UserMessageState.QUEUED, userMessage("and check the logs too").state)
+
+            testScheduler.advanceTimeBy(ChatViewModel.TURN_WAIT_TIMEOUT_MS + 1)
+            testScheduler.runCurrent()
+            assertEquals(
+                "it rides the turn, and the app now waits for the Host's answer",
+                UserMessageState.AWAITING_ACK,
+                userMessage("and check the logs too").state
+            )
+
+            connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            testScheduler.runCurrent()
+            assertEquals(UserMessageState.SENT, userMessage("and check the logs too").state)
+        }
+
+    @Test
+    fun `a disconnect-failed turn is un-failed by the CONNECTED status, without asking SESSION_STATUS`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            connectUseCase.markConnected(address)
+            testScheduler.runCurrent()
+            vm.sendMessage("a question asked in A")
+            testScheduler.runCurrent()
+            connectUseCase.emit(
+                ChatEvent.ChatItemReceived(ChatItem.Thinking(id = "think-1", status = ThinkingStatus.RUNNING))
+            )
+            testScheduler.runCurrent()
+            connectUseCase.forceState(ConnectionState.Disconnected)
+            testScheduler.runCurrent()
+            assertEquals(
+                "test setup: the drop must have failed the turn before reviving it means anything",
+                ThinkingStatus.ERROR,
+                (vm.uiState.value.chatItems.first { it.id == "think-1" } as ChatItem.Thinking).status
+            )
+
+            connectUseCase.markConnected(address, status = ServerSessionStatus.RUNNING)
+            testScheduler.runCurrent()
+
+            assertEquals(
+                "CONNECTED said the turn is still running, so the Failed mark goes",
+                ThinkingStatus.RUNNING,
+                (vm.uiState.value.chatItems.first { it.id == "think-1" } as ChatItem.Thinking).status
+            )
+            assertEquals("the status answered it, so there is nothing to ask", 0, connectUseCase.querySessionStatusCalls)
+        }
+
+    @Test
+    fun `joining a live connection to a running turn holds the next message, and the answer is acted on once`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            // The Loading probe's CONNECT, before this screen has asked for anything.
+            connectUseCase.markConnected(address, status = ServerSessionStatus.RUNNING)
+            testScheduler.runCurrent()
+            assertEquals("not before the screen knows which conversation it is on", 0, connectUseCase.releasedStatuses)
+
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            assertEquals("acted on, then let go, exactly once", 1, connectUseCase.releasedStatuses)
+
+            vm.sendMessage("and check the logs too")
+            testScheduler.runCurrent()
+            assertEquals(emptyList<String>(), connectUseCase.sentMessages.map { it.content })
+        }
+
+    @Test
+    fun `a message typed after joining an idle session goes straight out`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address, status = ServerSessionStatus.CONNECTED)
+        testScheduler.runCurrent()
+
+        vm.sendMessage("hello")
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("hello"), connectUseCase.sentMessages.map { it.content })
+        assertEquals(UserMessageState.SENT, userMessage("hello").state)
+    }
+
+    // ── CONNECTED status: connected (idle) ──────────────────────────────
+
+    @Test
+    fun `a card left spinning is settled once the Host says the session is idle`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.ToolCall(id = "tool-1", name = "bash", status = ToolStatus.RUNNING))
+        )
+        testScheduler.runCurrent()
+        // The socket drops mid-tool and the turn ends while nobody is listening, so no tool_result ever comes.
+        connectUseCase.forceState(ConnectionState.Disconnected)
+        testScheduler.runCurrent()
+        assertTrue(
+            "test setup: a drop does not settle a tool call, so it is still spinning",
+            vm.uiState.value.chatItems.any { it.id == "tool-1" && it.isInProgress() }
+        )
+
+        connectUseCase.markConnected(address, status = ServerSessionStatus.CONNECTED)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            ToolStatus.DONE,
+            (vm.uiState.value.chatItems.first { it.id == "tool-1" } as ChatItem.ToolCall).status
+        )
+        assertEquals("acted on, then let go, exactly once", 1, connectUseCase.releasedStatuses)
+
+        vm.sendMessage("hello")
+        testScheduler.runCurrent()
+        assertEquals(
+            "nothing is left running, so the message is not held",
+            listOf("hello"),
+            connectUseCase.sentMessages.map { it.content }
+        )
+    }
+
+    @Test
+    fun `a turn the drop failed is left for SESSION_STATUS to settle`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        vm.sendMessage("a question asked in A")
+        testScheduler.runCurrent()
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.Thinking(id = "think-1", status = ThinkingStatus.RUNNING))
+        )
+        testScheduler.runCurrent()
+        connectUseCase.forceState(ConnectionState.Disconnected)
+        testScheduler.runCurrent()
+
+        connectUseCase.markConnected(address, status = ServerSessionStatus.CONNECTED)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            "whether the reply arrived is for the replay to say, so Failed stays until it does",
+            ThinkingStatus.ERROR,
+            (vm.uiState.value.chatItems.first { it.id == "think-1" } as ChatItem.Thinking).status
+        )
+        // At least once: releasing the status comes back as one more Connected, which asks again.
+        assertTrue("and the Host is still asked", connectUseCase.querySessionStatusCalls >= 1)
+    }
+
+    @Test
+    fun `cards of a turn the Host says is still running keep spinning`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.ToolCall(id = "tool-1", name = "bash", status = ToolStatus.RUNNING))
+        )
+        testScheduler.runCurrent()
+
+        connectUseCase.markConnected(address, status = ServerSessionStatus.RUNNING)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            ToolStatus.RUNNING,
+            (vm.uiState.value.chatItems.first { it.id == "tool-1" } as ChatItem.ToolCall).status
+        )
+    }
+
+    /** What an llm_call frame becomes: a footer with no reply yet, still running. */
+    private fun runningFooter(id: String) =
+        ChatItem.Turn(id = id, thinking = ChatItem.Thinking(id = id, status = ThinkingStatus.RUNNING))
+
+    private fun footerStatus(id: String) =
+        (vm.uiState.value.chatItems.first { it.id == id } as ChatItem.Turn).thinking?.status
+
+    @Test
+    fun `a thinking footer left running is settled once the Host says the session is idle`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            connectUseCase.markConnected(address)
+            testScheduler.runCurrent()
+            connectUseCase.emit(ChatEvent.ChatItemReceived(runningFooter("turn-1")))
+            testScheduler.runCurrent()
+
+            connectUseCase.markConnected(address, status = ServerSessionStatus.CONNECTED)
+            testScheduler.runCurrent()
+
+            assertEquals(ThinkingStatus.DONE, footerStatus("turn-1"))
+        }
+
+    @Test
+    fun `a turn the drop failed stays failed when the Host says the session is idle`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        vm.sendMessage("a question asked in A")
+        testScheduler.runCurrent()
+        connectUseCase.emit(ChatEvent.ChatItemReceived(runningFooter("turn-1")))
+        testScheduler.runCurrent()
+        connectUseCase.forceState(ConnectionState.Disconnected)
+        testScheduler.runCurrent()
+        assertEquals("test setup: the drop failed the turn", ThinkingStatus.ERROR, footerStatus("turn-1"))
+
+        connectUseCase.markConnected(address, status = ServerSessionStatus.CONNECTED)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            "no reply has arrived, so Retry stays the obvious move",
+            ThinkingStatus.ERROR,
+            footerStatus("turn-1")
+        )
+    }
+
+    // ── CONNECTED status: new ───────────────────────────────────────────
+
+    @Test
+    fun `a turn the Host has no record of is marked failed and its other cards stop spinning`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            connectUseCase.markConnected(address)
+            testScheduler.runCurrent()
+            connectUseCase.emit(ChatEvent.ChatItemReceived(runningFooter("turn-1")))
+            connectUseCase.emit(
+                ChatEvent.ChatItemReceived(ChatItem.ToolCall(id = "tool-1", name = "bash", status = ToolStatus.RUNNING))
+            )
+            testScheduler.runCurrent()
+
+            // The Host restarted, or the session expired, while the app was away: what it was running is gone.
+            connectUseCase.markConnected(address, status = ServerSessionStatus.NEW)
+            testScheduler.runCurrent()
+
+            assertEquals(ThinkingStatus.ERROR, footerStatus("turn-1"))
+            assertEquals(
+                ToolStatus.DONE,
+                (vm.uiState.value.chatItems.first { it.id == "tool-1" } as ChatItem.ToolCall).status
+            )
+            assertEquals("acted on, then let go, exactly once", 1, connectUseCase.releasedStatuses)
+        }
+
+    @Test
+    fun `a brand-new conversation joined with status new is left alone`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        val before = vm.uiState.value.chatItems
+
+        connectUseCase.markConnected(address, status = ServerSessionStatus.NEW)
+        testScheduler.runCurrent()
+
+        assertEquals("nothing was in flight, so nothing changes", before, vm.uiState.value.chatItems)
+        vm.sendMessage("hello")
+        testScheduler.runCurrent()
+        assertEquals(listOf("hello"), connectUseCase.sentMessages.map { it.content })
+    }
+
+    @Test
+    fun `a turn the drop failed stays failed, without asking, when the Host has no record`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            connectUseCase.markConnected(address)
+            testScheduler.runCurrent()
+            vm.sendMessage("a question asked in A")
+            testScheduler.runCurrent()
+            connectUseCase.emit(ChatEvent.ChatItemReceived(runningFooter("turn-1")))
+            testScheduler.runCurrent()
+            connectUseCase.forceState(ConnectionState.Disconnected)
+            testScheduler.runCurrent()
+
+            connectUseCase.markConnected(address, status = ServerSessionStatus.NEW)
+            testScheduler.runCurrent()
+
+            assertEquals(ThinkingStatus.ERROR, footerStatus("turn-1"))
+            assertEquals(
+                "not found is already the answer, so there is nothing to ask",
+                0,
+                connectUseCase.querySessionStatusCalls
+            )
+        }
+
+    // ── Messages parked while offline, and the server's newer transcript ─
+
+    private fun contentsOnScreen() = vm.uiState.value.chatItems.map {
+        when (it) {
+            is ChatItem.User -> it.content
+            is ChatItem.Agent -> it.content
+            is ChatItem.Turn -> it.agent?.content.orEmpty()
+            else -> ""
+        }
+    }
+
+    @Test
+    fun `a message typed offline stops saying it is waiting once the connection is back`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            vm.sendMessage("typed offline")
+            testScheduler.runCurrent()
+            assertEquals("test setup", UserMessageState.QUEUED, userMessage("typed offline").state)
+
+            connectUseCase.markConnected(address)
+            testScheduler.runCurrent()
+
+            assertEquals(UserMessageState.SENT, userMessage("typed offline").state)
+        }
+
+    @Test
+    fun `the reply to a message typed offline lands below it`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        vm.sendMessage("typed offline")
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+
+        connectUseCase.emit(ChatEvent.OutputReceived(result = "the answer", session = null))
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("typed offline", "the answer"), contentsOnScreen())
+    }
+
+    @Test
+    fun `a message held behind a running turn stays queued when the connection comes back`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            connectUseCase.markConnected(address)
+            testScheduler.runCurrent()
+            vm.sendMessage("first")
+            testScheduler.runCurrent()
+            vm.sendMessage("second")
+            testScheduler.runCurrent()
+            assertEquals("test setup", UserMessageState.QUEUED, userMessage("second").state)
+
+            connectUseCase.markConnected(address, status = ServerSessionStatus.RUNNING)
+            testScheduler.runCurrent()
+
+            assertEquals(
+                "it is waiting for the turn, not for the socket",
+                UserMessageState.QUEUED,
+                userMessage("second").state
+            )
+        }
+
+    @Test
+    fun `a message typed offline survives the server's newer transcript, and nothing is doubled`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            seedPreviousConversation(address)
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            vm.sendMessage("typed offline")
+            testScheduler.runCurrent()
+
+            connectUseCase.markConnected(address, status = ServerSessionStatus.CONNECTED)
+            connectUseCase.emit(
+                ChatEvent.ServerTranscriptReceived(
+                    entries = listOf(
+                        ServerTranscriptEntry("hello"),
+                        ServerTranscriptEntry("answered while you were away")
+                    ),
+                    turn = 3
+                )
+            )
+            testScheduler.runCurrent()
+
+            val contents = contentsOnScreen()
+            assertEquals("the unsent message is kept", 1, contents.count { it == "typed offline" })
+            assertEquals("the reply it never saw arrives", 1, contents.count { it == "answered while you were away" })
+            assertEquals("what was already there is not doubled", 1, contents.count { it == "hello" })
+        }
+
+    @Test
+    fun `the same server transcript applied twice adds nothing the second time`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        seedPreviousConversation(address)
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        val transcript = ChatEvent.ServerTranscriptReceived(
+            entries = listOf(ServerTranscriptEntry("hello"), ServerTranscriptEntry("answered while you were away")),
+            turn = 3
+        )
+
+        connectUseCase.emit(transcript)
+        testScheduler.runCurrent()
+        connectUseCase.emit(transcript)
+        testScheduler.runCurrent()
+
+        assertEquals(1, contentsOnScreen().count { it == "answered while you were away" })
+        assertEquals(1, messageRepo.snapshot().count { it.content == "answered while you were away" })
+    }
+
+    @Test
+    fun `a reply the live stream already delivered is not doubled by the transcript`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        seedPreviousConversation(address)
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        connectUseCase.emit(ChatEvent.OutputReceived(result = "answered while you were away", session = null))
+        testScheduler.runCurrent()
+
+        connectUseCase.emit(
+            ChatEvent.ServerTranscriptReceived(
+                entries = listOf(ServerTranscriptEntry("hello"), ServerTranscriptEntry("answered while you were away")),
+                turn = 3
+            )
+        )
+        testScheduler.runCurrent()
+
+        assertEquals(1, contentsOnScreen().count { it == "answered while you were away" })
     }
 
     @Test

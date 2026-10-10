@@ -19,6 +19,7 @@ import ai.openonion.oochat.domain.model.ChatListFlags
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.ConnectionState
 import ai.openonion.oochat.domain.model.PlanEntry
+import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.domain.model.ThinkingStatus
 import ai.openonion.oochat.domain.model.UserMessageState
@@ -571,6 +572,15 @@ open class ChatViewModel @JvmOverloads constructor(
     private val serverTurnActive = MutableStateFlow(false)
 
     /**
+     * The messages handed to the connection while the socket was down. The connection parks them in
+     * its outbox and flushes it the moment CONNECTED lands, so their bubbles say "Waiting to send…"
+     * until the next Connected, which is when they go out. Touched only on the main dispatcher.
+     *
+     * Declared above [init] for the same reason as [serverTurnActive].
+     */
+    private val outboxedMessageIds = mutableSetOf<String>()
+
+    /**
      * The one message sent into a running turn that the host has not answered
      * yet, or null.
      *
@@ -640,6 +650,7 @@ open class ChatViewModel @JvmOverloads constructor(
                         // agent we're for — connectToAgent() runs this itself
                         // once the target is known.
                         if (_targetAgentAddress.isNotBlank()) onConnectedTo(_targetAgentAddress, null)
+                        settleOutboxedMessages()
                         // Only fires when the previous Disconnected transition
                         // force-failed a still-in-flight Thinking item (see
                         // failRunningThinking's fromDisconnect branch) — a
@@ -968,6 +979,78 @@ open class ChatViewModel @JvmOverloads constructor(
         // back to "Connecting to agent…" over a gate still waiting for a code
         // (W16AAPPLE-80). The Connected transition reaches here again.
         if (connectionState.value is ConnectionState.Connected) _awaitingOnboardCode.value = false
+        // And only now, with the conversation resolved above, can the Host's answer be matched to it.
+        (connectionState.value as? ConnectionState.Connected)?.let { actOnHostAnswer(it) }
+    }
+
+    /**
+     * Act, once, on what the Host's CONNECTED said about the session just joined. Reached from both
+     * callers of [onConnectedTo], so it covers a socket opened for this screen and a live one it joined.
+     * The answer is released afterwards: it describes the moment of the CONNECT, and the connection
+     * would hand it to the next screen created on the same socket as if it were news.
+     */
+    private fun actOnHostAnswer(joined: ConnectionState.Connected) {
+        when (joined.status) {
+            ServerSessionStatus.RUNNING -> onHostTurnRunning()
+            ServerSessionStatus.CONNECTED -> onHostIdle()
+            ServerSessionStatus.NEW -> onHostHasNoRecord()
+            else -> return
+        }
+        connectUseCase.releaseSessionStatus()
+    }
+
+    /**
+     * The Host is idle on this session, so nothing it was running is still running. Whatever this
+     * screen still shows in progress was left that way by a turn that ended while the app could not
+     * hear it (the process died, or the socket dropped), and no frame will ever finish it. Settle it
+     * the way the OUTPUT would have, and save the result so the spinner does not come back with the
+     * next launch.
+     *
+     * Only what is in progress is settled. A turn the drop already failed is not, and must stay failed
+     * until the SESSION_STATUS reply ([ChatEvent.SessionStatusReceived]) says whether its answer
+     * arrived: resolveRunningItems on the whole list would turn it back into a success, since it also
+     * closes every Turn that has no reply yet.
+     */
+    private fun onHostIdle() {
+        val inProgress = _uiState.value.chatItems.filter { it.isInProgress() }
+        if (inProgress.isEmpty()) return
+        val settled = inProgress.resolveRunningItems().associateBy { it.id }
+        _uiState.update { state -> state.copy(chatItems = state.chatItems.map { settled[it.id] ?: it }) }
+        val owningSessionId = conversationHistory.activeSessionId.value
+        settled.values.forEach { item -> launchScoped { conversationHistory.persistMessage(item, owningSessionId) } }
+    }
+
+    /**
+     * The Host has no record of this session: it restarted, or the session expired while the app was
+     * away, or this is a conversation that has never been used. What the screen shows stays, because
+     * the conversation is the user's. But a turn still in flight here can never finish, so it says
+     * Failed and Retry is the move, and any other card that was spinning stops.
+     *
+     * A turn a drop already failed was right to be failed. "Not found" is the answer SESSION_STATUS
+     * would have given, so nothing is asked.
+     */
+    private fun onHostHasNoRecord() {
+        failRunningThinking()
+        onHostIdle()
+        disconnectFailedIds = emptySet()
+        disconnectFailedSessionId = null
+    }
+
+    /**
+     * The Host is still running a turn on this session: it survived a drop, or the app was relaunched
+     * into it. Undo the "Failed" a drop put on its items without asking again, and hold the composer
+     * behind the turn exactly as if this process had sent its INPUT, so a message typed now rides the
+     * turn and is answered (RUNTIME_INPUT_ACK) instead of going out as a plain INPUT that nothing is
+     * waiting on.
+     */
+    private fun onHostTurnRunning() {
+        serverTurnActive.value = true
+        val ids = disconnectFailedIds
+        if (ids.isNotEmpty() && conversationHistory.activeSessionId.value == disconnectFailedSessionId) {
+            unfailDisconnectedItems(ids)
+        }
+        disconnectFailedIds = emptySet()
+        disconnectFailedSessionId = null
     }
 
     /**
@@ -1445,6 +1528,31 @@ open class ChatViewModel @JvmOverloads constructor(
         pending.reply.complete(reply)
     }
 
+    /**
+     * The connection is back, and it flushed its outbox on the way: the messages typed while it was
+     * down are on the wire now. Their bubbles stop saying they are waiting, which is also what
+     * unpins them from the bottom of the list, so the reply to one lands below it instead of above.
+     *
+     * Only the bubbles that went to the outbox: one held behind a running turn is waiting for that
+     * turn, not for the socket, and stays queued.
+     */
+    private fun settleOutboxedMessages() {
+        if (outboxedMessageIds.isEmpty()) return
+        val flushed = outboxedMessageIds.toSet()
+        outboxedMessageIds.clear()
+        _uiState.update { state ->
+            state.copy(
+                chatItems = state.chatItems.map { item ->
+                    if (item is ChatItem.User && item.id in flushed && item.state == UserMessageState.QUEUED) {
+                        item.copy(state = UserMessageState.SENT)
+                    } else {
+                        item
+                    }
+                }
+            )
+        }
+    }
+
     /** Moves one of the user's own bubbles to [next]. */
     private fun setUserMessageState(messageId: String, next: UserMessageState) {
         _uiState.update { state ->
@@ -1768,6 +1876,7 @@ open class ChatViewModel @JvmOverloads constructor(
             // and setting it after the wait would resurrect a turn that already ended.
             serverTurnActive.value = true
             if (pending == null) {
+                if (offline) outboxedMessageIds += userId
                 // Off the tail once it lands, so anything the new turn emits
                 // appends after it the way it always did. Offline sends stay
                 // QUEUED until the outbox flush; only a hard failure is FAILED.

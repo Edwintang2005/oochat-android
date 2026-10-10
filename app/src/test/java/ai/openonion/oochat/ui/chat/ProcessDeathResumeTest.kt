@@ -21,7 +21,6 @@ import ai.openonion.oochat.domain.model.isInProgress
 import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCase
 import ai.openonion.oochat.domain.usecase.ConversationHistoryUseCase
 import ai.openonion.oochat.domain.usecase.PersistenceTransaction
-import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.network.AgentConnection
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.NetworkMonitor
@@ -515,12 +514,12 @@ class ProcessDeathResumeTest {
         second.vm.connectToAgent(agent)
         awaitReplySaved(second, conversation)
 
-        knownIssue(
-            "the tool call is saved as RUNNING mid-turn, and a turn that ends while the app is dead never " +
-                "sends its tool_result, so it spins forever (CONNECTED status is not read)"
-        ) {
-            // Short: the reply is already saved, so the screen has nothing left to wait for.
-            pumpUntil("the screen to settle", timeoutMs = 2_000L) { second.items.none { it.isInProgress() } }
+        // Short: the reply is already saved, so the screen has nothing left to wait for.
+        pumpUntil("the screen to settle", timeoutMs = 2_000L) { second.items.none { it.isInProgress() } }
+        // And saved settled, or the next launch would find the spinner again.
+        pumpUntil("the settled tool call to be saved", timeoutMs = 2_000L) {
+            val saved = runBlocking { second.rows(conversation) }.firstOrNull { it.id == "tool-1" }?.payload
+            (saved?.let(TranscriptItemCodec::decode) as? ChatItem.ToolCall)?.status == ToolStatus.DONE
         }
     }
 
