@@ -29,6 +29,9 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import okhttp3.Request
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -102,7 +105,7 @@ class ConnectionRepositoryImplTest {
             relayUrl = "ws://test.invalid",
             pendingMessageSink = sink,
             agentConnectionFactory = { km, url ->
-                AgentConnection(km, url, factory, pendingMessageSink = sink)
+                AgentConnection(km, url, factory, signer = { _, _ -> "fake-signature" }, pendingMessageSink = sink)
             }
         )
     }
@@ -611,7 +614,7 @@ class ConnectionRepositoryImplTest {
         keyManager = keyManager,
         relayUrl = server.url("/").toString(),
         pendingMessageSink = sink,
-        agentConnectionFactory = { km, url -> AgentConnection(km, url, factory, pendingMessageSink = sink) },
+        agentConnectionFactory = { km, url -> AgentConnection(km, url, factory, signer = { _, _ -> "fake-signature" }, pendingMessageSink = sink) },
         agentDiscovery = AgentDiscoveryService()
     )
 
@@ -739,9 +742,12 @@ class ConnectionRepositoryImplTest {
         repository.setMode(ApprovalMode.ULW, turns = 12)
 
         assertEquals(ApprovalMode.ULW, repository.approvalMode.value)
+        // A v2 signed command: the Host executes the signed payload.
+        val expected = Json.parseToJsonElement("""{"type":"mode_change","mode":"ulw","turns":12}""")
         assertTrue(
             factory.lastWebSocket!!.sentMessages.any {
-                it == """{"type":"mode_change","mode":"ulw","turns":12}"""
+                val payload = Json.parseToJsonElement(it).jsonObject["payload"]?.jsonObject
+                payload != null && JsonObject(payload - setOf("to", "timestamp", "nonce")) == expected
             }
         )
     }

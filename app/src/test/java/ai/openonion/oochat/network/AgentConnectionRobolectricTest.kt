@@ -1,5 +1,4 @@
 package ai.openonion.oochat.network
-
 import ai.openonion.oochat.crypto.KeyManager
 import ai.openonion.oochat.crypto.TestIdentity
 import ai.openonion.oochat.data.protocol.OipProtocol
@@ -32,8 +31,10 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
@@ -43,6 +44,7 @@ import okio.ByteString
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -155,6 +157,26 @@ class AgentConnectionRobolectricTest {
         collectorScope.cancel()
         connection.teardown()
     }
+
+    /**
+     * The command inside a v2 signed frame, after checking the envelope around
+     * it: signed by this connection's identity, for [to], same type inside and
+     * out, with a nonce and timestamp. The command is returned without those
+     * three signing fields, so a test can compare it to the bare wire shape.
+     */
+    private fun signedCommand(frame: String, to: String = "0xAGENT"): JsonObject {
+        val envelope = Json.parseToJsonElement(frame).jsonObject
+        val payload = envelope["payload"]?.jsonObject ?: error("not a signed command: $frame")
+        assertEquals("fake-signature", envelope["signature"]?.jsonPrimitive?.content)
+        assertEquals(TestIdentity.keys().address, envelope["from"]?.jsonPrimitive?.content)
+        assertEquals("signed type must match the frame's", envelope["type"], payload["type"])
+        assertEquals(to, payload["to"]?.jsonPrimitive?.content)
+        assertTrue("nonce required: $frame", !payload["nonce"]?.jsonPrimitive?.content.isNullOrEmpty())
+        assertNotNull("timestamp required: $frame", payload["timestamp"]?.jsonPrimitive?.longOrNull)
+        return JsonObject(payload - setOf("to", "timestamp", "nonce"))
+    }
+
+    private fun json(text: String) = Json.parseToJsonElement(text)
 
     private fun simulateConnected(sessionId: String = "sess-1") {
         factory.lastListener?.onMessage(factory.lastWebSocket!!, """{"type":"CONNECTED","session_id":"$sessionId"}""")
@@ -332,8 +354,8 @@ class AgentConnectionRobolectricTest {
 
         val sent = factory.lastWebSocket!!.sentMessages.single()
         assertEquals(
-            """{"type":"PLAN_REVIEW_RESPONSE","message":"Plan approved. Implement now. Do NOT re-enter plan mode."}""",
-            sent
+            json("""{"type":"PLAN_REVIEW_RESPONSE","message":"Plan approved. Implement now. Do NOT re-enter plan mode."}"""),
+            signedCommand(sent)
         )
     }
 
@@ -346,7 +368,7 @@ class AgentConnectionRobolectricTest {
         connection.respondToUlwTurnsReached(action = "continue", turns = 100)
 
         val sent = factory.lastWebSocket!!.sentMessages.single()
-        assertEquals("""{"type":"ULW_RESPONSE","action":"continue","turns":100}""", sent)
+        assertEquals(json("""{"type":"ULW_RESPONSE","action":"continue","turns":100}"""), signedCommand(sent))
     }
 
     @Test
@@ -358,7 +380,7 @@ class AgentConnectionRobolectricTest {
         connection.respondToUlwTurnsReached(action = "switch_mode", mode = "safe")
 
         val sent = factory.lastWebSocket!!.sentMessages.single()
-        assertEquals("""{"type":"ULW_RESPONSE","action":"switch_mode","mode":"safe"}""", sent)
+        assertEquals(json("""{"type":"ULW_RESPONSE","action":"switch_mode","mode":"safe"}"""), signedCommand(sent))
     }
 
     /**
@@ -381,7 +403,7 @@ class AgentConnectionRobolectricTest {
         expected.forEach { (mode, frame) ->
             factory.lastWebSocket!!.sentMessages.clear()
             connection.setMode(mode)
-            assertEquals(frame, factory.lastWebSocket!!.sentMessages.single())
+            assertEquals(json(frame), signedCommand(factory.lastWebSocket!!.sentMessages.single()))
         }
     }
 
@@ -399,8 +421,8 @@ class AgentConnectionRobolectricTest {
         connection.setMode("ulw", turns = 25)
 
         assertEquals(
-            """{"type":"mode_change","mode":"ulw","turns":25}""",
-            factory.lastWebSocket!!.sentMessages.single()
+            json("""{"type":"mode_change","mode":"ulw","turns":25}"""),
+            signedCommand(factory.lastWebSocket!!.sentMessages.single())
         )
     }
 
@@ -684,6 +706,122 @@ class AgentConnectionRobolectricTest {
         } finally {
             conn.teardown()
         }
+    }
+
+    // ── W16AAPPLE-16: v2 signed commands ──────────────────────────────
+
+    @Test
+    fun `CONNECT signs the signed_commands capability and a fresh nonce each time`() {
+        val signed = CopyOnWriteArrayList<String>()
+        val conn = AgentConnection(
+            keyManager,
+            webSocketFactory = factory,
+            signer = { _, canonical -> signed += canonical; "fake-signature" }
+        )
+        try {
+            conn.connect("0xAGENT")
+            factory.lastListener?.onOpen(factory.lastWebSocket!!, fakeResponse())
+            // ONBOARD_SUCCESS re-sends CONNECT on the same socket.
+            factory.lastListener?.onMessage(factory.lastWebSocket!!, """{"type":"ONBOARD_REQUIRED","id":"ob1","methods":["invite_code"]}""")
+            factory.lastListener?.onMessage(factory.lastWebSocket!!, """{"type":"ONBOARD_SUCCESS","id":"ob1","level":"contact","message":"ok"}""")
+
+            val payloads = factory.lastWebSocket!!.sentMessages
+                .filter { it.contains("\"type\":\"CONNECT\"") }
+                .map { Json.parseToJsonElement(it).jsonObject["payload"]!!.jsonObject }
+            assertEquals(2, payloads.size)
+            payloads.forEachIndexed { i, payload ->
+                // Inside the signature: a relay must not be able to strip it
+                // and downgrade the socket to unsigned commands.
+                assertEquals(1, payload["signed_commands"]?.jsonPrimitive?.intOrNull)
+                assertEquals("the envelope's payload must be exactly what was signed", json(signed[i]), payload)
+            }
+            val nonces = payloads.map { it["nonce"]?.jsonPrimitive?.content }
+            assertTrue("CONNECT needs a nonce: $nonces", nonces.none { it.isNullOrEmpty() })
+            assertNotEquals(nonces[0], nonces[1])
+        } finally {
+            conn.teardown()
+        }
+    }
+
+    @Test
+    fun `every application command is signed for the agent CONNECT named`() {
+        connection.connect("0xAGENT")
+        simulateConnected()
+        val ws = factory.lastWebSocket!!
+        ws.sentMessages.clear()
+
+        connection.sendMessage("hello", "0xAGENT", images = listOf("data:image/jpeg;base64,AAAA"))
+        connection.respond("Python 3")
+        connection.respondToApproval(approved = false, mode = "reject_explain", feedback = "not that file")
+        connection.interrupt()
+
+        val commands = ws.sentMessages.map { signedCommand(it) }
+        // The Host executes the payload alone, so the INPUT's fields must be in it.
+        val input = commands[0]
+        assertEquals("INPUT", input["type"]?.jsonPrimitive?.content)
+        assertEquals("hello", input["prompt"]?.jsonPrimitive?.content)
+        assertEquals(json("""["data:image/jpeg;base64,AAAA"]"""), input["images"])
+        assertNotNull(input["input_id"])
+        assertEquals(json("""{"type":"ASK_USER_RESPONSE","answer":"Python 3"}"""), commands[1])
+        assertEquals(
+            json("""{"type":"APPROVAL_RESPONSE","approved":false,"scope":"once","mode":"reject_explain","feedback":"not that file"}"""),
+            commands[2]
+        )
+        assertEquals(json("""{"type":"INTERRUPT"}"""), commands[3])
+        val nonces = ws.sentMessages.map { Json.parseToJsonElement(it).jsonObject["payload"]!!.jsonObject["nonce"] }
+        assertEquals("each command needs its own nonce", nonces.size, nonces.toSet().size)
+    }
+
+    @Test
+    fun `a direct connection still signs the recipient into each command`() {
+        // The relay needs `to` for routing; the Host needs it signed so a
+        // command captured for one agent cannot be delivered to another.
+        connection.connect("0xAGENT", directUrl = "http://10.0.2.2:8000")
+        simulateConnected()
+        factory.lastWebSocket!!.sentMessages.clear()
+
+        connection.respond("yes")
+
+        signedCommand(factory.lastWebSocket!!.sentMessages.single(), to = "0xAGENT")
+    }
+
+    @Test
+    fun `a signed command's payload is exactly what was signed`() {
+        val signed = CopyOnWriteArrayList<String>()
+        val conn = AgentConnection(
+            keyManager,
+            webSocketFactory = factory,
+            signer = { _, canonical -> signed += canonical; "fake-signature" }
+        )
+        try {
+            conn.connect("0xAGENT")
+            factory.lastListener?.onMessage(factory.lastWebSocket!!, """{"type":"CONNECTED","session_id":"sess-1"}""")
+            signed.clear()
+
+            conn.respondToApproval(approved = true)
+
+            val payload = Json.parseToJsonElement(factory.lastWebSocket!!.sentMessages.last()).jsonObject["payload"]
+            assertEquals(json(signed.single()), payload)
+            assertEquals(keyManager.canonicalJson(payload!!.jsonObject), signed.single())
+        } finally {
+            conn.teardown()
+        }
+    }
+
+    @Test
+    fun `transport frames the gate exempts stay unsigned`() {
+        connection.connect("0xAGENT")
+        simulateConnected()
+        val ws = factory.lastWebSocket!!
+        ws.sentMessages.clear()
+
+        factory.lastListener?.onMessage(ws, """{"type":"PING"}""")
+        connection.querySessionStatus("sess-1")
+
+        assertEquals(
+            listOf("""{"type":"PONG"}""", """{"type":"SESSION_STATUS","session":{"session_id":"sess-1"}}"""),
+            ws.sentMessages.toList()
+        )
     }
 
     @Test
@@ -2127,6 +2265,7 @@ class AgentConnectionRobolectricTest {
         val connect = openAndReadConnect()
         val payload = connect["payload"]!!.jsonObject
         val timestamp = payload["timestamp"]!!.jsonPrimitive.content
+        val nonce = payload["nonce"]!!.jsonPrimitive.content
 
         assertEquals(agent, payload["to"]?.jsonPrimitive?.content)
         assertEquals(agent, connect["to"]?.jsonPrimitive?.content)
@@ -2134,7 +2273,7 @@ class AgentConnectionRobolectricTest {
         assertEquals(keyManager.load()!!.address, connect["from"]?.jsonPrimitive?.content)
         assertEquals(
             "the relay verifies the signature over exactly these bytes",
-            """{"timestamp":$timestamp,"to":"$agent"}""",
+            """{"nonce":"$nonce","signed_commands":1,"timestamp":$timestamp,"to":"$agent"}""",
             signed.single()
         )
         conn.teardown()
@@ -2149,10 +2288,11 @@ class AgentConnectionRobolectricTest {
         val connect = openAndReadConnect()
         val payload = connect["payload"]!!.jsonObject
         val timestamp = payload["timestamp"]!!.jsonPrimitive.content
+        val nonce = payload["nonce"]!!.jsonPrimitive.content
 
         assertFalse("payload: $payload", payload.containsKey("to"))
         assertFalse("envelope: $connect", connect.containsKey("to"))
-        assertEquals("""{"timestamp":$timestamp}""", signed.single())
+        assertEquals("""{"nonce":"$nonce","signed_commands":1,"timestamp":$timestamp}""", signed.single())
         conn.teardown()
     }
 
