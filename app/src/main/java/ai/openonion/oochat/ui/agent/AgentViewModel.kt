@@ -9,6 +9,7 @@ import ai.openonion.oochat.di.appContainer
 import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.AgentProfile
 import ai.openonion.oochat.domain.model.AppError
+import ai.openonion.oochat.domain.model.canonicalAgentAddress
 import ai.openonion.oochat.domain.model.createError
 import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCaseContract
 import ai.openonion.oochat.network.AgentDiscoveryService
@@ -163,10 +164,31 @@ class AgentViewModel @JvmOverloads constructor(
             "Please enter a valid URL (e.g., https://server.com)"
         address.startsWith("https://") || address.startsWith("http://") ||
             address.startsWith("wss://") || address.startsWith("ws://") ->
-            "Agent address should be a hex address (0x...), not a URL. Please select from the dropdown."
+            // No "select from the dropdown": Add Agent has none (W16AAPPLE-81).
+            "Agent address should be a hex address (0x...), not a URL."
         !AgentDiscoveryService.ADDRESS_REGEX.matches(address) ->
             "Please enter a valid agent address (0x followed by 64 hex characters)"
         else -> null
+    }
+
+    /**
+     * Saves a discovered agent unless one with its address is already saved,
+     * making it the default if it is the first. Discovery ids its results by
+     * address, so the saved row has a different id, and Room's REPLACE insert
+     * deleted that row and recreated it: its API key and list position went
+     * with it (W16AAPPLE-59). The default is what [createAgent] gives a first
+     * agent too (W16AAPPLE-60).
+     */
+    private suspend fun saveDiscoveredAgent(agent: AgentProfile) {
+        val address = canonicalAgentAddress(agent.address)
+        if (agentRepository.getAgentByAddress(address) != null) return
+        // Before the insert, for the same reason as in createAgent.
+        val wasFirstAgent = _uiState.value.agents.isEmpty()
+        agentRepository.createAgent(agent.copy(address = address))
+        if (wasFirstAgent) {
+            defaultAgentRepository.setDefaultAgent(agent.id)
+            _uiState.update { it.copy(defaultAgentId = agent.id) }
+        }
     }
 
     /**
@@ -189,8 +211,8 @@ class AgentViewModel @JvmOverloads constructor(
             return false
         }
 
-        // Check for duplicate address
-        val existing = agentRepository.getAgentByAddress(address)
+        val canonical = canonicalAgentAddress(address)
+        val existing = agentRepository.getAgentByAddress(canonical)
         if (existing != null) {
             _uiState.update { it.copy(error = createError("Agent with this address already exists")) }
             return false
@@ -198,7 +220,7 @@ class AgentViewModel @JvmOverloads constructor(
 
         val agent = AgentProfile(
             id = UUID.randomUUID().toString(),
-            address = address,
+            address = canonical,
             name = name,
             description = description,
             serverUrl = serverUrl,
@@ -237,7 +259,17 @@ class AgentViewModel @JvmOverloads constructor(
             return false
         }
 
-        agentRepository.updateAgent(agent)
+        // The same check createAgent makes. Without it, moving an agent onto
+        // another's address reached Room's unique index and threw inside the
+        // edit screen's launch (W16AAPPLE-58).
+        val canonical = canonicalAgentAddress(agent.address)
+        val holder = agentRepository.getAgentByAddress(canonical)
+        if (holder != null && holder.id != agent.id) {
+            _uiState.update { it.copy(error = createError("Agent with this address already exists")) }
+            return false
+        }
+
+        agentRepository.updateAgent(agent.copy(address = canonical))
 
         // Refresh selected agent if updated
         if (_uiState.value.selectedAgent?.id == agent.id) {
@@ -331,7 +363,7 @@ class AgentViewModel @JvmOverloads constructor(
 
     fun addDiscoveredAgent(agent: AgentProfile) {
         launchScoped {
-            agentRepository.createAgent(agent)
+            saveDiscoveredAgent(agent)
             _uiState.update {
                 it.copy(
                     discoveredAgents = _uiState.value.discoveredAgents.filter { it.id != agent.id }
@@ -341,26 +373,19 @@ class AgentViewModel @JvmOverloads constructor(
     }
 
     /**
-     * Saves the agent (same dedupe/default logic as [createAgent]) and also persists
-     * [ConnectionConfig] so the caller can proceed to LoadingScreen, unlike [addDiscoveredAgent].
+     * Saves the agent as [addDiscoveredAgent] does and also persists
+     * [ConnectionConfig] so the caller can proceed to LoadingScreen.
      */
     fun connectToDiscoveredAgent(agent: AgentProfile, onSaved: () -> Unit) {
         launchScoped {
-            val alreadySaved = agentRepository.getAgentByAddress(agent.address) != null
-            if (!alreadySaved) {
-                agentRepository.createAgent(agent)
-                if (_uiState.value.agents.isEmpty()) {
-                    defaultAgentRepository.setDefaultAgent(agent.id)
-                    _uiState.update { it.copy(defaultAgentId = agent.id) }
-                }
-            }
+            saveDiscoveredAgent(agent)
             _uiState.update {
                 it.copy(discoveredAgents = it.discoveredAgents.filter { d -> d.id != agent.id })
             }
             configRepository.saveConfig(
                 ConnectionConfig(
                     serverUrl = agent.serverUrl,
-                    agentAddress = agent.address,
+                    agentAddress = canonicalAgentAddress(agent.address),
                     apiKey = agent.apiKey
                 )
             )

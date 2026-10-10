@@ -3258,6 +3258,17 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun `an agent first saved by the chat screen is saved with a lower-case address`() = runTest(testDispatcher) {
+        // The same form AgentViewModel and Setup save in (W16AAPPLE-57).
+        vm.connectToAgent("0x" + "AB".repeat(32))
+        testScheduler.advanceUntilIdle()
+
+        // This fake matches addresses exactly, so only the saved form is found.
+        assertNotNull(agentRepo.getAgentByAddress("0x" + "ab".repeat(32)))
+        assertNull(agentRepo.getAgentByAddress("0x" + "AB".repeat(32)))
+    }
+
+    @Test
     fun `a new conversation keeps an open onboarding gate and nothing else`() = runTest(testDispatcher) {
         val address = "0x" + "cd".repeat(32)
         connectUseCase.emit(ChatEvent.ChatItemReceived(ChatItem.User(id = "u1", content = "earlier")))

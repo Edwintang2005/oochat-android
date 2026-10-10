@@ -81,6 +81,16 @@ class AgentRepositoryImplTest {
     }
 
     @Test
+    fun `getAgentByAddress ignores letter case`() = runTest {
+        // A row saved before addresses were lower-cased can hold capitals; the
+        // same key typed in lower case must still find it (W16AAPPLE-57).
+        repository.createAgent(profile(address = "0xABC"))
+
+        assertEquals("a1", repository.getAgentByAddress("0xabc")?.id)
+        assertEquals("a1", repository.getAgentByAddress("0xAbC")?.id)
+    }
+
+    @Test
     fun `getAgentById returns null for an unknown id`() = runTest {
         assertNull(repository.getAgentById("missing"))
     }
