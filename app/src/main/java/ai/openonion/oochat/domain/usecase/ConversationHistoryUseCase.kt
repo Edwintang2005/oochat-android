@@ -482,8 +482,18 @@ class ConversationHistoryUseCase(
         // reply was minted with a content-derived id (OUTPUT-, image- and
         // pre-stableAssistantId rows weren't), and those would otherwise
         // look like transcript this conversation is missing.
+        // Reasoning rows count as well: re_act/reflect write their text into
+        // the session's messages as an assistant entry, so the server's copy
+        // lists as a reply what this conversation already shows as reasoning.
+        // Its text lives in the row's payload, not in `content`.
         val localIds = messageRepository.getMessagesListBySession(sessionId)
-            .flatMapTo(mutableSetOf()) { listOf(it.id, stableAssistantId(it.content)) }
+            .flatMapTo(mutableSetOf()) { row ->
+                val reasoning = row.payload
+                    ?.let { TranscriptItemCodec.decode(it) as? ChatItem.Thinking }
+                    ?.takeIf { it.isReasoning }
+                    ?.content
+                listOfNotNull(row.id, stableAssistantId(row.content), reasoning?.let(::stableAssistantId))
+            }
         val missing = SessionFreshness.missingEntries(serverEntries.map { it.content }, localIds)
             // A reply already filed under a *different* conversation stays
             // there — persistMessage inserts with REPLACE, so re-persisting

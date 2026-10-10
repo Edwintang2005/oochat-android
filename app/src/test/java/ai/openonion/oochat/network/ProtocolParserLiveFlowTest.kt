@@ -150,18 +150,17 @@ class ProtocolParserLiveFlowTest {
     // ── thinking event: dual purpose ──────────────────────────────
 
     @Test
-    fun `thinking event with content emits Turn with agent`() {
-        val text = """{"type":"thinking","id":"asst-9","content":"a streamed reply"}"""
+    fun `thinking event with content emits reasoning under the frame's own id`() {
+        // Reasoning, not a reply: it used to become an agent Turn, so the
+        // agent appeared to answer before it had done anything.
+        val text = """{"type":"thinking","id":"asst-9","content":"a streamed thought","kind":"reflect"}"""
         val result = parse(text)
         val ev = result.event as ConnectionEvent.ChatItemReceived
-        val turn = ev.item as ChatItem.Turn
-        assertEquals(
-            "thinking-with-content Turn id is content-derived so it merges with assistant / session_sync",
-            stableAssistantId("a streamed reply"),
-            turn.id
-        )
-        assertEquals("a streamed reply", turn.agent!!.content)
-        assertNull(turn.thinking)
+        val thinking = ev.item as ChatItem.Thinking
+        assertEquals("asst-9", thinking.id)
+        assertEquals("a streamed thought", thinking.content)
+        assertEquals("reflect", thinking.kind)
+        assertEquals(ThinkingStatus.DONE, thinking.status)
     }
 
     @Test

@@ -31,6 +31,12 @@ data class ServerEvent(
     // Map<String, String> downstream (ChatItem.ToolCall.args stays String).
     val args: Map<String, JsonElement>? = null,
     val status: String? = null,
+    // "tool_result" frame's wall time for the call — tool_executor.py's
+    // `timing_ms`, a float of milliseconds (time.time() deltas * 1000).
+    @SerialName("timing_ms") val timingMs: Double? = null,
+    // "plan" frame's complete Todo List — see agent.py's _record_plan and
+    // [PlanEntryWire]. Every frame replaces the whole list.
+    val entries: List<PlanEntryWire>? = null,
     val model: String? = null,
     @SerialName("duration_ms") val durationMs: Double? = null,
     val content: String? = null,
@@ -179,6 +185,21 @@ data class TokenUsageWire(
 data class BatchToolPreview(
     @Serializable(with = LenientStringSerializer::class) val tool: String = "",
     @Serializable(with = LenientStringSerializer::class) val arguments: String = ""
+)
+
+/**
+ * One entry of a `plan` frame, or of a session snapshot's `plan` array —
+ * `{content, priority, status}`, exactly those three keys (agent.py's
+ * `_normalized_plan`). Lenient and defaulted so a bad entry reaches
+ * ProtocolParser instead of failing the decode: the plan is validated
+ * as a whole there, and a session snapshot carrying a bad plan must not
+ * lose its messages with it.
+ */
+@Serializable
+data class PlanEntryWire(
+    @Serializable(with = LenientStringSerializer::class) val content: String = "",
+    @Serializable(with = LenientStringSerializer::class) val priority: String = "",
+    @Serializable(with = LenientStringSerializer::class) val status: String = ""
 )
 
 /**

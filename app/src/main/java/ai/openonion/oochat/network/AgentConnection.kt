@@ -1289,6 +1289,11 @@ class AgentConnection(
                     FileLogger.i(LogTags.AGENT_CONN, "SESSION_STATUS ← ${event.status}")
                     _events.tryEmit(event)
                 }
+                is ConnectionEvent.PlanUpdated -> {
+                    // Count only — the entries are the agent's own task text.
+                    FileLogger.d(LogTags.AGENT_CONN, "plan ✓ ${event.entries.size} entries")
+                    _events.tryEmit(event)
+                }
                 is ConnectionEvent.RuntimeInputAcknowledged -> {
                     FileLogger.i(LogTags.AGENT_CONN, "RUNTIME_INPUT_ACK ✓")
                     _events.tryEmit(event)

@@ -208,9 +208,10 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `CONNECTED` | `session_id`, `session` | Marks the connection ready and persists the supplied session. |
 | `llm_call` | `id`, `model` | Creates a running `ChatItem.Turn` / thinking item. |
 | `llm_result` | `id`, `status`, `model`, `duration_ms` | Updates the matching thinking item to done or error. |
-| `thinking` | `id`, `content`, `model` | Emits completed thinking metadata, or streams assistant text when `content` is present. |
-| `tool_call` | `tool_id`, `id`, `name`, `args` | Creates a running `ChatItem.ToolCall`. |
-| `tool_result` | `tool_id`, `id`, `name`, `status`, `result` | Updates a tool call to done or error. |
+| `thinking` | `id`, `content`, `kind`, `model` | With `content`, the agent's reasoning: a `ChatItem.Thinking` under the frame's `id` with `kind` set (`intent`, `reflect`, or `reasoning` when absent), rendered as a collapsible "Thought" rather than as a reply. Without `content`, completed thinking metadata on a `ChatItem.Turn`. See [Streaming frames](#streaming-frames). |
+| `tool_call` | `tool_id`, `id`, `name`, `args`, `status` | Creates a `ChatItem.ToolCall` keyed on `tool_id`. `pending`, `running`, `in_progress` or no status is running; anything else is an error. |
+| `tool_result` | `tool_id`, `id`, `name`, `status`, `result`, `timing_ms` | Updates the `ChatItem.ToolCall` with the same `tool_id`. Only `completed`, `success` or `done` is done; every other status, or none, is an error. |
+| `plan` | `entries[].content`, `entries[].priority`, `entries[].status` | Replaces the agent's Todo List (`ConnectionEvent.PlanUpdated`); an empty list clears it. Not a chat item: shown as `PlanPanel` above the transcript. A plan with any invalid entry is ignored whole. |
 | `agent_image` | `image` | Creates an image-only agent item. The value is a URL or base64 data URL. |
 | `assistant` | `content` | Creates an assistant turn using a stable content-derived ID. |
 | `session_sync` | `session.messages` | Replays non-empty assistant messages from the server snapshot. |
@@ -241,6 +242,62 @@ omits it the parser generates a UUID, so that frame cannot be correlated with a
 later update for the same item. `llm_result` and `tool_result` are stricter:
 with no `id` (or `tool_id`) there is nothing to update, so they parse to
 `ConnectionEvent.Unknown` rather than inventing one.
+
+### Streaming frames
+
+Checked against connectonion's own emitters (`core/tool_executor.py`,
+`core/wire_events.py`, `useful_plugins/re_act.py`,
+`useful_events_handlers/reflect.py`, `core/agent.py`) and the reference web
+client's mapper (`connectonion-react`'s `chat-item-mapper.ts`). Covered by
+`StreamingFramesSpecTest`, one section per frame type.
+
+**Stable ids.** Every logged frame carries its own trace `id`, which moves the
+replay cursor. The chat item a frame becomes is keyed on the id that names the
+*thing*, so a replay lands on the item already on screen:
+
+| Frame | Chat item id |
+| --- | --- |
+| `thinking` with text | the frame's `id` (a `thinking-` prefixed content hash if it has none, so it can never share an id with a reply of the same text) |
+| `tool_call`, `tool_result` | `tool_id`, the LLM's call id that tool_executor.py puts on both. Each frame's own `id` differs between the two and is only a fallback. |
+| `llm_call`, `llm_result` | the shared `id` |
+
+**Tool status.** On the live wire `wire_events.py` rewrites tool statuses to
+OIP's lifecycle: a start is `pending` or `in_progress`, a result is `completed`
+or `failed`. A replayed or older trace can still say `success`, `error`,
+`not_found` or `interrupted`. A result is terminal, so only a known success is
+shown as done; a missing or unknown status is shown as failed, as the Host's own
+replay (`session/ui.py`) and the web client do. `timing_ms` (float
+milliseconds) is kept on the item.
+
+**One bubble per turn.** A turn (everything between two of the user's
+messages) shows only its newest thought; a "Show all N thoughts" toggle above
+it lists the earlier ones, oldest first (`groupReasoningByTurn`,
+`ReasoningBubble`). The toggle's state is held by `MessageList` per turn, so it
+stays open as new thoughts arrive.
+
+**Reasoning versus reply.** `re_act` and `reflect` also append their reasoning
+to the session's `messages` as an assistant entry, so every `session_sync`
+after a `thinking` frame lists that text again as if it were a reply. The
+reducer drops a snapshot reply whose text is reasoning already on screen, and
+`mergeServerTranscript` counts stored reasoning rows as local copies, so the
+transcript replayed on CONNECT does not add it either.
+
+**Reconnect.** A `tool_result` updates the `ToolCall` with its `tool_id` in
+place, wherever it sits in the list. A replayed `tool_call` for a call already
+on screen never reopens it: the card keeps its status and result and only takes
+the `args` or name it was missing (a result can reach the list before its start
+when a replay begins mid-run). Replaying a whole execution over the list it
+produced leaves the list unchanged.
+
+**Plan.** Session state, not transcript, as in the web client's
+`CurrentTodoListPanel`. `ConnectionRepository.plan` holds the current list. It
+is replaced by each `plan` frame and by the `plan` array a session snapshot
+carries (CONNECTED, `session_sync`, OUTPUT), which is how a reconnect gets it
+back. A snapshot with no `plan`, or a malformed one, keeps what is shown. It is
+cleared on every `connect()` and conversation switch, like the mode chip.
+`SessionState.plan` is echoed on CONNECT with the rest of the session, as the
+web client does. It is not persisted across an app restart; the CONNECTED
+snapshot restores it.
 
 ### Compaction in the timeline
 
@@ -380,7 +437,7 @@ Host writes straight to the socket instead of appending to its log: `CONNECTED`,
 `SESSION_STATUS`, `RUNTIME_INPUT_ACK` (whose `id` is a UUID the Host mints for the
 queued input, not a log entry), `ONBOARD_REQUIRED` and `ONBOARD_SUCCESS`
 (`HOST_FRAME_TYPES` in `ProtocolParser`). The Host stamps an `id` on every entry in its log, so this
-follows new event types (`plan`, `turn_result`, `provider_message`, and so on)
+follows new event types (`turn_result`, `provider_message`, and so on)
 without a list to maintain, whether or not the client decodes them;
 `ProtocolParser` puts it in `ParseResult.msgId`. An id on one of the excluded
 frames would name nothing the Host could rewind to. `AgentConnection` stores the

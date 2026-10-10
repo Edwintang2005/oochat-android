@@ -18,6 +18,7 @@ import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ChatListFlags
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.PlanEntry
 import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.domain.model.ThinkingStatus
 import ai.openonion.oochat.domain.model.UserMessageState
@@ -309,6 +310,10 @@ open class ChatViewModel @JvmOverloads constructor(
     // nothing on the wire says "this agent has no dashboard". Untrusted
     // agent-authored HTML; see ConnectionRepository.dashboardHtml.
     val dashboardHtml: StateFlow<String?> = connectUseCase.dashboardHtml
+
+    // The agent's current Todo List for this conversation, rendered as a
+    // panel above the transcript; see ConnectionRepository.plan.
+    val plan: StateFlow<List<PlanEntry>> = connectUseCase.plan
 
     // Settings' "Custom instructions" free text — silently prepended to
     // every outgoing prompt in sendMessage(), never to the displayed/
