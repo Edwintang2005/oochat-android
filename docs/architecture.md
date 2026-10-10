@@ -205,6 +205,15 @@ gap on its side — a no-tool turn now drains accepted runtime input before it
 closes, and an agent that cannot take it rejects rather than acknowledging — so
 this hold can go once the agents we connect to are known to be current.
 
+When the hold times out, or the client's view of the turn was stale, the message
+does reach a running turn. It is then shown as `AWAITING_ACK` ("Sending…") and
+settled by the host's `RUNTIME_INPUT_ACK` or `RUNTIME_INPUT_REJECTED`; a
+retryable refusal falls back to the held-then-ordinary-`INPUT` path above, once.
+The send lock is held until the host answers (or
+`ChatViewModel.RUNTIME_INPUT_REPLY_TIMEOUT_MS` passes), which is what lets a
+reply be linked to its message when nothing on the wire identifies it. See the
+"Runtime input" section of `protocol.md` for the details and the known gaps.
+
 ## End-to-end sequence: cold-start recovery
 
 ```text

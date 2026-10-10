@@ -217,8 +217,9 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `plan_review` | `id`, `plan_content` | Creates a `ChatItem.PlanReviewItem` and enters a waiting state until the user answers with `PLAN_REVIEW_RESPONSE`. |
 | `files_received` | `id`, `files[].name`, `files[].path` | Creates a `ChatItem.FilesReceivedItem` listing files the agent returned; an absent `files` array yields an empty list. |
 | `ulw_turns_reached` | `id`, `turns_used`, `max_turns` | Creates a `ChatItem.UlwTurnsReachedItem` and enters a waiting state until the user answers with `ULW_RESPONSE`. Both counters default to `0`. |
+| `RUNTIME_INPUT_ACK` | `session_id`, `id` | Emits `ConnectionEvent.RuntimeInputAcknowledged`: the host queued an `INPUT` that arrived mid-turn for the running turn's next iteration. `id` is the host's own UUID for the queued item, **not** the `input_id` we sent, so it cannot name the message it answers — see [Runtime input](#runtime-input). Not an `OUTPUT`: it does not end the turn. |
 | `OUTPUT` | `input_id`, `result`, `session` | Emits the final output when it belongs to the current input, or for any direct connection; updates the session snapshot. |
-| `ERROR` | `code`, `protocol`, `message`, `error` | With `code` `-32010`, emits `ProtocolRejected` (see [Incompatible protocol version](#incompatible-protocol-version)). Otherwise emits `ConnectionError` using `message`, then `error`, then `"Unknown error"`. |
+| `ERROR` | `code`, `protocol`, `retryable`, `session_id`, `message`, `error` | With `code` `-32010`, emits `ProtocolRejected` (see [Incompatible protocol version](#incompatible-protocol-version)). With `code` `"RUNTIME_INPUT_REJECTED"`, emits `RuntimeInputRejected` instead of an error: the socket and the running turn are healthy, and `ConnectionError` could start the reconnect ladder (see [Runtime input](#runtime-input)). `retryable` is read as true only for a literal boolean `true`. Every other `ERROR` emits `ConnectionError` using `message`, then `error`, then `"Unknown error"`. |
 
 For `assistant`, `thinking` text, `agent_image`, and `session_sync`, the parser
 uses `stableAssistantId()` to make replayed messages idempotent. This prevents
@@ -229,6 +230,67 @@ omits it the parser generates a UUID, so that frame cannot be correlated with a
 later update for the same item. `llm_result` and `tool_result` are stricter:
 with no `id` (or `tool_id`) there is nothing to update, so they parse to
 `ConnectionEvent.Unknown` rather than inventing one.
+
+## Runtime input
+
+An `INPUT` that reaches a host while that session's agent is running is treated
+as *runtime input* instead of starting a second turn. The host replies at once,
+on the same socket, with one of two frames:
+
+| Host reply | Meaning | Wire shape |
+| --- | --- | --- |
+| `RUNTIME_INPUT_ACK` | Queued for the running turn. | `{"type":"RUNTIME_INPUT_ACK","session_id":"…","id":"<host uuid>"}` |
+| `ERROR` + `RUNTIME_INPUT_REJECTED` | Not taken (the turn is sealed, or the agent lacks the `runtime_input` plugin). Nothing was queued. | `{"type":"ERROR","code":"RUNTIME_INPUT_REJECTED","message":"…","session_id":"…","retryable":true}` |
+
+Source of truth: `ws_router/session.py` in openonion/connectonion, which sends
+the ACK only after `push_runtime_input` accepted the text.
+
+**Linking a reply to its message.** Neither frame carries the `input_id` we
+sent: the ACK's `id` is minted by the host. A reply can therefore only be
+linked by there being exactly one candidate. `ChatViewModel` allows one message
+awaiting an answer at a time (`pendingRuntimeInput`) and holds its send lock
+until that answer arrives or `RUNTIME_INPUT_REPLY_TIMEOUT_MS` passes, so the next
+message cannot go out while one is owed. A reply can never be handed to the wrong
+message, even when the client was wrong about a turn running and the host never
+answers.
+
+The message is registered *before* the `INPUT` leaves: the host answers the
+moment it reads it, and a reply that beat the registration would find nobody
+waiting. Only mid-turn sends are registered; an `INPUT` to an idle agent starts a
+turn and gets no such reply.
+
+**Bubble state (`UserMessageState`).** A message sent into a running turn shows
+`AWAITING_ACK` ("Sending…") until the host answers:
+
+| Event | Result |
+| --- | --- |
+| `RUNTIME_INPUT_ACK` | `SENT` |
+| `RUNTIME_INPUT_REJECTED`, `retryable: true` (first time) | `QUEUED`, then held until the turn's `OUTPUT` and sent again as an ordinary `INPUT`. The same bubble is reused and the same payload is sent, images and files included. |
+| `RUNTIME_INPUT_REJECTED`, `retryable: true` (second time) | `FAILED` (tap to resend). A message is repeated once, never in a loop. |
+| `RUNTIME_INPUT_REJECTED`, not retryable | `FAILED` (tap to resend) |
+| `OUTPUT` with no reply | `SENT`. The host answers a runtime `INPUT` immediately, so silence until `OUTPUT` means the message reached an agent that had just gone idle and started its own turn. |
+| No reply within `RUNTIME_INPUT_REPLY_TIMEOUT_MS` | `SENT`, for the same reason. |
+| Any other `ERROR` frame | No change. It says nothing about whether the host took this message; the host's own refusal arrives as its own event. |
+| Disconnect / reconnect | `FAILED`. No reply can arrive on a dead socket and whether the host queued it is unknown. |
+
+**When this happens at all.** `ChatViewModel.sendWhenTheAgentIsIdle` still holds
+ordinary messages until the running turn ends (see `architecture.md`), so a
+message only goes out mid-turn when that hold times out
+(`ChatViewModel.TURN_WAIT_TIMEOUT_MS`) or the client's view of the turn was
+stale. The ACK handling is what makes that path honest rather than silent.
+A message with images or files is never sent into a running turn, because the
+host’s runtime-input queue keeps only the text. It is held until the turn ends.
+If the turn is still running after 2 minutes, the message is marked failed
+(tap to resend) rather than sent or held forever.
+
+**Known gaps.**
+
+- A reply that arrives with nothing awaiting it is logged and ignored. If a
+  refusal crossed the turn's `OUTPUT` on the wire, the `OUTPUT` has already
+  settled the message as `SENT` and the refusal cannot be attributed, so that
+  message is not resent.
+- Hosts older than the change that made the ACK truthful acknowledge input they
+  never drain. Nothing on the wire identifies such a host.
 
 ## Session state and recovery
 

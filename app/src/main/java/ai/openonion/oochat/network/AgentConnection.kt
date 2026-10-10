@@ -1253,6 +1253,17 @@ class AgentConnection(
                     FileLogger.i(LogTags.AGENT_CONN, "SESSION_STATUS ← ${event.status}")
                     _events.tryEmit(event)
                 }
+                is ConnectionEvent.RuntimeInputAcknowledged -> {
+                    FileLogger.i(LogTags.AGENT_CONN, "RUNTIME_INPUT_ACK ✓")
+                    _events.tryEmit(event)
+                }
+                is ConnectionEvent.RuntimeInputRejected -> {
+                    // Deliberately not routed through ConnectionError: the
+                    // socket and the running turn are both fine, and that path
+                    // clears outstandingInputIds and can start a reconnect.
+                    FileLogger.w(LogTags.AGENT_CONN, "RUNTIME_INPUT_REJECTED (retryable=${event.retryable})")
+                    _events.tryEmit(event)
+                }
                 is ConnectionEvent.Waiting -> {} // Already handled above
                 else -> {} // Ignore Unknown, Ping, etc.
             }

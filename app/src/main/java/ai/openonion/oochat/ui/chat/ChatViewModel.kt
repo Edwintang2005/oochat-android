@@ -565,6 +565,29 @@ open class ChatViewModel @JvmOverloads constructor(
      */
     private val serverTurnActive = MutableStateFlow(false)
 
+    /**
+     * The one message sent into a running turn that the host has not answered
+     * yet, or null.
+     *
+     * A runtime INPUT is answered with `RUNTIME_INPUT_ACK` or
+     * `RUNTIME_INPUT_REJECTED`, and neither carries the `input_id` we sent (see
+     * [ConnectionEvent.RuntimeInputAcknowledged][ai.openonion.oochat.network.ConnectionEvent.RuntimeInputAcknowledged]),
+     * so a reply can only be linked to its message by there being exactly one
+     * candidate. That is why the send path holds [outgoingSendLock] until this
+     * is answered: the next message cannot go out while an answer is owed, so a
+     * reply can never be handed to the wrong message — even when this client was
+     * wrong about whether a turn was running and no reply ever comes.
+     *
+     * Registered *before* the INPUT leaves, because the host answers the moment
+     * it reads it and a reply that beat the registration would find nobody
+     * waiting. Touched only on the main dispatcher.
+     *
+     * Declared above [init] for the same reason as [serverTurnActive]: the
+     * connection-state collector started there completes this on its very first
+     * emission, and a property declared further down is still null by then.
+     */
+    private var pendingRuntimeInput: PendingRuntimeInput? = null
+
     init {
         // Initial state stays ChatUiState's own default (""), so there is
         // nothing to flash or reflow when the real address lands a few
@@ -656,6 +679,10 @@ open class ChatViewModel @JvmOverloads constructor(
                         // into a turn the server is still running, which the
                         // server merges; leaving it shut hangs the composer.
                         serverTurnActive.value = false
+                        // No reply to a mid-turn send can arrive on a dead
+                        // socket, and whether the host queued it is unknown.
+                        // Say it did not go, and let the user resend it.
+                        answerPendingRuntimeInput(RuntimeInputReply.CONNECTION_LOST)
                     }
                     else -> {}
                 }
@@ -743,6 +770,23 @@ open class ChatViewModel @JvmOverloads constructor(
                         event is ChatEvent.ConnectionErrorOccurred
                     ) {
                         serverTurnActive.value = false
+                    }
+                    when (event) {
+                        is ChatEvent.RuntimeInputAcknowledged ->
+                            answerPendingRuntimeInput(RuntimeInputReply.ACCEPTED, stray = "ACK")
+                        is ChatEvent.RuntimeInputRejected -> answerPendingRuntimeInput(
+                            if (event.retryable) RuntimeInputReply.REFUSED_RETRYABLE else RuntimeInputReply.REFUSED,
+                            stray = "REJECTED"
+                        )
+                        // The host answers a runtime INPUT the moment it reads
+                        // it, so a message still unanswered when the turn ends
+                        // was not runtime input at all: it reached an agent that
+                        // had just gone idle and started a turn of its own.
+                        is ChatEvent.OutputReceived -> answerPendingRuntimeInput(RuntimeInputReply.TURN_ENDED)
+                        // A generic ERROR frame is deliberately not handled: it
+                        // says nothing about whether the host took our message,
+                        // and the host's own refusal arrives as its own event.
+                        else -> {}
                     }
                     if (event is ChatEvent.ServerTranscriptReceived) {
                         // The reducer deliberately no-ops on this; only the
@@ -1381,6 +1425,21 @@ open class ChatViewModel @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Hands the host's answer (or the reason none is coming) to the message
+     * waiting on it — see [pendingRuntimeInput]. The waiting send settles the
+     * bubble itself, so everything that happens to one message happens in one
+     * coroutine.
+     */
+    private fun answerPendingRuntimeInput(reply: RuntimeInputReply, stray: String? = null) {
+        val pending = pendingRuntimeInput
+        if (pending == null) {
+            if (stray != null) FileLogger.w(LogTags.CHAT_VM, "Runtime-input $stray with no message awaiting it; ignored")
+            return
+        }
+        pending.reply.complete(reply)
+    }
+
     /** Moves one of the user's own bubbles to [next]. */
     private fun setUserMessageState(messageId: String, next: UserMessageState) {
         _uiState.update { state ->
@@ -1572,7 +1631,15 @@ open class ChatViewModel @JvmOverloads constructor(
             val contentForAgent = if (instructionsSnapshot.isBlank()) content else "$instructionsSnapshot\n\n$content"
             val hasSomethingToSend = content.isNotBlank() || dataUrls != null || fileAttachments != null
 
-            val put: suspend () -> Unit = {
+            // What goes on the wire, kept whole so a refused send can be repeated
+            // exactly — images and files included — instead of being rebuilt
+            // from the bubble.
+            val payload = OutgoingPayload(contentForAgent, dataUrls, fileAttachments)
+
+            // [intoRunningTurn] is true when the INPUT left while a turn was
+            // still running (the idle hold timed out), which is the only time
+            // the host can answer it with RUNTIME_INPUT_ACK / _REJECTED.
+            val put: suspend (intoRunningTurn: Boolean) -> Boolean = { intoRunningTurn ->
                 // Persisted here rather than when the bubble went up. The row's
                 // timestamp is what orders the transcript, and stamping it at
                 // the tap put a queued message *ahead of the reply it is
@@ -1580,32 +1647,191 @@ open class ChatViewModel @JvmOverloads constructor(
                 // but the persisted order won, so the pair rendered as two
                 // questions followed by two answers.
                 if (echoUserMessage) conversationHistory.persistMessage(userItem, targetSessionId)
-                // A throw here is the send genuinely failing — the socket was
-                // closing under us, or the outbox refused the payload. The
-                // bubble has to say so, because nothing else will: there is no
-                // negative acknowledgement on this protocol.
-                val delivered = if (hasSomethingToSend) {
-                    runCatchingCancellable {
-                        connectUseCase.sendMessage(contentForAgent, _targetAgentAddress, dataUrls, fileAttachments)
-                    }.onFailure {
-                        FileLogger.e(LogTags.CHAT_VM, "Send failed: ${it.message}")
-                    }.isSuccess
-                } else {
-                    true
-                }
+                // A resend (messageId given) parked its bubble as QUEUED before
+                // getting here, so it has to be settled even when nothing else
+                // flagged it — otherwise it would stay QUEUED after delivery.
+                transmit(
+                    userId = userId,
+                    payload = payload,
+                    intoRunningTurn = intoRunningTurn,
+                    offline = offline,
+                    settleBubble = queuedAtSend || messageId != null,
+                    attempt = 0
+                )
+            }
+            if (waitForRunningTurn && hasSomethingToSend) {
+                sendWhenTheAgentIsIdle(
+                    canRideRunningTurn = !payload.hasAttachments,
+                    onHeldTooLong = {
+                        // put() never runs for this message, and a resend skips saving
+                        // (echoUserMessage = false), so this is the only place it gets
+                        // saved. Without it, reopening the app shows the agent's answer
+                        // with no question above it.
+                        if (echoUserMessage) conversationHistory.persistMessage(userItem, targetSessionId)
+                        setUserMessageState(userId, UserMessageState.FAILED)
+                    },
+                    send = put
+                )
+            } else {
+                put(false)
+            }
+        }
+    }
+
+    /** What one outgoing message puts on the wire. */
+    private class OutgoingPayload(
+        val content: String,
+        val dataUrls: List<String>?,
+        val files: List<ai.openonion.oochat.domain.model.OutgoingFileAttachment>?
+    ) {
+        /** The host's mid-turn queue keeps only the text, so these must never go into a running turn. */
+        val hasAttachments: Boolean get() = dataUrls != null || files != null
+    }
+
+    /** A message sent into a running turn, and the host's answer to it when it comes. */
+    private class PendingRuntimeInput(
+        val id: String,
+        val payload: OutgoingPayload,
+        val reply: CompletableDeferred<RuntimeInputReply> = CompletableDeferred()
+    )
+
+    private enum class RuntimeInputReply {
+        /** `RUNTIME_INPUT_ACK`: queued for the running turn. */
+        ACCEPTED,
+
+        /** `RUNTIME_INPUT_REJECTED`, retryable: send it again once the turn's OUTPUT lands. */
+        REFUSED_RETRYABLE,
+
+        /** `RUNTIME_INPUT_REJECTED`, not retryable: it is not going to be taken. */
+        REFUSED,
+
+        /** The turn finished with no answer: the message was not runtime input. */
+        TURN_ENDED,
+
+        /** The socket died, so no answer can come and delivery is unknown. */
+        CONNECTION_LOST
+    }
+
+    /**
+     * Puts one message on the wire and settles its bubble.
+     *
+     * Into a running turn ([intoRunningTurn], online) delivery is unconfirmed
+     * until the host answers: it queues the text (`RUNTIME_INPUT_ACK`) or
+     * refuses it (`RUNTIME_INPUT_REJECTED`). The bubble says so, the message is
+     * registered as [pendingRuntimeInput] *before* the INPUT leaves, and this
+     * does not return until the host has answered or [RUNTIME_INPUT_REPLY_TIMEOUT_MS]
+     * has passed — the caller holds [outgoingSendLock], so nothing else is sent
+     * while an answer is owed. Offline sends sit in the outbox and go out later
+     * as ordinary INPUTs, so they never wait for one.
+     *
+     * [attempt] is 0 for the first send and 1 for the one repeat a retryable
+     * refusal earns; a second refusal is final.
+     *
+     * Returns whether this INPUT is now part of a running turn — what the
+     * caller needs to know to keep [serverTurnActive] right. A failed send, a
+     * refusal and a dropped socket all return false.
+     */
+    private suspend fun transmit(
+        userId: String,
+        payload: OutgoingPayload,
+        intoRunningTurn: Boolean,
+        offline: Boolean,
+        settleBubble: Boolean,
+        attempt: Int
+    ): Boolean {
+        val pending = if (intoRunningTurn && !offline) PendingRuntimeInput(userId, payload) else null
+        if (pending != null) {
+            pendingRuntimeInput = pending
+            setUserMessageState(userId, UserMessageState.AWAITING_ACK)
+        }
+        try {
+            // A throw here is the send genuinely failing — the socket was
+            // closing under us, or the outbox refused the payload. The bubble
+            // has to say so, because nothing else will: there is no negative
+            // acknowledgement on this protocol.
+            val delivered = runCatchingCancellable {
+                connectUseCase.sendMessage(payload.content, _targetAgentAddress, payload.dataUrls, payload.files)
+            }.onFailure {
+                FileLogger.e(LogTags.CHAT_VM, "Send failed: ${it.message}")
+            }.isSuccess
+            if (!delivered) {
+                setUserMessageState(userId, UserMessageState.FAILED)
+                return false
+            }
+            // On the wire, so a turn is (about to be) running. Set now, before any wait
+            // for the host's answer: if that answer is the turn's OUTPUT, it clears this,
+            // and setting it after the wait would resurrect a turn that already ended.
+            serverTurnActive.value = true
+            if (pending == null) {
                 // Off the tail once it lands, so anything the new turn emits
                 // appends after it the way it always did. Offline sends stay
                 // QUEUED until the outbox flush; only a hard failure is FAILED.
-                val settled = when {
-                    !delivered -> UserMessageState.FAILED
-                    offline -> UserMessageState.QUEUED
-                    else -> UserMessageState.SENT
+                if (settleBubble) setUserMessageState(userId, if (offline) UserMessageState.QUEUED else UserMessageState.SENT)
+                return true
+            }
+            val reply = withTimeoutOrNull(RUNTIME_INPUT_REPLY_TIMEOUT_MS) { pending.reply.await() }
+            return when (reply) {
+                RuntimeInputReply.ACCEPTED -> {
+                    setUserMessageState(userId, UserMessageState.SENT)
+                    true
                 }
-                if (queuedAtSend || settled == UserMessageState.FAILED) {
-                    setUserMessageState(userId, settled)
+                // Nothing was queued and the turn is still running, so the same
+                // text goes out again once it ends — but only once. A second
+                // refusal means the host will not take it, and asking again and
+                // again would be an endless loop the user cannot see.
+                RuntimeInputReply.REFUSED_RETRYABLE -> {
+                    if (attempt == 0) {
+                        setUserMessageState(userId, if (serverTurnActive.value) UserMessageState.QUEUED else UserMessageState.SENT)
+                        retryRefusedRuntimeInput(userId, payload)
+                    } else {
+                        setUserMessageState(userId, UserMessageState.FAILED)
+                    }
+                    false
+                }
+                RuntimeInputReply.REFUSED -> {
+                    setUserMessageState(userId, UserMessageState.FAILED)
+                    false
+                }
+                // Silence, or the turn ending first: the host answers a runtime
+                // INPUT immediately, so this was an ordinary INPUT that started
+                // a turn of its own.
+                RuntimeInputReply.TURN_ENDED, null -> {
+                    setUserMessageState(userId, UserMessageState.SENT)
+                    true
+                }
+                RuntimeInputReply.CONNECTION_LOST -> {
+                    // Whether the host queued it is unknown. Say it did not go,
+                    // and let the user resend it.
+                    setUserMessageState(userId, UserMessageState.FAILED)
+                    false
                 }
             }
-            if (waitForRunningTurn && hasSomethingToSend) sendWhenTheAgentIsIdle(put) else put()
+        } finally {
+            if (pending != null && pendingRuntimeInput === pending) pendingRuntimeInput = null
+        }
+    }
+
+    /**
+     * Sends a message the host refused as runtime input once more, through the
+     * ordinary hold, so it goes out as a normal INPUT after the turn ends.
+     * Launched rather than called: the refused send still holds
+     * [outgoingSendLock], which this has to queue behind.
+     */
+    private fun retryRefusedRuntimeInput(userId: String, payload: OutgoingPayload) {
+        viewModelScope.launch {
+            sendWhenTheAgentIsIdle(
+                canRideRunningTurn = !payload.hasAttachments,
+                onHeldTooLong = { setUserMessageState(userId, UserMessageState.FAILED) }
+            ) { intoRunningTurn ->
+                transmit(
+                    userId = userId,
+                    payload = payload,
+                    intoRunningTurn = intoRunningTurn,
+                    offline = !connectUseCase.isConnected(),
+                    settleBubble = true,
+                    attempt = 1
+                )
+            }
         }
     }
 
@@ -1623,7 +1849,15 @@ open class ChatViewModel @JvmOverloads constructor(
      * on device. Waiting makes it an ordinary INPUT, which always starts its
      * own turn and is always answered.
      */
-    private suspend fun sendWhenTheAgentIsIdle(send: suspend () -> Unit) {
+    private suspend fun sendWhenTheAgentIsIdle(
+        // False for a message with attachments: the host's mid-turn queue keeps
+        // only the text, so it must never be sent into a running turn.
+        canRideRunningTurn: Boolean = true,
+        // Called, still holding the lock, when a message that cannot ride a running
+        // turn is still facing one after the wait.
+        onHeldTooLong: suspend () -> Unit = {},
+        send: suspend (intoRunningTurn: Boolean) -> Boolean
+    ) {
         outgoingSendLock.withLock {
             // Either signal counts as busy: serverTurnActive covers the turn
             // this session started, isAgentWorking covers one already running
@@ -1631,15 +1865,24 @@ open class ChatViewModel @JvmOverloads constructor(
             if (serverTurnActive.value || isAgentWorking.value) {
                 FileLogger.i(LogTags.CHAT_VM, "Send held: a turn is still running")
                 val busy = combine(serverTurnActive, isAgentWorking) { own, onScreen -> own || onScreen }
-                // Bounded: a turn left in progress by a dropped connection must
-                // not strand the message forever. Sending late beats never.
+                // Bounded for everyone: a turn left in progress by a dropped
+                // connection must not strand the queue. isAgentWorking is true for
+                // any unfinished card (a tool left RUNNING by a server crash, a
+                // stuck eval or compaction card), and nothing clears those on
+                // disconnect, so an unbounded wait here would block every later
+                // message too. Sending late beats never.
                 withTimeoutOrNull(TURN_WAIT_TIMEOUT_MS) { busy.first { !it } }
             }
-            send()
-            // Set here rather than when progress first shows: there is no gap
-            // between the INPUT leaving and this being true, so a second queued
-            // message has nothing to slip through.
-            serverTurnActive.value = true
+            // Checked after the wait rather than from its result, so a turn that
+            // starts between "idle" and here is caught too.
+            if (!canRideRunningTurn && (serverTurnActive.value || isAgentWorking.value)) {
+                FileLogger.w(LogTags.CHAT_VM, "Attachment send not made: the turn never ended")
+                onHeldTooLong()
+                return@withLock
+            }
+            // The busy flag is set inside transmit(), the moment the INPUT is on
+            // the wire, not here after the reply wait. See transmit().
+            send(serverTurnActive.value || isAgentWorking.value)
         }
     }
 
@@ -2065,6 +2308,13 @@ open class ChatViewModel @JvmOverloads constructor(
 
     companion object {
         /** How long a queued send waits out the running turn — see [sendWhenTheAgentIsIdle]. */
-        private const val TURN_WAIT_TIMEOUT_MS = 120_000L
+        internal const val TURN_WAIT_TIMEOUT_MS = 120_000L
+
+        /**
+         * How long a message sent into a running turn waits for the host's
+         * answer. The host replies the moment it reads the INPUT, so silence
+         * this long means it was not runtime input.
+         */
+        internal const val RUNTIME_INPUT_REPLY_TIMEOUT_MS = 10_000L
     }
 }

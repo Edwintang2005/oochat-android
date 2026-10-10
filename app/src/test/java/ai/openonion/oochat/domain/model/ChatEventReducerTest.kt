@@ -691,4 +691,24 @@ class ChatEventReducerTest {
         assertSame(current, result.chatItems)
         assertNull(result.itemToPersist)
     }
+
+    // ── RuntimeInputAcknowledged / RuntimeInputRejected ──────────────
+
+    @Test
+    fun `runtime-input replies are no-ops on the chat list`() {
+        // They settle the delivery state of a message already on screen, which
+        // ChatViewModel owns — the reducer must neither add an item nor touch
+        // the user's bubble.
+        val current = listOf(ChatItem.User(id = "u1", content = "hi", state = UserMessageState.AWAITING_ACK))
+
+        for (event in listOf(
+            ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"),
+            ChatEvent.RuntimeInputRejected(sessionId = "sess-1", retryable = true)
+        )) {
+            val result = ChatEventReducer.reduce(current, event, emptySet())
+
+            assertSame(current, result.chatItems)
+            assertNull(result.itemToPersist)
+        }
+    }
 }
