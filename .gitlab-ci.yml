@@ -64,12 +64,11 @@ stages:
     files:
       - gradle/wrapper/gradle-wrapper.properties
   # Temporary: the cache main saved under the old build-script key, so the
-  # first pipelines on the new key start warm. Both spellings, as GitLab may or
-  # may not add the index prefix and protection suffix to a fallback key.
+  # first pipelines on the new key start warm. GitLab appends -non_protected
+  # to a fallback key but not the 0_ index prefix, so the prefix is spelled out.
   # Remove once main has saved the cache under the new key.
   fallback_keys:
-    - build_app/build-64e7d287432ceb074455feec6c84ab0098bc450c
-    - 0_build_app/build-64e7d287432ceb074455feec6c84ab0098bc450c-non_protected
+    - 0_build_app/build-64e7d287432ceb074455feec6c84ab0098bc450c
   paths:
     - .gradle-home/caches/
     - .gradle-home/wrapper/
@@ -117,10 +116,13 @@ unit-tests:
   # Longer than the project default; the runner caps it if it allows less.
   timeout: 30m
   # The one job that writes the cache, on main only (CACHE_POLICY, above). It
-  # resolves the most dependencies: the app's and its tests'.
+  # resolves the most dependencies: the app's and its tests'. Saved even when
+  # the job fails or times out, so a cold main run still leaves what it
+  # downloaded for the next one instead of nothing.
   cache:
     <<: *gradle-cache
     policy: $CACHE_POLICY
+    when: always
   script:
     - ./gradlew :app:testDebugUnitTest
     # testDebugUnitTest and the Roborazzi tasks reconfigure the same Gradle
