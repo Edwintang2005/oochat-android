@@ -49,6 +49,17 @@ data class SessionStateEntity(
     @ColumnInfo(name = "trace_json")
     val traceJson: String? = null,
 
+    /**
+     * Serialized JSON array of the session's Todo List (PlanEntryWire), or
+     * null when it has none. Kept because nothing else brings it back: the
+     * Host sends a session on CONNECTED only when its copy is newer, and
+     * replays frames only into a running turn, so an idle conversation that
+     * was switched away from — or an app restart — would otherwise show no
+     * plan and echo none on CONNECT, which the Host adopts as-is.
+     */
+    @ColumnInfo(name = "plan_json")
+    val planJson: String? = null,
+
     @ColumnInfo(name = "last_updated")
     val lastUpdated: Long = System.currentTimeMillis()
 )

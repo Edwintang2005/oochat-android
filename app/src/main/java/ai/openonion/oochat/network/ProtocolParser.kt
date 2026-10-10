@@ -702,6 +702,10 @@ object ProtocolParser {
         return entries
     }
 
+    /** [decodePlan]'s inverse, for a plan kept on the session it is sent back in. */
+    fun encodePlan(entries: List<PlanEntry>): List<PlanEntryWire> =
+        entries.map { PlanEntryWire(it.content, it.priority.wire, it.status.wire) }
+
     private fun rejectPlan(size: Int): List<PlanEntry>? {
         // Count only: entries are the agent's own task text.
         FileLogger.w(LogTags.PROTOCOL, "Ignoring malformed plan of $size entries")

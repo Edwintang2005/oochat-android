@@ -3,6 +3,8 @@ package ai.openonion.oochat.data.repository
 import ai.openonion.oochat.data.local.db.AppDatabase
 import ai.openonion.oochat.data.local.db.entity.AgentEntity
 import ai.openonion.oochat.data.local.db.entity.ChatSessionEntity
+import ai.openonion.oochat.data.local.db.entity.SessionStateEntity
+import ai.openonion.oochat.data.protocol.PlanEntryWire
 import ai.openonion.oochat.data.protocol.SessionMessage
 import ai.openonion.oochat.data.protocol.SessionState
 import androidx.room.Room
@@ -209,5 +211,41 @@ class SessionStoreImplTest {
         )
 
         assertNull(store.getSession("conv-1"))
+    }
+
+    @Test
+    fun `the session's plan round-trips`() = runTest {
+        seedConversation("conv-1")
+        val plan = listOf(
+            PlanEntryWire(content = "Run tests", priority = "high", status = "in_progress"),
+            PlanEntryWire(content = "Update docs", priority = "low", status = "pending")
+        )
+
+        store.saveSession("conv-1", SessionState(sessionId = "sid-1", turn = 2, plan = plan))
+
+        assertEquals(plan, store.getSession("conv-1")?.plan)
+    }
+
+    @Test
+    fun `a session with no plan reads back with none`() = runTest {
+        seedConversation("conv-1")
+
+        store.saveSession("conv-1", SessionState(sessionId = "sid-1"))
+
+        assertNull(store.getSession("conv-1")?.plan)
+    }
+
+    @Test
+    fun `an unreadable plan is dropped without losing the session`() = runTest {
+        seedConversation("conv-1")
+        db.sessionStateDao().saveSession(
+            SessionStateEntity(conversationId = "conv-1", sessionId = "sid-1", turn = 4, planJson = "{not json")
+        )
+
+        val restored = store.getSession("conv-1")
+
+        assertEquals("sid-1", restored?.sessionId)
+        assertEquals(4, restored?.turn)
+        assertNull(restored?.plan)
     }
 }

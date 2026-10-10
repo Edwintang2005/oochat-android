@@ -290,14 +290,25 @@ when a replay begins mid-run). Replaying a whole execution over the list it
 produced leaves the list unchanged.
 
 **Plan.** Session state, not transcript, as in the web client's
-`CurrentTodoListPanel`. `ConnectionRepository.plan` holds the current list. It
-is replaced by each `plan` frame and by the `plan` array a session snapshot
-carries (CONNECTED, `session_sync`, OUTPUT), which is how a reconnect gets it
-back. A snapshot with no `plan`, or a malformed one, keeps what is shown. It is
-cleared on every `connect()` and conversation switch, like the mode chip.
-`SessionState.plan` is echoed on CONNECT with the rest of the session, as the
-web client does. It is not persisted across an app restart; the CONNECTED
-snapshot restores it.
+`CurrentTodoListPanel`. `ConnectionRepository.plan` holds what the panel shows,
+and `AgentConnection`'s session carries the same plan as `SessionState.plan`:
+
+- A `plan` frame replaces both.
+- A session snapshot (CONNECTED, `session_sync`, OUTPUT) with a valid `plan`
+  replaces it. One with no `plan`, or a malformed one, keeps the plan already
+  held for the same session (`remote-agent.ts`'s `_applySessionSnapshot` rule);
+  a different session's plan is never carried over.
+- The session, plan included, is saved with the rest of it
+  (`session_states.plan_json`, added in database v13) and echoed on CONNECT,
+  which the Host adopts as the session, so the agent's next turn keeps its
+  plan.
+- `connect()` and a conversation switch show the stored plan of the
+  conversation being opened. Nothing on the wire would bring it back otherwise:
+  the Host sends a session on CONNECTED only when its copy is newer
+  (`server_newer`) and replays frames only into a running turn.
+
+A stored plan that no longer decodes is dropped on its own; the rest of the
+session still restores.
 
 ### Compaction in the timeline
 

@@ -425,12 +425,13 @@ class ConnectionRepositoryImpl(
         _approvalMode.value = ApprovalMode.DEFAULT
         confirmedApprovalMode = ApprovalMode.DEFAULT
         _modePending.value = false
-        // The plan is the left conversation's; the new one's arrives with its
-        // CONNECTED snapshot.
-        _plan.value = emptyList()
         // Agent profile and dashboard deliberately survive: same agent, only
         // a different conversation with it.
-        connection?.switchSession(sessionFor(conversationId))
+        val session = sessionFor(conversationId)
+        // The plan is the left conversation's. The one coming in is its stored
+        // plan: an idle session's CONNECTED carries no snapshot of its own.
+        showStoredPlan(session)
+        connection?.switchSession(session)
     }
 
     /**
@@ -443,6 +444,11 @@ class ConnectionRepositoryImpl(
      * is recoverable from its id alone, and the store only adds the
      * transcript and turn count on top.
      */
+    /** The plan [session] was saved with, or none — see SessionStateEntity.planJson. */
+    private fun showStoredPlan(session: SessionState?) {
+        _plan.value = ProtocolParser.decodePlan(session?.plan).orEmpty()
+    }
+
     private suspend fun sessionFor(conversationId: String?): SessionState? {
         if (conversationId == null) return null
         val stored = conversationId.let { sessionStore?.getSession(it) }
@@ -517,6 +523,9 @@ class ConnectionRepositoryImpl(
                     // see sessionFor.
                     currentConversationId = conversationId
                     val restoredSession = sessionFor(conversationId)
+                    // Shown before the socket opens: an idle session's CONNECTED
+                    // carries no snapshot, so the stored plan is the only one.
+                    showStoredPlan(restoredSession)
 
                     val newConnection = agentConnectionFactory(
                         keyManager ?: error("keyManager is required to connect"),
