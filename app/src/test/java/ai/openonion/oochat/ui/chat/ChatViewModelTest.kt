@@ -4416,6 +4416,94 @@ class ChatViewModelTest {
         assertEquals(UserMessageState.SENT, userMessage("hello").state)
     }
 
+    // ── CONNECTED status: connected (idle) ──────────────────────────────
+
+    @Test
+    fun `a card left spinning is settled once the Host says the session is idle`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.ToolCall(id = "tool-1", name = "bash", status = ToolStatus.RUNNING))
+        )
+        testScheduler.runCurrent()
+        // The socket drops mid-tool and the turn ends while nobody is listening, so no tool_result ever comes.
+        connectUseCase.forceState(ConnectionState.Disconnected)
+        testScheduler.runCurrent()
+        assertTrue(
+            "test setup: a drop does not settle a tool call, so it is still spinning",
+            vm.uiState.value.chatItems.any { it.id == "tool-1" && it.isInProgress() }
+        )
+
+        connectUseCase.markConnected(address, status = ServerSessionStatus.CONNECTED)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            ToolStatus.DONE,
+            (vm.uiState.value.chatItems.first { it.id == "tool-1" } as ChatItem.ToolCall).status
+        )
+        assertEquals("acted on, then let go, exactly once", 1, connectUseCase.releasedStatuses)
+
+        vm.sendMessage("hello")
+        testScheduler.runCurrent()
+        assertEquals(
+            "nothing is left running, so the message is not held",
+            listOf("hello"),
+            connectUseCase.sentMessages.map { it.content }
+        )
+    }
+
+    @Test
+    fun `a turn the drop failed is left for SESSION_STATUS to settle`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        vm.sendMessage("a question asked in A")
+        testScheduler.runCurrent()
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.Thinking(id = "think-1", status = ThinkingStatus.RUNNING))
+        )
+        testScheduler.runCurrent()
+        connectUseCase.forceState(ConnectionState.Disconnected)
+        testScheduler.runCurrent()
+
+        connectUseCase.markConnected(address, status = ServerSessionStatus.CONNECTED)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            "whether the reply arrived is for the replay to say, so Failed stays until it does",
+            ThinkingStatus.ERROR,
+            (vm.uiState.value.chatItems.first { it.id == "think-1" } as ChatItem.Thinking).status
+        )
+        // At least once: releasing the status comes back as one more Connected, which asks again.
+        assertTrue("and the Host is still asked", connectUseCase.querySessionStatusCalls >= 1)
+    }
+
+    @Test
+    fun `cards of a turn the Host says is still running keep spinning`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        connectUseCase.emit(
+            ChatEvent.ChatItemReceived(ChatItem.ToolCall(id = "tool-1", name = "bash", status = ToolStatus.RUNNING))
+        )
+        testScheduler.runCurrent()
+
+        connectUseCase.markConnected(address, status = ServerSessionStatus.RUNNING)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            ToolStatus.RUNNING,
+            (vm.uiState.value.chatItems.first { it.id == "tool-1" } as ChatItem.ToolCall).status
+        )
+    }
+
     @Test
     fun `onCleared leaves the shared connection alive for the next screen`() {
         // connectUseCase is app-scoped (see AppContainer): close() is terminal

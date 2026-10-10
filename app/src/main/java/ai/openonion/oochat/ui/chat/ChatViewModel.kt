@@ -980,10 +980,32 @@ open class ChatViewModel @JvmOverloads constructor(
      * would hand it to the next screen created on the same socket as if it were news.
      */
     private fun actOnHostAnswer(joined: ConnectionState.Connected) {
-        if (joined.status == ServerSessionStatus.RUNNING) {
-            onHostTurnRunning()
-            connectUseCase.releaseSessionStatus()
+        when (joined.status) {
+            ServerSessionStatus.RUNNING -> onHostTurnRunning()
+            ServerSessionStatus.CONNECTED -> onHostIdle()
+            else -> return
         }
+        connectUseCase.releaseSessionStatus()
+    }
+
+    /**
+     * The Host is idle on this session, so nothing it was running is still running. Whatever this
+     * screen still shows in progress was left that way by a turn that ended while the app could not
+     * hear it (the process died, or the socket dropped), and no frame will ever finish it. Settle it
+     * the way the OUTPUT would have, and save the result so the spinner does not come back with the
+     * next launch.
+     *
+     * A turn the drop already failed is not in progress, so it is left for the SESSION_STATUS reply
+     * ([ChatEvent.SessionStatusReceived]) to settle: whether its reply arrived is for the replay to say.
+     */
+    private fun onHostIdle() {
+        val before = _uiState.value.chatItems
+        val after = before.resolveRunningItems()
+        val settled = after.filterIndexed { index, item -> item != before[index] }
+        if (settled.isEmpty()) return
+        _uiState.update { it.copy(chatItems = after) }
+        val owningSessionId = conversationHistory.activeSessionId.value
+        settled.forEach { item -> launchScoped { conversationHistory.persistMessage(item, owningSessionId) } }
     }
 
     /**
