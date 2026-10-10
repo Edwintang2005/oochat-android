@@ -147,12 +147,35 @@ internal fun EvalCard(item: ChatItem.EvalItem) {
     }
 }
 
+/**
+ * Shown under a finished compaction so the percentages read as a consequence
+ * the user can act on: anything said before this line now survives only as a
+ * summary in the agent's context.
+ */
+internal const val COMPACT_DONE_HINT = "Earlier messages were summarised — the agent may not recall their details."
+
 @Composable
 internal fun CompactDivider(item: ChatItem.CompactItem) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = MaterialTheme.spacing.xs),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        CompactDividerLabel(item)
+        if (item.status == CompactStatus.DONE) {
+            Text(
+                text = COMPACT_DONE_HINT,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompactDividerLabel(item: ChatItem.CompactItem) {
+    Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {

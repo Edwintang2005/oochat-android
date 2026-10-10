@@ -137,6 +137,26 @@ class ProtocolParserStatusEventsTest {
     }
 
     @Test
+    fun `compact keeps the server id so the done frame updates the compacting divider`() {
+        val started = parse("""{"type":"compact","id":"c1","status":"compacting"}""")
+        val finished = parse("""{"type":"compact","id":"c1","status":"done","context_before":90,"context_after":33}""")
+
+        val first = (started.event as ConnectionEvent.ChatItemUpdated).item as ChatItem.CompactItem
+        val second = (finished.event as ConnectionEvent.ChatItemUpdated).item as ChatItem.CompactItem
+        assertEquals(first.id, second.id)
+        assertEquals(CompactStatus.DONE, second.status)
+    }
+
+    @Test
+    fun `compact without id or status falls back to a generated id and COMPACTING`() {
+        val result = parse("""{"type":"compact"}""")
+
+        val item = (result.event as ConnectionEvent.ChatItemUpdated).item as ChatItem.CompactItem
+        assertTrue(item.id.isNotBlank())
+        assertEquals(CompactStatus.COMPACTING, item.status)
+    }
+
+    @Test
     fun `compact done status`() {
         val result = parse("""{"type":"compact","id":"c1","status":"done","message":"compacted"}""")
 
