@@ -31,6 +31,19 @@ import kotlinx.serialization.json.contentOrNull
  */
 object ProtocolParser {
 
+    /**
+     * Frames the Host writes straight to the socket instead of appending to the agent log it replays
+     * from a CONNECT's `last_msg_id`. Any other frame that carries an `id` is a log frame (the Host
+     * stamps one on every entry), so a new event type needs no entry here to take part in replay.
+     * `RUNTIME_INPUT_ACK` is the one host frame that has an `id` of its own: a fresh UUID the Host
+     * mints for the queued input, which names nothing in its log.
+     */
+    private val HOST_FRAME_TYPES = setOf(
+        "PING", "CONNECTED", "AGENT_PROFILE", "DASHBOARD_SNAPSHOT", "ONBOARD_REQUIRED",
+        "ONBOARD_SUCCESS", "OUTPUT", "ERROR", "SESSION_STATUS", "RUNTIME_INPUT_ACK"
+    )
+
+
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -68,7 +81,7 @@ object ProtocolParser {
             "Parsed type=${event.type}, ${LogSanitizer.contentSummary(event.content.orEmpty())}"
         )
 
-        return when (event.type) {
+        val parsed = when (event.type) {
             "PING" -> ParseResult(
                 event = ConnectionEvent.Ping,
                 shouldSendPong = true
@@ -545,16 +558,45 @@ object ProtocolParser {
 
             else -> ParseResult(event = ConnectionEvent.Unknown)
         }
+        val msgId = event.id?.takeIf { it.isNotBlank() && event.type !in HOST_FRAME_TYPES }
+        return parsed.copy(
+            msgId = msgId,
+            dedupeKey = if (msgId != null && parsed.isDroppableRepeat()) frameKey(event) else null
+        )
     }
+
+    /**
+     * True when what the client does with this frame depends only on the frame's own content, so an
+     * exact repeat can be dropped. A `session_sync` is excluded: it carries the whole session, a
+     * replayed one carries the session as it is now (so it never equals the original), and receiving
+     * it twice is already safe because a reply's id comes from its content.
+     */
+    private fun ParseResult.isDroppableRepeat(): Boolean = when (val e = event) {
+        is ConnectionEvent.ChatItemReceived -> !e.fromSessionSnapshot
+        is ConnectionEvent.ChatItemUpdated -> true
+        else -> false
+    }
+
+    /**
+     * What identifies a frame to the client: every field it decodes, except `session_id`. Not the raw
+     * text: the relay stamps a `conn_id` on each frame per client socket (and a `session_id` besides),
+     * so the same logged event arrives as different text after a reconnect. `conn_id` is not a field
+     * the client decodes, so it drops out of this; `session_id` is cleared here.
+     */
+    private fun frameKey(event: ServerEvent): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(event.copy(sessionId = null).toString().toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 
     /**
      * Convert a `session_sync` server event into one or more
      * [ConnectionEvent.ChatItemReceived] events — one per assistant
      * message in the session's `messages` array.
      *
-     * Position-based IDs ("session-msg-{index}") keep repeated syncs
-     * idempotent — the [ai.openonion.oochat.domain.model.dedupeUI]
-     * helper in ChatViewModel collapses duplicates by id.
+     * Content-derived IDs ([ai.openonion.oochat.domain.model.stableAssistantId])
+     * keep repeated syncs idempotent — the
+     * [ai.openonion.oochat.domain.model.dedupeUI] helper in ChatViewModel
+     * collapses duplicates by id.
      *
      * Only `role == "assistant"` messages are surfaced as chat items.
      * User messages are skipped (the local [ChatItem.User] is the
@@ -713,7 +755,15 @@ data class ParseResult(
     val updateSession: ai.openonion.oochat.data.protocol.SessionState? = null,
     val updateSessionId: String? = null,
     val setWaiting: Boolean = false,
-    val extraEvents: List<ConnectionEvent> = emptyList()
+    val extraEvents: List<ConnectionEvent> = emptyList(),
+    /**
+     * The Host's id for this frame when it is an entry in the agent log, which is what a later CONNECT
+     * names in `last_msg_id`. Not the [ChatItem] id: the parser derives that from content for several
+     * frames.
+     */
+    val msgId: String? = null,
+    /** Set when an exact repeat of this frame can be dropped; see [ProtocolParser]'s `frameKey`. */
+    val dedupeKey: String? = null
 )
 
 /**
