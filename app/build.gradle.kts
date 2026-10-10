@@ -388,6 +388,9 @@ val regressionSuite = mapOf(
     "low-balance bar" to listOf(
         "ui.chat.components.LowBalanceBarComposeTest",
     ),
+    "session resume" to listOf(
+        "ui.chat.ProcessDeathResumeTest",
+    ),
 )
 val regressionOnly = providers.gradleProperty("regression").isPresent
 tasks.withType<Test>().configureEach {
