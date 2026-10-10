@@ -9,6 +9,7 @@ import ai.openonion.oochat.di.appContainer
 import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.AgentProfile
 import ai.openonion.oochat.domain.model.AppError
+import ai.openonion.oochat.domain.model.canonicalAgentAddress
 import ai.openonion.oochat.domain.model.createError
 import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCaseContract
 import ai.openonion.oochat.network.AgentDiscoveryService
@@ -171,13 +172,6 @@ class AgentViewModel @JvmOverloads constructor(
     }
 
     /**
-     * The form an address is saved in. Hex is case-insensitive, so `0xAB…`
-     * and `0xab…` are one key and must be one agent (W16AAPPLE-57); lower
-     * case is what the connectonion SDK writes (`"0x" + bytes.hex()`).
-     */
-    private fun canonicalAddress(address: String): String = address.lowercase()
-
-    /**
      * Saves a discovered agent unless one with its address is already saved,
      * making it the default if it is the first. Discovery ids its results by
      * address, so the saved row has a different id, and Room's REPLACE insert
@@ -186,7 +180,7 @@ class AgentViewModel @JvmOverloads constructor(
      * agent too (W16AAPPLE-60).
      */
     private suspend fun saveDiscoveredAgent(agent: AgentProfile) {
-        val address = canonicalAddress(agent.address)
+        val address = canonicalAgentAddress(agent.address)
         if (agentRepository.getAgentByAddress(address) != null) return
         // Before the insert, for the same reason as in createAgent.
         val wasFirstAgent = _uiState.value.agents.isEmpty()
@@ -217,7 +211,7 @@ class AgentViewModel @JvmOverloads constructor(
             return false
         }
 
-        val canonical = canonicalAddress(address)
+        val canonical = canonicalAgentAddress(address)
         val existing = agentRepository.getAgentByAddress(canonical)
         if (existing != null) {
             _uiState.update { it.copy(error = createError("Agent with this address already exists")) }
@@ -268,7 +262,7 @@ class AgentViewModel @JvmOverloads constructor(
         // The same check createAgent makes. Without it, moving an agent onto
         // another's address reached Room's unique index and threw inside the
         // edit screen's launch (W16AAPPLE-58).
-        val canonical = canonicalAddress(agent.address)
+        val canonical = canonicalAgentAddress(agent.address)
         val holder = agentRepository.getAgentByAddress(canonical)
         if (holder != null && holder.id != agent.id) {
             _uiState.update { it.copy(error = createError("Agent with this address already exists")) }
@@ -391,7 +385,7 @@ class AgentViewModel @JvmOverloads constructor(
             configRepository.saveConfig(
                 ConnectionConfig(
                     serverUrl = agent.serverUrl,
-                    agentAddress = canonicalAddress(agent.address),
+                    agentAddress = canonicalAgentAddress(agent.address),
                     apiKey = agent.apiKey
                 )
             )

@@ -3,6 +3,7 @@ package ai.openonion.oochat.ui.onboarding
 import ai.openonion.oochat.data.local.ConnectionConfig
 import ai.openonion.oochat.data.repository.ConnectionConfigRepository
 import ai.openonion.oochat.di.appContainer
+import ai.openonion.oochat.domain.model.canonicalAgentAddress
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.ui.agent.components.AgentFormState
 import android.app.Application
@@ -71,10 +72,9 @@ class OnboardingViewModel @JvmOverloads constructor(
         if (!formState.isValid) return
 
         val trimmedUrl = formState.serverUrl.trim().trimEnd('/')
-        // Lower case, as Add Agent saves it (W16AAPPLE-57): the chat screen
-        // saves this agent from the config, and capitals would make it a
-        // second agent next to the same address added elsewhere.
-        val trimmedAddress = formState.agentAddress.trim().lowercase()
+        // The chat screen saves this agent from the config, so it gets the
+        // same form as everywhere else (W16AAPPLE-57).
+        val trimmedAddress = canonicalAgentAddress(formState.agentAddress.trim())
         val trimmedApiKey = formState.apiKey.trim().takeIf { it.isNotBlank() }
 
         val error = validate(trimmedUrl, trimmedAddress)

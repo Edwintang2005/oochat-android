@@ -21,6 +21,7 @@ import ai.openonion.oochat.domain.model.ConnectionState
 import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.domain.model.ThinkingStatus
 import ai.openonion.oochat.domain.model.UserMessageState
+import ai.openonion.oochat.domain.model.canonicalAgentAddress
 import ai.openonion.oochat.domain.model.createError
 import ai.openonion.oochat.domain.model.dedupeUI
 import ai.openonion.oochat.domain.model.isInProgress
@@ -1291,7 +1292,11 @@ open class ChatViewModel @JvmOverloads constructor(
         launchScoped { conversationHistory.persistMessage(item) }
     }
 
-    private suspend fun saveAgentIfNeeded(address: String, directUrl: String?) {
+    private suspend fun saveAgentIfNeeded(agentAddress: String, directUrl: String?) {
+        // Saved in the same form as every other path saves it. The lookup
+        // ignores case anyway, but a row saved as typed kept capitals the
+        // rest of the app no longer writes (W16AAPPLE-57).
+        val address = canonicalAgentAddress(agentAddress)
         runCatchingCancellable {
             val existing = agentRepository.getAgentByAddress(address)
             if (existing == null) {
