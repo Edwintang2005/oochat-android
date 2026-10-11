@@ -19,6 +19,12 @@ class FakeOipSocket(private val request: Request, val listener: WebSocketListene
     val sent = CopyOnWriteArrayList<String>()
     @Volatile var opened = false
     @Volatile var dead = false
+
+    /**
+     * The link has gone silent with no FIN (the phone lost its network): the
+     * socket still looks open at both ends, but nothing sent either way arrives.
+     */
+    @Volatile var unreachable = false
     override fun request(): Request = request
     override fun queueSize(): Long = 0
     override fun send(text: String): Boolean {
@@ -80,7 +86,7 @@ open class FakeOipHost : WebSocketFactory {
     /** Open new sockets and answer every CONNECT and INPUT not yet seen. */
     fun pump() {
         for (socket in sockets) {
-            if (socket.dead) continue
+            if (socket.dead || socket.unreachable) continue
             if (!socket.opened) {
                 socket.opened = true
                 open(socket)
@@ -161,8 +167,10 @@ open class FakeOipHost : WebSocketFactory {
     /** How a frame looks by the time it reaches the app on [socket]. */
     protected open fun onTheWire(socket: FakeOipSocket, frame: String): String = frame
 
-    protected fun deliver(socket: FakeOipSocket, frame: String) =
+    protected fun deliver(socket: FakeOipSocket, frame: String) {
+        if (socket.unreachable) return
         deliver { socket.listener.onMessage(socket, onTheWire(socket, frame)) }
+    }
 
     protected fun deliver(call: () -> Unit) {
         reader.execute(call)
