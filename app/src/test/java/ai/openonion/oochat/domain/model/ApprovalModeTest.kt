@@ -80,4 +80,65 @@ class ApprovalModeTest {
     fun `DEFAULT is safe`() {
         assertTrue(ApprovalMode.DEFAULT == ApprovalMode.SAFE)
     }
+
+    // ── Host-managed vocabulary and SessionModes (W16AAPPLE-18) ──────
+
+    @Test
+    fun `the Host's vocabulary is core mode py's exact ids`() {
+        assertEquals("read-only", ApprovalMode.READ_ONLY.wire)
+        assertEquals("auto", ApprovalMode.AUTO.wire)
+        assertEquals("full-access", ApprovalMode.FULL_ACCESS.wire)
+    }
+
+    @Test
+    fun `only ULW and full access are unattended`() {
+        assertEquals(
+            setOf(ApprovalMode.ULW, ApprovalMode.FULL_ACCESS),
+            ApprovalMode.entries.filter { it.isUnattended }.toSet()
+        )
+    }
+
+    @Test
+    fun `no starting mode can reach full access by cycling the Host's catalogue`() {
+        val modes = SessionModes(
+            available = listOf(ApprovalMode.READ_ONLY, ApprovalMode.AUTO, ApprovalMode.FULL_ACCESS),
+            hostManaged = true
+        )
+        ApprovalMode.entries.forEach { start ->
+            var mode = start
+            repeat(modes.available.size + 2) {
+                mode = mode.next(modes.cycle)
+                assertFalse("cycling from $start reached ${mode.wire}", mode.isUnattended)
+            }
+        }
+    }
+
+    @Test
+    fun `the Host's cycle is its advertised modes minus full access, in order`() {
+        val modes = SessionModes(
+            available = listOf(ApprovalMode.READ_ONLY, ApprovalMode.AUTO, ApprovalMode.FULL_ACCESS),
+            hostManaged = true
+        )
+        assertEquals(listOf(ApprovalMode.READ_ONLY, ApprovalMode.AUTO), modes.cycle)
+        assertEquals(ApprovalMode.AUTO, ApprovalMode.READ_ONLY.next(modes.cycle))
+        assertEquals(ApprovalMode.READ_ONLY, ApprovalMode.AUTO.next(modes.cycle))
+    }
+
+    @Test
+    fun `defaults follow who owns the mode`() {
+        assertEquals(ApprovalMode.SAFE, SessionModes.LEGACY.default)
+        assertEquals(ApprovalMode.AUTO, SessionModes(listOf(ApprovalMode.AUTO), hostManaged = true).default)
+    }
+
+    @Test
+    fun `LEGACY offers the four plugin modes and cycles the base three`() {
+        assertEquals(ApprovalMode.CYCLE, SessionModes.LEGACY.cycle)
+        assertTrue(ApprovalMode.ULW in SessionModes.LEGACY.available)
+        assertFalse(SessionModes.LEGACY.hostManaged)
+    }
+
+    @Test
+    fun `next on an empty cycle stays put`() {
+        assertEquals(ApprovalMode.AUTO, ApprovalMode.AUTO.next(emptyList()))
+    }
 }

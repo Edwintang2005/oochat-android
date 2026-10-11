@@ -106,4 +106,39 @@ class ServerErrorTextTest {
     fun `an unmapped server error survives verbatim`() {
         assertEquals("Insufficient ConnectOnion Credits", ServerErrorText.humanize("Insufficient ConnectOnion Credits"))
     }
+
+    // ── Host mode refusals (W16AAPPLE-18) ──────────────────────────────
+
+    @Test
+    fun `the Host's mode refusals are recognised in its own wording`() {
+        listOf(
+            "Session is busy",
+            "Permission mode is not available",
+            "mode change is unavailable",
+            "Unable to change session mode",
+            "Session not found",
+            "unknown message type: 'mode_change'"
+        ).forEach { raw -> assertTrue(raw, ServerErrorText.isModeRefusal(raw)) }
+    }
+
+    @Test
+    fun `unrelated errors are not mode refusals`() {
+        assertFalse(ServerErrorText.isModeRefusal("Insufficient ConnectOnion Credits"))
+        assertFalse(ServerErrorText.isModeRefusal("Unable to run agent"))
+    }
+
+    @Test
+    fun `the Host's turn-ending errors are recognised, and nothing else is`() {
+        assertTrue(ServerErrorText.endsTurn("Unable to run agent"))
+        assertTrue(ServerErrorText.endsTurn("Agent completed without result"))
+        assertFalse(ServerErrorText.endsTurn("Session is busy"))
+        assertFalse(ServerErrorText.endsTurn("Insufficient ConnectOnion Credits"))
+    }
+
+    @Test
+    fun `a busy refusal says to wait for the turn, and is no stale session`() {
+        val shown = ServerErrorText.humanize("Session is busy")
+        assertEquals(ServerErrorText.MODE_BUSY, shown)
+        assertFalse(StaleSessionDetector.isStaleSessionError(shown))
+    }
 }

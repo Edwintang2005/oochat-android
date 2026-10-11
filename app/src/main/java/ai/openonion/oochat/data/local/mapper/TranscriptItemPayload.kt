@@ -164,7 +164,8 @@ sealed class TranscriptItemPayload {
     data class ModeChanged(
         override val id: String,
         val mode: String,
-        val triggeredBy: String? = null
+        val triggeredBy: String? = null,
+        val turnsLeft: Int? = null
     ) : TranscriptItemPayload()
 }
 
@@ -308,7 +309,8 @@ object TranscriptItemCodec {
         is ChatItem.ModeChangedItem -> TranscriptItemPayload.ModeChanged(
             id = item.id,
             mode = item.mode,
-            triggeredBy = item.triggeredBy
+            triggeredBy = item.triggeredBy,
+            turnsLeft = item.turnsLeft
         )
         else -> null
     }
@@ -410,7 +412,8 @@ object TranscriptItemCodec {
         is TranscriptItemPayload.ModeChanged -> ChatItem.ModeChangedItem(
             id = payload.id,
             mode = payload.mode,
-            triggeredBy = payload.triggeredBy
+            triggeredBy = payload.triggeredBy,
+            turnsLeft = payload.turnsLeft
         )
     }
 

@@ -321,4 +321,17 @@ class TranscriptItemCodecTest {
             )
         )
     }
+
+    @Test
+    fun `a full-access mode_changed item keeps its turn budget through a round trip`() {
+        val item = ChatItem.ModeChangedItem(id = "m2", mode = "full-access", triggeredBy = "user", turnsLeft = 12)
+        assertEquals(item, roundTrip(item))
+    }
+
+    @Test
+    fun `a mode_changed row from before turnsLeft existed decodes with it null`() {
+        val decoded = TranscriptItemCodec.decode("""{"kind":"mode_changed","id":"m1","mode":"plan","triggeredBy":"agent"}""")
+            as ChatItem.ModeChangedItem
+        assertNull(decoded.turnsLeft)
+    }
 }

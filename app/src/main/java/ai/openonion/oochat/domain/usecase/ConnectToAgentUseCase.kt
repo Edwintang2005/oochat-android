@@ -13,6 +13,8 @@ import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.PlanEntry
+import ai.openonion.oochat.domain.model.ServerSessionStatus
+import ai.openonion.oochat.domain.model.SessionModes
 import ai.openonion.oochat.network.AgentConnection
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.InMemoryPendingMessageSink
@@ -85,6 +87,12 @@ class ConnectToAgentUseCase(
 
     override val modePending: StateFlow<Boolean>
         get() = getOrCreateRepository().modePending
+
+    override val sessionModes: StateFlow<SessionModes>
+        get() = getOrCreateRepository().sessionModes
+
+    override val hostSessionStatus: StateFlow<ServerSessionStatus>
+        get() = getOrCreateRepository().hostSessionStatus
 
     override val dashboardHtml: StateFlow<String?>
         get() = getOrCreateRepository().dashboardHtml

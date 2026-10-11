@@ -7,9 +7,13 @@ import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ConnectionState
 import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
+import ai.openonion.oochat.domain.model.LEGACY_SESSION_MODES
 import ai.openonion.oochat.domain.model.NO_PLAN
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.PlanEntry
+import ai.openonion.oochat.domain.model.ServerSessionStatus
+import ai.openonion.oochat.domain.model.SessionModes
+import ai.openonion.oochat.domain.model.UNKNOWN_SESSION_STATUS
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -57,6 +61,27 @@ interface ConnectionRepository {
      * [approvalMode] at the start of every [connect].
      */
     val modePending: StateFlow<Boolean>
+
+    /**
+     * Which modes [setMode] may ask for, and who answers. [SessionModes.LEGACY] until a
+     * `CONNECTED` carries `session_modes`, which makes the Host the authority: the catalogue,
+     * the current mode and full access's turn budget come from it, and [setMode] refuses any
+     * mode it did not advertise, so a legacy name never reaches a Host that has no alias for it.
+     * Reset to [SessionModes.LEGACY] at the start of every [connect]; kept across a
+     * conversation switch, which is the same Host.
+     */
+    val sessionModes: StateFlow<SessionModes> get() = LEGACY_SESSION_MODES
+
+    /**
+     * The last thing the Host said about the current session, for display: `CONNECTED`'s
+     * `status`, then each `SESSION_STATUS` reply about this session, then idle
+     * ([ServerSessionStatus.CONNECTED]) once an `OUTPUT` ends a turn, or an `ERROR` that ends one
+     * in its place. Any other `ERROR` while running asks `SESSION_STATUS`, whose reply settles it. Unlike
+     * [ConnectionState.Connected.status] it is never released, because it is shown rather
+     * than acted on. [ServerSessionStatus.UNKNOWN] after [connect], a conversation switch,
+     * and from a Host that says nothing.
+     */
+    val hostSessionStatus: StateFlow<ServerSessionStatus> get() = UNKNOWN_SESSION_STATUS
 
      /**
      * The connected agent's own `dashboard.html`, verbatim, or null when no
@@ -190,8 +215,11 @@ interface ConnectionRepository {
      * [approvalMode] right away — see [modePending] for how long that
      * request can stay unconfirmed.
      *
+     * A mode outside [sessionModes]' catalogue is not sent at all.
+     *
      * @param turns ULW's autonomous-turn budget. Only meaningful for
-     *   [ApprovalMode.ULW]; the server ignores it on every other branch.
+     *   [ApprovalMode.ULW]; the server ignores it on every other branch, and
+     *   it is never sent to a Host that manages modes itself.
      */
     suspend fun setMode(mode: ApprovalMode, turns: Int? = null)
 
