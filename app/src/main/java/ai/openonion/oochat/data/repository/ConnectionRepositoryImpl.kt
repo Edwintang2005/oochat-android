@@ -298,6 +298,8 @@ class ConnectionRepositoryImpl(
                             if (_modePending.value && ServerErrorText.isModeRefusal(event.message)) {
                                 _approvalMode.value = confirmedApprovalMode
                                 _modePending.value = false
+                            } else if (_hostSessionStatus.value == ServerSessionStatus.RUNNING) {
+                                settleRunningStatusAfterError(event.message)
                             }
                             _chatEvents.tryEmit(ChatEvent.ConnectionErrorOccurred(shown))
                         } else {
@@ -735,6 +737,22 @@ class ConnectionRepositoryImpl(
             // The Host grants full access's budget; no client field can.
             connection?.setMode(mode.wire, if (modes.hostManaged) null else turns)
         }
+    }
+
+    /**
+     * An `ERROR` arrived while the Host was last known to be running a turn. A failed turn ends
+     * with an `ERROR` instead of an `OUTPUT`, and the status line would otherwise say "Running"
+     * until the next reconnect. The Host's own turn-ending errors ([ServerErrorText.endsTurn])
+     * settle it to idle at once. Any `ERROR` here also asks `SESSION_STATUS`, whose reply has the
+     * last word, so an error in a wording this client does not know still settles it, and one
+     * that left the turn running (the reply says `running`) changes nothing.
+     */
+    private fun settleRunningStatusAfterError(message: String) {
+        if (ServerErrorText.endsTurn(message)) {
+            _hostSessionStatus.value = ServerSessionStatus.CONNECTED
+        }
+        val sessionId = connection?.currentSession?.sessionId ?: return
+        connection?.querySessionStatus(sessionId)
     }
 
     /**

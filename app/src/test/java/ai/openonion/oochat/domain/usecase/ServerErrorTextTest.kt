@@ -116,6 +116,7 @@ class ServerErrorTextTest {
             "Permission mode is not available",
             "mode change is unavailable",
             "Unable to change session mode",
+            "Session not found",
             "unknown message type: 'mode_change'"
         ).forEach { raw -> assertTrue(raw, ServerErrorText.isModeRefusal(raw)) }
     }
@@ -123,7 +124,15 @@ class ServerErrorTextTest {
     @Test
     fun `unrelated errors are not mode refusals`() {
         assertFalse(ServerErrorText.isModeRefusal("Insufficient ConnectOnion Credits"))
-        assertFalse(ServerErrorText.isModeRefusal("Session not found"))
+        assertFalse(ServerErrorText.isModeRefusal("Unable to run agent"))
+    }
+
+    @Test
+    fun `the Host's turn-ending errors are recognised, and nothing else is`() {
+        assertTrue(ServerErrorText.endsTurn("Unable to run agent"))
+        assertTrue(ServerErrorText.endsTurn("Agent completed without result"))
+        assertFalse(ServerErrorText.endsTurn("Session is busy"))
+        assertFalse(ServerErrorText.endsTurn("Insufficient ConnectOnion Credits"))
     }
 
     @Test

@@ -70,8 +70,11 @@ object ServerErrorText {
 
     /**
      * The Host refusing a `mode_change`, in its raw wording. Exact messages rather than the
-     * JSON-RPC codes the refusals carry (-32000, -32602), which other commands reuse. A legacy
-     * Host's plugin path names the frame itself ("mode_change") instead.
+     * JSON-RPC codes the refusals carry (-32000, -32602, -32002), which other commands reuse. A
+     * legacy Host's plugin path names the frame itself ("mode_change") instead.
+     *
+     * "Session not found" is generic wording, so it is only ever read as a refusal while a mode
+     * change is pending; ConnectionRepositoryImpl checks that first.
      */
     fun isModeRefusal(raw: String): Boolean {
         val m = raw.trim().lowercase()
@@ -82,7 +85,20 @@ object ServerErrorText {
         "session is busy",
         "permission mode is not available",
         "mode change is unavailable",
-        "unable to change session mode"
+        "unable to change session mode",
+        // session/mode.py's -32002: the session the mode was asked for is gone.
+        "session not found"
+    )
+
+    /**
+     * The Host's own `ERROR`s that end a turn in place of its `OUTPUT` (ws_router/agent_io.py:
+     * the run raised, or finished with no result to send).
+     */
+    fun endsTurn(raw: String): Boolean = raw.trim().lowercase() in TURN_ENDING
+
+    private val TURN_ENDING = setOf(
+        "unable to run agent",
+        "agent completed without result"
     )
 
     fun isOfflineVerdict(text: String): Boolean =

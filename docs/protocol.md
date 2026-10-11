@@ -41,7 +41,7 @@ The authoritative ConnectOnion OIP implementation reference is the
 | `INTERRUPT` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | `PLAN_REVIEW_RESPONSE` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | `ULW_RESPONSE` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
-| `mode_change` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `mode_change` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt), [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt) |
 | `ONBOARD_SUBMIT` | Supported | [`OutgoingMessagesTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/OutgoingMessagesTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | `SESSION_STATUS` request | Supported | [`OutgoingMessagesTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/OutgoingMessagesTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | OIP 0.2 descriptor | Missing / deferred | No Android implementation or compatibility test |
@@ -76,12 +76,13 @@ The authoritative ConnectOnion OIP implementation reference is the
 | `files_received` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
 | `diff_preview` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
 | `ulw_turns_reached` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
-| `mode_changed` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `mode_changed` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt), [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt) |
+| `mode_budget_changed` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
 | `RUNTIME_INPUT_ACK` | Supported | [`ProtocolParserRuntimeInputTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserRuntimeInputTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | `OUTPUT` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | `EXEC_RESULT` | Supported | [`ProtocolParserExecTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserExecTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | `ERROR` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`ProtocolParserVersionRejectionTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserVersionRejectionTest.kt), [`ProtocolParserRuntimeInputTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserRuntimeInputTest.kt) |
-| `SESSION_STATUS` response | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `SESSION_STATUS` response | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt), [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt) |
 
 ### Lifecycle and security evidence
 
@@ -94,6 +95,7 @@ The authoritative ConnectOnion OIP implementation reference is the
 | Signed command replay and tampering are rejected | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt) |
 | `session_id` is restored and sent on reconnect | Supported | [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt), [`ConnectionRepositorySessionPersistenceTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositorySessionPersistenceTest.kt) |
 | `last_msg_id` is sent for replay recovery | Supported | [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt), [`ProtocolParserLiveFlowTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserLiveFlowTest.kt) |
+| `session_modes` on `CONNECTED` sets the mode and the modes on offer | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt), [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt) |
 | `server_newer` session data is merged | Supported | [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt), [`ChatViewModelTest`](../app/src/test/java/ai/openonion/oochat/ui/chat/ChatViewModelTest.kt) |
 | Reconnect retries use bounded backoff and stop after the attempt limit | Supported | [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | Runtime input acknowledgement is handled without ending the turn | Supported | [`ProtocolParserRuntimeInputTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserRuntimeInputTest.kt), [`ChatViewModelTest`](../app/src/test/java/ai/openonion/oochat/ui/chat/ChatViewModelTest.kt) |
@@ -965,7 +967,10 @@ it for the current session after a reconnect that failed a turn in flight (see
 thing the Host said about the session on screen: `CONNECTED`'s `status`, then
 each `SESSION_STATUS` reply whose `session_id` is the current session (a reply
 about a session the user has since left is ignored), then idle once an `OUTPUT`
-ends a turn. Unlike `ConnectionState.Connected.status` it is never released,
+ends a turn. A failed turn ends with an `ERROR` instead (ws_router/agent_io.py):
+`Unable to run agent` and `Agent completed without result`
+(`ServerErrorText.endsTurn`) set it to idle at once, and any `ERROR` while it says
+running also sends `SESSION_STATUS`, whose reply has the last word. Unlike `ConnectionState.Connected.status` it is never released,
 because it is shown rather than acted on. It goes back to unknown on `connect()`
 and on a conversation switch.
 
@@ -993,7 +998,7 @@ records which.
 | Default | `safe` | `currentModeId` (the Host's default is `auto`) |
 | Who applies `mode_change` | The agent's tool_approval plugin, at its next iteration, so the answer can take a whole turn. | The Host itself (`ws_router/mode.py`), at once. |
 | Unattended mode | `ulw`, with a turn budget the user types (`turns`). | `full-access`, with a budget only the Host grants. The client never sends one. |
-| Refused when | The frame misses the agent: `ERROR` naming `mode_change`. | The session is busy, the mode is not on offer, or there is no session: `ERROR` `-32000` `Session is busy` (retryable), `-32602` `Permission mode is not available`, `mode change is unavailable`. |
+| Refused when | The frame misses the agent: `ERROR` naming `mode_change`. | The session is busy, the mode is not on offer, or there is no session: `ERROR` `-32000` `Session is busy` (retryable), `-32602` `Permission mode is not available`, `-32002` `Session not found`, `mode change is unavailable`. |
 
 The 1.7+ Host has no alias for the legacy names, so `ConnectionRepositoryImpl.setMode`
 refuses any mode that is not in the connection's catalogue, in both directions,
@@ -1066,7 +1071,8 @@ mode. The end of the budget comes as a `mode_changed` back to `auto`.
 **Rollback.** An `ERROR` that `ServerErrorText.isModeRefusal` recognises, while a
 request is pending, puts the chip back on the last confirmed mode. It matches
 the Host's exact messages rather than the JSON-RPC codes, which other commands
-reuse. `Session is busy` is shown as "The agent is working. Change mode when this
+reuse, and only while a request is pending, since `Session not found` is generic
+wording. `Session is busy` is shown as "The agent is working. Change mode when this
 turn finishes."
 
 **Resets.** `connect()` forgets the catalogue (back to legacy), the mode and the
@@ -1083,16 +1089,18 @@ until the new session's `CONNECTED` says.
 - A Host's `mode_changed` is applied without checking its `session_id`; the Host
   sends it only on the socket that asked.
 - `ULW_RESPONSE`'s `switch_mode` still uses the legacy names.
-- The status line cannot tell a turn that ended in an `ERROR` without an
-  `OUTPUT` from one still running, the same as the composer's Stop button.
+- A turn the Host ends with no frame at all (agent_io.py's stored-run branch
+  when the run is not `done`) keeps saying "Running" until the next reconnect
+  or conversation switch: nothing arrives to settle it.
 
 Covered by `ProtocolParserStatusEventsTest` (`session_modes`, including odd
 values; `mode_changed` with `turns_left`; `mode_budget_changed`, which still moves
 the replay cursor when malformed; `SESSION_STATUS`), `ConnectionRepositoryImplTest`
 (the Host as authority, the exact frame sent with no budget, modes not on offer
-never sent, the countdown and expiry, the busy rollback, the resets, and
+never sent, the countdown and expiry, the busy and session-not-found rollbacks, the resets, and
 `hostSessionStatus` following `CONNECTED`, replies about this session only, and
-`OUTPUT`), `ApprovalModeTest` (no tap reaches an unattended mode on either
+`OUTPUT`, and settled after a turn-ending `ERROR`, including one joined while
+running), `ApprovalModeTest` (no tap reaches an unattended mode on either
 catalogue), `SessionActivityTest`, `ChatViewModelTest` (cycling and exit on a
 1.7+ Host; each status line), `ServerErrorTextTest`, `TranscriptItemCodecTest`,
 `ChatTopBarComposeTest` and `ApprovalModeControlsComposeTest`.

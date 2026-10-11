@@ -1262,6 +1262,22 @@ class ConnectionRepositoryImplTest {
     }
 
     @Test
+    fun `the Host refusing a mode change for a missing session rolls the chip back`() = runTest(testDispatcher) {
+        // session/mode.py's -32002. Without it the chip sat on the new mode, pending, for good.
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateHostModes() }) { repository.sessionModes.value.hostManaged }
+
+        repository.setMode(ApprovalMode.READ_ONLY)
+        assertTrue(repository.modePending.value)
+
+        awaitUntil(retry = {
+            simulateFrame("""{"type":"ERROR","code":-32002,"message":"Session not found"}""")
+        }) { !repository.modePending.value }
+
+        assertEquals(ApprovalMode.AUTO, repository.approvalMode.value)
+    }
+
+    @Test
     fun `reconnecting forgets the Host's catalogue`() = runTest(testDispatcher) {
         repository.connect("0xAGENT")
         awaitUntil(retry = { simulateHostModes(current = "read-only") }) { repository.sessionModes.value.hostManaged }
@@ -1328,6 +1344,66 @@ class ConnectionRepositoryImplTest {
         awaitUntil(retry = { simulateFrame("""{"type":"OUTPUT","result":"done"}""") }) {
             repository.hostSessionStatus.value == ServerSessionStatus.CONNECTED
         }
+    }
+
+    private fun sentSessionStatusQueries(): List<String> =
+        factory.lastWebSocket!!.sentMessages.filter { it.contains("\"SESSION_STATUS\"") }
+
+    @Test
+    fun `joined while running, a turn that fails with an ERROR goes back to idle and asks SESSION_STATUS`() =
+        runTest(testDispatcher) {
+            // ws_router/agent_io.py ends a failed run with this ERROR instead of an OUTPUT.
+            repository.connect("0xAGENT")
+            awaitUntil(retry = { simulateConnectedWith("running", serverNewer = false) }) {
+                repository.hostSessionStatus.value == ServerSessionStatus.RUNNING
+            }
+            factory.lastWebSocket!!.sentMessages.clear()
+
+            awaitUntil(retry = {
+                simulateFrame("""{"type":"ERROR","code":-32603,"message":"Unable to run agent"}""")
+            }) { repository.hostSessionStatus.value == ServerSessionStatus.CONNECTED }
+
+            val query = Json.parseToJsonElement(sentSessionStatusQueries().first()).jsonObject
+            assertEquals(Json.parseToJsonElement("""{"session_id":"sess-1"}"""), query["session"])
+        }
+
+    @Test
+    fun `an ERROR in other wording while running is settled by the SESSION_STATUS reply`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnectedWith("running", serverNewer = false) }) {
+            repository.hostSessionStatus.value == ServerSessionStatus.RUNNING
+        }
+        factory.lastWebSocket!!.sentMessages.clear()
+
+        awaitUntil(retry = { simulateError("Insufficient ConnectOnion Credits") }) {
+            sentSessionStatusQueries().isNotEmpty()
+        }
+        assertEquals("not settled until the Host says", ServerSessionStatus.RUNNING, repository.hostSessionStatus.value)
+
+        awaitUntil(retry = {
+            simulateFrame("""{"type":"SESSION_STATUS","session_id":"sess-1","status":"connected"}""")
+        }) { repository.hostSessionStatus.value == ServerSessionStatus.CONNECTED }
+    }
+
+    @Test
+    fun `an ERROR while idle asks nothing`() = runBlocking {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnectedWith("connected", serverNewer = false) }) {
+            repository.hostSessionStatus.value == ServerSessionStatus.CONNECTED
+        }
+        factory.lastWebSocket!!.sentMessages.clear()
+
+        withTimeout(3000L) {
+            val deferred = async { repository.observeEvents().first { it is ChatEvent.ConnectionErrorOccurred } }
+            while (deferred.isActive) {
+                simulateError("Insufficient ConnectOnion Credits")
+                delay(20)
+            }
+            deferred.await()
+        }
+
+        assertTrue(sentSessionStatusQueries().isEmpty())
+        assertEquals(ServerSessionStatus.CONNECTED, repository.hostSessionStatus.value)
     }
 
     @Test

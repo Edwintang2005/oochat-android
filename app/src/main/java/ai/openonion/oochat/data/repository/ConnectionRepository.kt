@@ -75,7 +75,8 @@ interface ConnectionRepository {
     /**
      * The last thing the Host said about the current session, for display: `CONNECTED`'s
      * `status`, then each `SESSION_STATUS` reply about this session, then idle
-     * ([ServerSessionStatus.CONNECTED]) once an `OUTPUT` ends a turn. Unlike
+     * ([ServerSessionStatus.CONNECTED]) once an `OUTPUT` ends a turn, or an `ERROR` that ends one
+     * in its place. Any other `ERROR` while running asks `SESSION_STATUS`, whose reply settles it. Unlike
      * [ConnectionState.Connected.status] it is never released, because it is shown rather
      * than acted on. [ServerSessionStatus.UNKNOWN] after [connect], a conversation switch,
      * and from a Host that says nothing.

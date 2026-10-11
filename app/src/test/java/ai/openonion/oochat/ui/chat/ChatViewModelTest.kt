@@ -3515,6 +3515,26 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun `joined while running, a turn that fails stops saying Running`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        // Joined a turn the Host is still running: this process never sent its INPUT.
+        connectUseCase._hostSessionStatus.value = ServerSessionStatus.RUNNING
+        connectUseCase.markConnected(address, status = ServerSessionStatus.RUNNING)
+        testScheduler.runCurrent()
+        assertEquals(SessionActivity.RUNNING, vm.sessionActivity.value)
+
+        // The turn fails: an ERROR in place of the OUTPUT, which the repository answers by
+        // settling its status (ConnectionRepositoryImplTest covers that half).
+        connectUseCase.emit(ChatEvent.ConnectionErrorOccurred("Unable to run agent"))
+        connectUseCase._hostSessionStatus.value = ServerSessionStatus.CONNECTED
+        testScheduler.runCurrent()
+
+        assertEquals(SessionActivity.IDLE, vm.sessionActivity.value)
+    }
+
+    @Test
     fun `sessionActivity is waiting for you while a gate is open`() = runTest(testDispatcher) {
         connectUseCase.markConnected()
         raiseGate()
