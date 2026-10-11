@@ -224,4 +224,126 @@ class OutgoingMessagesTest {
             encoded
         )
     }
+
+    @Test
+    fun `INPUT preserves prompt images and file attachments`() {
+        val encoded = json.encodeToString(
+            InputMsg.serializer(),
+            InputMsg(
+                inputId = "input-1",
+                prompt = "Inspect this file",
+                images = listOf("data:image/jpeg;base64,image-data"),
+                files = listOf(
+                    FileAttachment(
+                        name = "notes.txt",
+                        data = "data:text/plain;base64,file-data"
+                    )
+                )
+            )
+        )
+
+        assertEquals(
+            """{"type":"INPUT","input_id":"input-1","prompt":"Inspect this file","images":["data:image/jpeg;base64,image-data"],""" +
+                """"files":[{"name":"notes.txt","data":"data:text/plain;base64,file-data"}]}""",
+            encoded
+        )
+    }
+
+    @Test
+    fun `INPUT omits optional attachments when they are absent`() {
+        val encoded = json.encodeToString(
+            InputMsg.serializer(),
+            InputMsg(
+                inputId = "input-2",
+                prompt = "No attachments"
+            )
+        )
+
+        assertEquals(
+            """{"type":"INPUT","input_id":"input-2","prompt":"No attachments"}""",
+            encoded
+        )
+    }
+
+    @Test
+    fun `PONG contains only its frame type`() {
+        assertEquals(
+            """{"type":"PONG"}""",
+            json.encodeToString(PongMessage.serializer(), PongMessage())
+        )
+    }
+
+    @Test
+    fun `INTERRUPT contains only its frame type`() {
+        assertEquals(
+            """{"type":"INTERRUPT"}""",
+            json.encodeToString(InterruptMessage.serializer(), InterruptMessage())
+        )
+    }
+
+    @Test
+    fun `ASK_USER_RESPONSE carries the answer`() {
+        assertEquals(
+            """{"type":"ASK_USER_RESPONSE","answer":"Use the existing file"}""",
+            json.encodeToString(
+                AskUserResponse.serializer(),
+                AskUserResponse(answer = "Use the existing file")
+            )
+        )
+    }
+
+    @Test
+    fun `PLAN_REVIEW_RESPONSE carries the review message`() {
+        assertEquals(
+            """{"type":"PLAN_REVIEW_RESPONSE","message":"Approved"}""",
+            json.encodeToString(
+                PlanReviewResponse.serializer(),
+                PlanReviewResponse(message = "Approved")
+            )
+        )
+    }
+
+    @Test
+    fun `ULW_RESPONSE continue carries the turn budget`() {
+        assertEquals(
+            """{"type":"ULW_RESPONSE","action":"continue","turns":5}""",
+            json.encodeToString(
+                UlwResponse.serializer(),
+                UlwResponse(action = "continue", turns = 5)
+            )
+        )
+    }
+
+    @Test
+    fun `ULW_RESPONSE switch mode carries the selected mode`() {
+        assertEquals(
+            """{"type":"ULW_RESPONSE","action":"switch_mode","mode":"plan"}""",
+            json.encodeToString(
+                UlwResponse.serializer(),
+                UlwResponse(action = "switch_mode", mode = "plan")
+            )
+        )
+    }
+
+    @Test
+    fun `mode_change carries the selected mode and optional turns`() {
+        assertEquals(
+            """{"type":"mode_change","mode":"ulw","turns":3}""",
+            json.encodeToString(
+                ModeChangeMessage.serializer(),
+                ModeChangeMessage(mode = "ulw", turns = 3)
+            )
+        )
+    }
+
+    @Test
+    fun `mode_change omits turns when it is not provided`() {
+        assertEquals(
+            """{"type":"mode_change","mode":"plan"}""",
+            json.encodeToString(
+                ModeChangeMessage.serializer(),
+                ModeChangeMessage(mode = "plan")
+            )
+        )
+    }
 }
