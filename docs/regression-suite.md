@@ -27,6 +27,7 @@ belongs in one of those classes, or its class belongs in that list.
 | Session resume | `ProcessDeathResumeTest` | Killed mid-stream: the relaunch CONNECTs on the same `session_id` with no `last_msg_id` and the replayed turn lands once in Room and on screen; a dropped socket names the last event it handled; a turn that finished while the app was dead arrives once, and a tool call it left running stops spinning |
 | CONNECTED status | `ProtocolParserTest`, `AgentConnectionRobolectricTest`, `ConnectionRepositoryImplTest`, `ChatViewModelTest`, `ProcessDeathResumeTest` | `status` (new, connected, running) and `server_newer` read off the frame and carried to the screen, which acts on each once: running holds the composer and un-fails a dropped turn, connected settles cards left spinning, new fails a lost turn and leaves a brand-new conversation alone, a failed turn stays failed; a message typed offline is marked sent when the connection returns; the Host's newer transcript merges once, without touching a message not yet sent (W16AAPPLE-22) |
 | Wrong clock and failed reconnects | `HostClockTest`, `AgentConnectionRobolectricTest`, `ConnectionRepositoryImplTest`, `ServerErrorTextTest`, `ChatViewModelTest` | Signatures carry the server's time from the upgrade's `Date` (CONNECT, commands, invite codes), the device clock with no header or past the 30-minute bound, a fresh reading per socket, and a clock put right is followed; `signature expired` is shown as advice to check the date and time; a reconnect answered with ERROR ends in Error with Reconnect, an unanswered one climbs the ladder after 15 s, and the relay's offline verdict is a rung; an offline agent is tried every minute after the ladder while the app is on screen; a recreated chat screen does not re-add an old error (W16AAPPLE-90, -82, -79, -74) |
+| Relay failover | `RelayFailoverTest` | The relay dropping, restarting, refusing upgrades or answering `Agent not connected` mid-turn: the app redials `/ws/input` on the backoff ladder, resumes with `session_id` and `last_msg_id`, a frame missed while it was down is replayed once, and the rest of the turn lands once in Room and on screen |
 
 ## Where the test data comes from
 
@@ -59,6 +60,7 @@ purpose. At that point, remove the wrapper, and the test guards the fix.
 | Slash palette | Skills from the directory are not de-duplicated, and "No description" is not dropped | `ConnectionRepositoryImplTest` |
 | Slash palette | Two skills with the same name crash the composer when `/` is typed | `SlashCommandPaletteComposeTest` |
 | Low balance | The amount follows the phone's locale: `$0,42` on a German phone | `LowBalanceBarComposeTest` |
+| Relay failover | When the Host drops off mid-turn, the relay's `Agent not connected` on the live socket stays in the conversation as "This agent is offline…" after the turn resumes | `RelayFailoverTest` |
 
 ## Not covered, and why
 
@@ -78,3 +80,6 @@ purpose. At that point, remove the wrapper, and the test guards the fix.
   therefore modelled in `ProcessDeathResumeTest`: the first launch's objects
   are abandoned without a flush and the relaunch is rebuilt on the same Room
   file, rather than the app being killed on an emulator.
+- **The live relay.** `RelayFailoverTest` fakes it at the `WebSocketFactory`
+  seam instead of reaching `oo.openonion.ai` from CI. The restart tests use the
+  standard close codes 1012 and 1001.
