@@ -24,6 +24,8 @@ object NoOpMessageDao : MessageDao {
     override suspend fun updateTimestamp(id: String, timestamp: Long): Unit = throw NotImplementedError()
     override suspend fun getSessionIdById(id: String): String? = throw NotImplementedError()
     override suspend fun getPayloadById(id: String): String? = throw NotImplementedError()
+    override suspend fun getDeliveryStateById(id: String): String? = throw NotImplementedError()
+    override suspend fun updateDeliveryState(id: String, deliveryState: String?): Unit = throw NotImplementedError()
     override suspend fun deleteMessageById(id: String) = throw NotImplementedError()
     override suspend fun getSessionIdByUserContent(content: String): String? = throw NotImplementedError()
 }

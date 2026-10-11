@@ -111,7 +111,10 @@ open class PersistenceTransaction(
                 images = encodedImages,
                 files = MessageMapper.encodeFiles(files),
                 itemType = turnThinking?.let { TranscriptItemCodec.TURN_ITEM_TYPE },
-                payload = turnThinking
+                payload = turnThinking,
+                // Written as it changes (MessageDao.updateDeliveryState), not
+                // here — so a re-save must not wipe a "failed" already recorded.
+                deliveryState = messageDao.getDeliveryStateById(item.id)
             )
             messageDao.insertMessage(entity)
 

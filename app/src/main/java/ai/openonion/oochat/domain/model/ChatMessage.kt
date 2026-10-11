@@ -18,7 +18,12 @@ data class ChatMessage(
      * [ai.openonion.oochat.data.local.mapper.TranscriptItemPayload].
      */
     val itemType: String? = null,
-    val payload: String? = null
+    val payload: String? = null,
+    /**
+     * USER only: the message did not get through, or might not have, so it
+     * comes back as failed and offers a resend. See UserMessageState.FAILED.
+     */
+    val failedToSend: Boolean = false
 )
 
 enum class Role {

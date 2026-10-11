@@ -61,6 +61,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -645,7 +646,24 @@ open class ChatViewModel @JvmOverloads constructor(
      */
     private var pendingRuntimeInput: PendingRuntimeInput? = null
 
+    /**
+     * Each user message's "failed after a restart" verdict, in the order its
+     * state changed — see [setUserMessageState]. One consumer writes them, so a
+     * quick QUEUED → SENT cannot land in Room the other way round and leave a
+     * delivered message saved as failed.
+     *
+     * Declared above [init] for the same reason as [serverTurnActive]: the
+     * consumer is started there.
+     */
+    private val failedToSendWrites = Channel<Pair<String, Boolean>>(Channel.UNLIMITED)
+
     init {
+        viewModelScope.launch {
+            for ((messageId, failedToSend) in failedToSendWrites) {
+                conversationHistory.saveFailedToSend(messageId, failedToSend)
+            }
+        }
+
         // Initial state stays ChatUiState's own default (""), so there is
         // nothing to flash or reflow when the real address lands a few
         // milliseconds later. Resolving it on IO also dodges the `by lazy`
@@ -1614,7 +1632,17 @@ open class ChatViewModel @JvmOverloads constructor(
         }
     }
 
-    /** Moves one of the user's own bubbles to [next]. */
+    /**
+     * Moves one of the user's own bubbles to [next], and saves what it should
+     * come back as after a restart.
+     *
+     * That is not always [next]. In memory, a message can be held behind a
+     * running turn (QUEUED) or awaiting the host's answer (AWAITING_ACK); if
+     * the process dies there, it never went or nobody knows whether it did, so
+     * it is saved as failed — the same call a dropped connection makes. Only
+     * the outbox is the exception: it survives a restart and will still send
+     * what it holds, so a message in it is not failed.
+     */
     private fun setUserMessageState(messageId: String, next: UserMessageState) {
         _uiState.update { state ->
             state.copy(
@@ -1623,6 +1651,12 @@ open class ChatViewModel @JvmOverloads constructor(
                 }
             )
         }
+        val failedAfterRestart = when (next) {
+            UserMessageState.SENT -> false
+            UserMessageState.QUEUED -> messageId !in outboxedMessageIds
+            UserMessageState.AWAITING_ACK, UserMessageState.FAILED -> true
+        }
+        failedToSendWrites.trySend(messageId to failedAfterRestart)
     }
 
     /**
@@ -1642,6 +1676,9 @@ open class ChatViewModel @JvmOverloads constructor(
             .filterIsInstance<ChatItem.User>()
             .firstOrNull { it.id == messageId && it.state == UserMessageState.FAILED } ?: return
 
+        // Not setUserMessageState, on purpose: that also saves the state, and
+        // the saved row should stay failed until this attempt actually goes
+        // out — the send path's own state changes save it from there.
         _uiState.update { state ->
             state.copy(
                 chatItems = state.chatItems.filterNot { it.id == messageId } +

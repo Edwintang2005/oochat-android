@@ -88,6 +88,18 @@ interface MessageDao {
     suspend fun getPayloadById(id: String): String?
 
     /**
+     * A row's saved delivery state. Re-inserting a row (REPLACE) keeps this
+     * rather than wiping it — the state is written separately, by
+     * [updateDeliveryState], as it changes.
+     */
+    @Query("SELECT delivery_state FROM chat_messages WHERE id = :id")
+    suspend fun getDeliveryStateById(id: String): String?
+
+    /** Records whether a user message got through; a no-op for a row not saved yet. */
+    @Query("UPDATE chat_messages SET delivery_state = :deliveryState WHERE id = :id")
+    suspend fun updateDeliveryState(id: String, deliveryState: String?)
+
+    /**
      * The conversation that sent a given outgoing message, newest first.
      *
      * A replayed assistant reply follows the question it answers, and that

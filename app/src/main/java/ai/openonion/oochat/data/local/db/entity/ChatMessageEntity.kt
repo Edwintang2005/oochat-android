@@ -77,5 +77,18 @@ data class ChatMessageEntity(
      * JSON body for [itemType] rows. Opaque to SQL on purpose, so adding an item
      * kind is a code change rather than another migration.
      */
-    val payload: String? = null
-)
+    val payload: String? = null,
+
+    /**
+     * USER rows only: what the message should come back as after a restart.
+     * [DELIVERY_FAILED] when it did not get through, or might not have; null
+     * when it was sent or is in the outbox, which survives a restart and will
+     * still deliver it. Added in MIGRATION_13_14.
+     */
+    @ColumnInfo(name = "delivery_state")
+    val deliveryState: String? = null
+) {
+    companion object {
+        const val DELIVERY_FAILED = "FAILED"
+    }
+}
