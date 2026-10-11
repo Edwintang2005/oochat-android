@@ -22,7 +22,8 @@ their owners start and stop them.
 
 If you were given an address instead, scroll to **Or enter Agent Address
 manually** and paste it. An address is `0x` followed by 64 hex characters. The
-QR button in the top right scans one from a screen or a printout.
+QR button in the top right scans one from a screen or a printout, including
+the code behind the **Share** button on chat.openonion.ai.
 
 **Relay Server or Direct Connection.** Leave it on *Relay Server* unless you
 were told otherwise — the relay handles agents behind home routers, which is

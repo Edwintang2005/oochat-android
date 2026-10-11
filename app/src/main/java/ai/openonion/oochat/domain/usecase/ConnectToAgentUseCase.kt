@@ -9,7 +9,10 @@ import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
+import ai.openonion.oochat.domain.model.PlanEntry
 import ai.openonion.oochat.network.AgentConnection
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.InMemoryPendingMessageSink
@@ -46,6 +49,8 @@ class ConnectToAgentUseCase(
     private val sessionStore: SessionStore? = null,
     private val agentDiscovery: AgentDiscoveryService = AgentDiscoveryService(),
     private val pendingMessageSink: PendingMessageSink = InMemoryPendingMessageSink(),
+    // Whether the app is on screen; see AgentConnection's isAppVisible.
+    private val isAppVisible: () -> Boolean = { true },
     // Factory (not a shared instance) so getOrCreateRepository() below still
     // creates at most one repository per use-case instance. Defaults to the
     // real ConnectionRepositoryImpl; tests substitute a fake ConnectionRepository
@@ -56,6 +61,7 @@ class ConnectToAgentUseCase(
             relayUrl,
             sessionStore,
             pendingMessageSink,
+            isAppVisible = isAppVisible,
             agentDiscovery = agentDiscovery
         )
     }
@@ -83,6 +89,9 @@ class ConnectToAgentUseCase(
     override val dashboardHtml: StateFlow<String?>
         get() = getOrCreateRepository().dashboardHtml
 
+    override val plan: StateFlow<List<PlanEntry>>
+        get() = getOrCreateRepository().plan
+
     /**
      * Connect to an agent with timeout.
      *
@@ -109,9 +118,16 @@ class ConnectToAgentUseCase(
         // its own — has answered the question. Re-asking it costs another
         // handshake and a reset() that discards a session nothing is wrong
         // with. Transport failures below still get their retry.
-        val verdict = getOrCreateRepository().connectionState.value.errorMessageOrNull()
+        val state = getOrCreateRepository().connectionState.value
+        val verdict = state.errorMessageOrNull()
         if (verdict != null && ServerErrorText.isOfflineVerdict(verdict)) {
             FileLogger.w(LogTags.CONNECT_USE_CASE, "Relay says the agent is offline; skipping attempt 2")
+            return false
+        }
+        // The agent refused our protocol version: attempt 2 would send the
+        // same descriptor, be refused again, and show the user a second error.
+        if (state is ConnectionState.Error && !state.retryable) {
+            FileLogger.w(LogTags.CONNECT_USE_CASE, "Non-retryable error; skipping attempt 2")
             return false
         }
 
@@ -226,12 +242,20 @@ class ConnectToAgentUseCase(
         getOrCreateRepository().sendMessage(content, agentAddress, images, files)
     }
 
+    override suspend fun executeTool(request: ExecRequest): ExecOutcome {
+        return getOrCreateRepository().executeTool(request)
+    }
+
     override fun observeEvents(): Flow<ChatEvent> {
         return getOrCreateRepository().observeEvents()
     }
 
     override fun releaseServerTranscript() {
         getOrCreateRepository().releaseServerTranscript()
+    }
+
+    override fun releaseSessionStatus() {
+        getOrCreateRepository().releaseSessionStatus()
     }
 
     override suspend fun respond(answer: String) {

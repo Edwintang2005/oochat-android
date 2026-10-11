@@ -3,6 +3,8 @@ package ai.openonion.oochat.data.protocol
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 
 /**
  * Server events received via WebSocket.
@@ -12,8 +14,13 @@ data class ServerEvent(
     val type: String,
     val result: String? = null,
     @SerialName("input_id") val inputId: String? = null,
+    @SerialName("exec_id") val execId: String? = null,
     @SerialName("session_id") val sessionId: String? = null,
     val session: SessionState? = null,
+    // CONNECTED only: the Host's copy of the session is newer than the one this CONNECT carried, and
+    // `session` is the Host's. Always the case for this client, which sends no session, so to the Host
+    // it looks empty.
+    @SerialName("server_newer") val serverNewer: Boolean? = null,
     val message: String? = null,
     val error: String? = null,
     val id: String? = null,
@@ -29,6 +36,12 @@ data class ServerEvent(
     // Map<String, String> downstream (ChatItem.ToolCall.args stays String).
     val args: Map<String, JsonElement>? = null,
     val status: String? = null,
+    // "tool_result" frame's wall time for the call — tool_executor.py's
+    // `timing_ms`, a float of milliseconds (time.time() deltas * 1000).
+    @SerialName("timing_ms") val timingMs: Double? = null,
+    // "plan" frame's complete Todo List — see agent.py's _record_plan and
+    // [PlanEntryWire]. Every frame replaces the whole list.
+    val entries: List<PlanEntryWire>? = null,
     val model: String? = null,
     @SerialName("duration_ms") val durationMs: Double? = null,
     val content: String? = null,
@@ -130,8 +143,22 @@ data class ServerEvent(
     // exit_plan_and_implement() sends `{'type':'mode_changed','mode':mode}`
     // with no triggered_by key at all.
     val mode: String? = null,
-    @SerialName("triggered_by") val triggeredBy: String? = null
-)
+    @SerialName("triggered_by") val triggeredBy: String? = null,
+    // "ERROR" frame's machine-readable code. Lenient: the OIP version
+    // rejection sends a number (-32010, connect.py), other ERRORs a string
+    // ("provider_station_only", session.py), most none at all.
+    @Serializable(with = LenientStringSerializer::class) val code: String = "",
+    // The Host's own OIP descriptor, on CONNECTED and on the version
+    // rejection ERROR. A JsonElement, not a ProtocolDescriptor: it carries
+    // fields this client doesn't model (websocket_path, extensions), and a
+    // descriptor missing one we do must not drop the frame that explains
+    // why the connection failed.
+    val protocol: JsonElement? = null,
+    val retryable: JsonElement? = null
+) {
+    /** True only for an explicit boolean `true`; anything else is "not retryable". */
+    val isRetryable: Boolean get() = (retryable as? JsonPrimitive)?.booleanOrNull == true
+}
 
 @Serializable
 data class TokenUsageWire(
@@ -163,6 +190,21 @@ data class TokenUsageWire(
 data class BatchToolPreview(
     @Serializable(with = LenientStringSerializer::class) val tool: String = "",
     @Serializable(with = LenientStringSerializer::class) val arguments: String = ""
+)
+
+/**
+ * One entry of a `plan` frame, or of a session snapshot's `plan` array —
+ * `{content, priority, status}`, exactly those three keys (agent.py's
+ * `_normalized_plan`). Lenient and defaulted so a bad entry reaches
+ * ProtocolParser instead of failing the decode: the plan is validated
+ * as a whole there, and a session snapshot carrying a bad plan must not
+ * lose its messages with it.
+ */
+@Serializable
+data class PlanEntryWire(
+    @Serializable(with = LenientStringSerializer::class) val content: String = "",
+    @Serializable(with = LenientStringSerializer::class) val priority: String = "",
+    @Serializable(with = LenientStringSerializer::class) val status: String = ""
 )
 
 /**

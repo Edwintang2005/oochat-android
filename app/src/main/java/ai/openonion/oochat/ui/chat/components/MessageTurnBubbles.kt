@@ -54,6 +54,9 @@ internal fun UserBubble(
             // been delivered has no send time yet, so the line is free.
             timestamp = when (item.state) {
                 UserMessageState.QUEUED -> "Waiting to send…"
+                // BubbleTimestamp is plain Text, so TalkBack reads this too: a
+                // screen-reader user hears that delivery is unconfirmed.
+                UserMessageState.AWAITING_ACK -> "Sending…"
                 UserMessageState.FAILED -> null
                 UserMessageState.SENT -> timestamp
             },

@@ -192,7 +192,15 @@ Everything configurable is set **inside the app**:
 |---|---|---|
 | Relay / server URL | Onboarding, or the agent form | `https://oo.openonion.ai` |
 | Direct connection | Mode toggle on the same panel | off (relay) |
-| API key (optional) | Agent form | empty — stored in `EncryptedSharedPreferences`, excluded from cloud backup and device transfer, and never sent anywhere but the agent it belongs to |
+| API key (optional) | Agent form | empty — stored in `EncryptedSharedPreferences` and excluded from cloud backup and device transfer. **Not used yet**: see below |
+
+**The per-agent API key is not used yet.** The app stores it and shows it in
+the Add, Edit and Setup forms, but sends it nowhere. Connecting is
+authenticated by the device's Ed25519 signature on CONNECT, and an
+invite-gated agent by an invite code or payment (`docs/protocol.md`); the
+ConnectOnion host's WebSocket code reads no API key either. The field is kept
+for a use the client may define later. The account API key that voice
+transcription sends is a different key (`docs/protocol.md`, voice input).
 
 ---
 

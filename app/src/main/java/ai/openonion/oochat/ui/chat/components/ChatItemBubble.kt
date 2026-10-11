@@ -17,7 +17,12 @@ internal fun ChatItemBubble(
     showSender: Boolean = true,
     onRetry: (() -> Unit)? = null,
     hasLiveConnection: Boolean = true,
-    onResend: (() -> Unit)? = null
+    onResend: (() -> Unit)? = null,
+    // The turn's thoughts before this one, when this is its newest — see
+    // groupReasoningByTurn. Only read for a reasoning item.
+    earlierThoughts: List<ChatItem.Thinking> = emptyList(),
+    showAllThoughts: Boolean = false,
+    onToggleThoughts: (() -> Unit)? = null
 ) {
     when (item) {
         is ChatItem.User -> UserBubble(item, timestamp, renderMarkdown, showSender, onResend)
@@ -26,7 +31,11 @@ internal fun ChatItemBubble(
             // While running with no metadata yet, show the Figma-style
             // bouncing-dots typing indicator; once done/errored (or a model
             // is already known), fall back to the richer status bubble.
-            if (item.status == ThinkingStatus.RUNNING && item.model == null && item.content == null) {
+            // Reasoning is something the agent thought, not a status, so it
+            // gets its own collapsible bubble.
+            if (item.isReasoning) {
+                ReasoningBubble(item, earlierThoughts, showAllThoughts, onToggleThoughts)
+            } else if (item.status == ThinkingStatus.RUNNING && item.model == null && item.content == null) {
                 TypingIndicator()
             } else {
                 ThinkingBubble(item, timestamp, onRetry)

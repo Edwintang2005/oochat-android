@@ -274,7 +274,10 @@ class DefaultAppContainer(context: Context) : AppContainer {
             pendingMessageSink = RoomPendingMessageSink(
                 dao = database.pendingMessageDao(),
                 spillDir = java.io.File(appContext.filesDir, "pending-attachments")
-            )
+            ),
+            // Gates the slow retry against an offline agent to while the app
+            // is visible (W16AAPPLE-79). Read on each try, never cached.
+            isAppVisible = { (appContext as? ai.openonion.oochat.ConnectOnionApplication)?.isInForeground ?: true }
         )
     }
 

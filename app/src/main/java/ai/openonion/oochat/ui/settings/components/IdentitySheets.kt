@@ -1,5 +1,6 @@
 package ai.openonion.oochat.ui.settings.components
 
+import ai.openonion.oochat.crypto.KeyManager
 import ai.openonion.oochat.ui.components.ConfirmationSheet
 import ai.openonion.oochat.ui.theme.ButtonToken
 import ai.openonion.oochat.ui.theme.spacing
@@ -338,7 +339,7 @@ private fun LegacyHexBackup(privateKeyHex: String, copied: Boolean, onCopy: () -
 }
 
 /**
- * Bottom sheet accepting a 12/24-word recovery phrase OR a raw hex private
+ * Bottom sheet accepting a 12–24-word recovery phrase OR a raw hex private
  * key to restore/switch identity — matches Figma's Import Key sheet
  * (mnemonic-only there; Android's [KeyManager.importFromPhraseOrHex] also
  * accepts the hex form, same as the onboarding flow's import already does).
@@ -349,7 +350,7 @@ internal fun ImportKeySheet(onImport: (String) -> Unit, onDismiss: () -> Unit) {
     var input by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     val wordCount = input.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.size
-    val looksValid = wordCount == 12 || wordCount == 24 || input.trim().removePrefix("0x").length == 128
+    val looksValid = wordCount in KeyManager.PHRASE_WORD_COUNTS || input.trim().removePrefix("0x").length == 128
 
     ConfirmationSheet(
         title = "Import Key",

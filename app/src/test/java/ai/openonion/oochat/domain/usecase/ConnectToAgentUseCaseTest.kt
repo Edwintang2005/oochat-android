@@ -6,6 +6,8 @@ import ai.openonion.oochat.data.repository.ConnectionRepository
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.network.AgentDiscoveryService
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -70,6 +72,12 @@ class ConnectToAgentUseCaseTest {
         val events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 8)
         override fun observeEvents(): Flow<ChatEvent> = events
         override suspend fun sendMessage(content: String, agentAddress: String, images: List<String>?, files: List<ai.openonion.oochat.domain.model.OutgoingFileAttachment>?) {}
+        var lastExecRequest: ExecRequest? = null
+        var execOutcome: ExecOutcome = ExecOutcome.Success("completed")
+        override suspend fun executeTool(request: ExecRequest): ExecOutcome {
+            lastExecRequest = request
+            return execOutcome
+        }
         override suspend fun respond(answer: String) {}
         override suspend fun interrupt() {}
         override suspend fun respondToApproval(approved: Boolean, scope: String, mode: String?, feedback: String?) {}
@@ -220,6 +228,25 @@ override suspend fun disconnect() {
         assertEquals(2, fakeRepository.connectCount)
     }
 
+    @Test
+    fun `a refused protocol version does not spend a second attempt`() = runTest(testDispatcher) {
+        // W16AAPPLE-12: attempt 2 would send the same OIP descriptor, be
+        // refused again, and put a second copy of the error in front of the user.
+        val useCase = newUseCase()
+        fakeRepository.connectBehaviors.add {
+            fakeRepository.state.value = ConnectionState.Error(
+                message = ServerErrorText.incompatibleProtocol(hostProtocol = "oip/0.2", clientProtocol = "oip/0.1"),
+                retryable = false
+            )
+        }
+
+        val connected = useCase.connect(validAddress)
+
+        assertFalse(connected)
+        assertEquals("one CONNECT, one refusal", 1, fakeRepository.connectCount)
+        assertEquals(0, fakeRepository.resetCount)
+    }
+
     // ── Both attempts fail ────────────────────────────────────────────
 
     @Test
@@ -341,4 +368,26 @@ override suspend fun disconnect() {
         // the use case doesn't discard and recreate on every access.
         assertEquals(1, fakeRepository.connectCount)
     }
+
+    @Test
+    fun `executeTool forwards request and returns repository outcome`() =
+        runTest(testDispatcher) {
+            val useCase = newUseCase()
+            val request = ExecRequest(
+                execId = "exec-1",
+                tool = "shell",
+                argsJson = """{"command":"pwd"}""",
+                agentAddress = validAddress
+            )
+            val expected = ExecOutcome.Error(
+                message = "Command failed",
+                durationMs = 15.0
+            )
+            fakeRepository.execOutcome = expected
+
+            val actual = useCase.executeTool(request)
+
+            assertEquals(request, fakeRepository.lastExecRequest)
+            assertEquals(expected, actual)
+        }
 }

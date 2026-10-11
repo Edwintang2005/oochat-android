@@ -1,7 +1,9 @@
 package ai.openonion.oochat.data.repository
 
 import ai.openonion.oochat.crypto.KeyManager
+import ai.openonion.oochat.crypto.TestIdentity
 import ai.openonion.oochat.data.protocol.FileAttachment
+import ai.openonion.oochat.data.protocol.PlanEntryWire
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ConnectionState
@@ -133,7 +135,7 @@ class ConnectionRepositorySessionPersistenceTest {
     @Before
     fun setUp() {
         val keyManager = KeyManager(ApplicationProvider.getApplicationContext<android.content.Context>())
-        keyManager.save(keyManager.keysFromHex("aa".repeat(32) + "bb".repeat(32)))
+        keyManager.save(TestIdentity.keys())
         factory = FakeWebSocketFactory()
         store = RecordingSessionStore()
         val sink = NoopSink()
@@ -143,7 +145,7 @@ class ConnectionRepositorySessionPersistenceTest {
             relayUrl = "ws://test.invalid",
             sessionStore = store,
             pendingMessageSink = sink,
-            agentConnectionFactory = { km, url -> AgentConnection(km, url, factory, pendingMessageSink = sink) }
+            agentConnectionFactory = { km, url -> AgentConnection(km, url, factory, signer = { _, _ -> "fake-signature" }, pendingMessageSink = sink) }
         )
     }
 
@@ -334,6 +336,84 @@ class ConnectionRepositorySessionPersistenceTest {
             false,
             repository.modePending.value
         )
+    }
+
+    // ── plan survives a switch and a restart (W16AAPPLE-17) ─────────
+    //
+    // Nothing on the wire brings an idle conversation's plan back: the Host
+    // puts a session on CONNECTED only when its copy is newer, and replays
+    // frames only into a running turn. So the plan has to be kept with the
+    // stored session — and, since the Host adopts the session a CONNECT
+    // echoes, it has to be on the session the next CONNECT sends.
+
+    private val storedPlan = listOf(PlanEntryWire(content = "Run tests", priority = "high", status = "in_progress"))
+
+    private fun planFrame(content: String) =
+        """{"type":"plan","id":"tr-plan","entries":[{"content":"$content","priority":"high","status":"pending"}]}"""
+
+    @Test
+    fun `a plan frame is saved with the session and carried on the next CONNECT`() = runBlocking {
+        repository.connect(agentA, convA)
+        send(connectedIdOnly(convA))
+        awaitConnected()
+
+        send(planFrame("Run tests"))
+
+        awaitUntil("the plan to be saved with convA's session", store.savedFlow) {
+            it[convA]?.plan?.map(PlanEntryWire::content) == listOf("Run tests")
+        }
+        assertEquals(listOf("Run tests"), repository.getCurrentSession()?.plan?.map { it.content })
+    }
+
+    @Test
+    fun `a session snapshot without a plan keeps the session's plan`() = runBlocking {
+        repository.connect(agentA, convA)
+        send(connectedIdOnly(convA))
+        awaitConnected()
+        send(planFrame("Run tests"))
+
+        send(sessionSync(convA, turn = 1, reply = "the reply"))
+        awaitUntil("session_sync to persist turn 1", store.savedFlow) { it[convA]?.turn == 1 }
+
+        assertEquals(listOf("Run tests"), store.saved[convA]?.plan?.map { it.content })
+        assertEquals(listOf("Run tests"), repository.plan.value.map { it.content })
+    }
+
+    @Test
+    fun `the stored plan shows on connect, before the Host says anything`() = runBlocking {
+        store.preload(convA, SessionState(sessionId = convA, turn = 3, plan = storedPlan))
+
+        repository.connect(agentA, convA)
+
+        assertEquals(listOf("Run tests"), repository.plan.value.map { it.content })
+        assertEquals("echoed on CONNECT", storedPlan, repository.getCurrentSession()?.plan)
+    }
+
+    @Test
+    fun `an idle CONNECTED does not clear the stored plan`() = runBlocking {
+        store.preload(convA, SessionState(sessionId = convA, turn = 3, plan = storedPlan))
+        repository.connect(agentA, convA)
+
+        send(connectedIdOnly(convA))
+        awaitConnected()
+        awaitFramesDrained()
+
+        assertEquals(listOf("Run tests"), repository.plan.value.map { it.content })
+    }
+
+    @Test
+    fun `switching away and back shows each conversation's own plan`() = runBlocking {
+        store.preload(convA, SessionState(sessionId = convA, plan = storedPlan))
+        repository.connect(agentA, convA)
+        send(connectedIdOnly(convA))
+        awaitConnected()
+
+        repository.switchConversation(convB)
+        assertTrue("convB has no plan of its own", repository.plan.value.isEmpty())
+
+        repository.switchConversation(convA)
+        assertEquals(listOf("Run tests"), repository.plan.value.map { it.content })
+        assertEquals(storedPlan, repository.getCurrentSession()?.plan)
     }
 
     @Test

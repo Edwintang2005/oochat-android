@@ -96,6 +96,9 @@ fun ConnectionBanner(
         connectionState is ConnectionState.Reconnecting && !reconnectOutstayed -> BannerKind.None
         connectionState.isConnecting() ->
             if (awaitingOnboardCode) BannerKind.AwaitingCode else BannerKind.Connecting
+        // A refused protocol version (W16AAPPLE-12): "Connection failed" would
+        // contradict the message in the chat, which says exactly what is wrong.
+        connectionState is ConnectionState.Error && !connectionState.retryable -> BannerKind.Incompatible
         connectionState.isError() -> BannerKind.Error
         connectionState.isDisconnected() -> BannerKind.Disconnected
         else -> BannerKind.None
@@ -130,13 +133,16 @@ fun ConnectionBanner(
             BannerKind.Connecting -> ConnectingBanner(onStop = onStop)
             BannerKind.AwaitingCode -> AwaitingOnboardCodeBanner()
             BannerKind.Error -> ReconnectBanner(title = "Connection failed", onReconnect = onReconnect)
+            // Keeps Reconnect, unlike OfflineBanner: nothing here recovers on its
+            // own, and once the agent is updated this is the user's way back.
+            BannerKind.Incompatible -> ReconnectBanner(title = "Incompatible version", onReconnect = onReconnect)
             BannerKind.Disconnected -> ReconnectBanner(title = "Disconnected", onReconnect = onReconnect)
         }
     }
 }
 
 /** The single banner the current [ConnectionState] resolves to, if any. */
-private enum class BannerKind { None, Offline, Connecting, AwaitingCode, Error, Disconnected }
+private enum class BannerKind { None, Offline, Connecting, AwaitingCode, Error, Incompatible, Disconnected }
 
 /**
  * Shared chrome for every banner here: a single-line text row closed by a

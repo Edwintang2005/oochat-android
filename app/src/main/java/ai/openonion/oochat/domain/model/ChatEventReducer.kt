@@ -35,7 +35,34 @@ object ChatEventReducer {
     ): ReduceResult =
         when (event) {
             is ChatEvent.ChatItemReceived -> {
+                val existingTool = (event.item as? ChatItem.ToolCall)
+                    ?.let { incoming -> current.indexOfFirst { it is ChatItem.ToolCall && it.id == incoming.id } }
+                    ?.takeIf { it >= 0 }
                 if (event.item.id in ignoredIds) {
+                    ReduceResult(current)
+                } else if (existingTool != null) {
+                    // A tool_call for a card already on screen: a replay after
+                    // reconnect, possibly arriving after its own tool_result
+                    // when the Host's replay starts later than the client's
+                    // cursor. The card on screen is never worse than a start,
+                    // so its status and result stay; only what a result frame
+                    // can be missing (the args, a name) is filled in.
+                    val onScreen = current[existingTool] as ChatItem.ToolCall
+                    val start = event.item as ChatItem.ToolCall
+                    val filled = onScreen.copy(
+                        name = onScreen.name.ifBlank { start.name },
+                        args = onScreen.args ?: start.args
+                    )
+                    if (filled == onScreen) {
+                        ReduceResult(current)
+                    } else {
+                        ReduceResult(current.toMutableList().also { it[existingTool] = filled }, filled)
+                    }
+                } else if (event.fromSessionSnapshot && event.item.isEchoedReasoning(current)) {
+                    // re_act/reflect append their reasoning to the session's
+                    // messages as an assistant entry, so every session_sync
+                    // after a `thinking` frame repeats that text as if it were
+                    // a reply. It is already on screen as reasoning.
                     ReduceResult(current)
                 } else if (event.item is ChatItem.OnboardRequired) {
                     val newList = ChatEventHelpers.replaceOnboardingCard(current, event.item)
@@ -135,7 +162,14 @@ object ChatEventReducer {
                         // needs to still show what actually ran. Found on
                         // device: every finished tool card lost its
                         // command/path the moment its result arrived.
-                        event.item.copy(args = existingItem.args)
+                        event.item.copy(
+                            args = existingItem.args,
+                            name = event.item.name.ifBlank { existingItem.name }
+                        )
+                    } else if (event.item is ChatItem.ToolCall && existingItem is ChatItem.ToolCall) {
+                        // A result frame with no name of its own (the wire
+                        // allows it) must not blank the card's title.
+                        event.item.copy(name = event.item.name.ifBlank { existingItem.name })
                     } else {
                         event.item
                     }
@@ -212,6 +246,11 @@ object ChatEventReducer {
             // its own. See ChatEvent.SessionStatusReceived's own doc.
             is ChatEvent.SessionStatusReceived -> ReduceResult(current)
 
+            // Delivery state of an existing user message, settled by the
+            // caller — see ChatEvent.RuntimeInputAcknowledged's own doc.
+            is ChatEvent.RuntimeInputAcknowledged -> ReduceResult(current)
+            is ChatEvent.RuntimeInputRejected -> ReduceResult(current)
+
             is ChatEvent.ConnectionErrorOccurred -> {
                 // Attach to whichever Turn/Thinking bubble was in flight —
                 // reads as "the agent's reply was this error" — or synthesize
@@ -251,4 +290,13 @@ object ChatEventReducer {
                 }
             }
         }
+}
+
+/**
+ * True for a snapshot reply whose text is reasoning already on screen — see
+ * the session_sync branch of [ChatEventReducer.reduce].
+ */
+private fun ChatItem.isEchoedReasoning(current: List<ChatItem>): Boolean {
+    val text = (this as? ChatItem.Turn)?.agent?.content?.takeIf { it.isNotBlank() } ?: return false
+    return current.any { it is ChatItem.Thinking && it.isReasoning && it.content == text }
 }

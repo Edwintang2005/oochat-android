@@ -24,21 +24,17 @@ import org.robolectric.annotation.Config
  * falls back to plain SharedPreferences when Robolectric's missing
  * AndroidKeyStore shadow makes the encrypted path throw.
  *
- * Deliberately does not cover [KeyManager.generate], [KeyManager.sign],
- * [KeyManager.keysFromSeed], [KeyManager.generateWithMnemonic], or
- * [KeyManager.keysFromMnemonic] (and therefore not the mnemonic-storage
- * branches of [KeyManager.importFromPhraseOrHex]/[KeyManager.resetIdentity]/
- * [KeyManager.exportBackup] either) — all of those call the native
- * `com.goterl.lazysodium` binary, which cannot load on a host JVM regardless
- * of Robolectric (see [KeyManagerTest]'s doc comment for the confirmed
- * `UnsatisfiedLinkError`). Those paths are covered in [KeyManagerMnemonicTest],
- * with an RFC 8032 stand-in injected in libsodium's place.
+ * The native `com.goterl.lazysodium` binary cannot load on a host JVM
+ * regardless of Robolectric (see [KeyManagerTest]'s doc comment for the
+ * confirmed `UnsatisfiedLinkError`), and the hex import checks a key against
+ * the public key its seed derives, so [BouncyCastleEd25519] stands in for it.
+ * The mnemonic branches are covered in [KeyManagerMnemonicTest].
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class KeyManagerPersistenceTest {
 
-    private val keyManager = KeyManager(ApplicationProvider.getApplicationContext<Application>())
+    private val keyManager = KeyManager(ApplicationProvider.getApplicationContext<Application>(), BouncyCastleEd25519())
 
     // AddressData is a data class with ByteArray properties, so Kotlin's
     // generated equals() compares those by reference — assert field-by-field
@@ -57,7 +53,7 @@ class KeyManagerPersistenceTest {
 
     @Test
     fun `save then load round-trips an AddressData`() {
-        val keys = keyManager.keysFromHex("aa".repeat(32) + "bb".repeat(32))
+        val keys = keyManager.keysFromHex(TestIdentity.hexKey(0xaa))
 
         keyManager.save(keys)
 
@@ -66,8 +62,8 @@ class KeyManagerPersistenceTest {
 
     @Test
     fun `save overwrites a previously saved identity`() {
-        val first = keyManager.keysFromHex("11".repeat(32) + "22".repeat(32))
-        val second = keyManager.keysFromHex("33".repeat(32) + "44".repeat(32))
+        val first = keyManager.keysFromHex(TestIdentity.hexKey(0x11))
+        val second = keyManager.keysFromHex(TestIdentity.hexKey(0x33))
 
         keyManager.save(first)
         keyManager.save(second)
@@ -77,13 +73,11 @@ class KeyManagerPersistenceTest {
 
     @Test
     fun `loadOrGenerate returns the existing identity without needing to generate one`() {
-        val keys = keyManager.keysFromHex("cc".repeat(32) + "dd".repeat(32))
+        val keys = keyManager.keysFromHex(TestIdentity.hexKey(0xcc))
         keyManager.save(keys)
 
-        // If this fell through to generateWithMnemonic() (the "no existing
-        // key" path), it would hit the native-libsodium UnsatisfiedLinkError
-        // documented on this class — reaching here at all is itself proof
-        // load() (not generate()) satisfied the call.
+        // Falling through to generateWithMnemonic() (the "no existing key"
+        // path) would return a fresh identity, not the saved one.
         val result = keyManager.loadOrGenerate()
 
         assertSameKeys(keys, result)
@@ -91,7 +85,7 @@ class KeyManagerPersistenceTest {
 
     @Test
     fun `importFromPhraseOrHex with a hex key saves it and is retrievable via load`() {
-        val hex = "ee".repeat(32) + "ff".repeat(32)
+        val hex = TestIdentity.hexKey(0xee)
 
         val imported = keyManager.importFromPhraseOrHex(hex)
 
@@ -100,7 +94,7 @@ class KeyManagerPersistenceTest {
 
     @Test
     fun `importFromPhraseOrHex accepts a 0x-prefixed hex key identically`() {
-        val hex = "12".repeat(32) + "34".repeat(32)
+        val hex = TestIdentity.hexKey(0x12)
 
         val withPrefix = keyManager.importFromPhraseOrHex("0x$hex")
 
@@ -112,7 +106,7 @@ class KeyManagerPersistenceTest {
         // The failure that made this worth guarding: 128 arbitrary characters
         // parsed into a garbage address and were saved over the user's real
         // identity, on the one flow whose job is to restore it.
-        val real = keyManager.keysFromHex("aa".repeat(32) + "bb".repeat(32))
+        val real = keyManager.keysFromHex(TestIdentity.hexKey(0xaa))
         keyManager.save(real)
 
         assertThrows(IllegalArgumentException::class.java) {
@@ -149,7 +143,7 @@ class KeyManagerPersistenceTest {
 
     @Test
     fun `exportBackup falls back to LegacyHexKey when no mnemonic was ever saved`() {
-        val hex = "56".repeat(32) + "78".repeat(32)
+        val hex = TestIdentity.hexKey(0x56)
         keyManager.importFromPhraseOrHex(hex)
 
         val backup = keyManager.exportBackup()

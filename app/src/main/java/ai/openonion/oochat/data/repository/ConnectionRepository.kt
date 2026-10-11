@@ -5,7 +5,11 @@ import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
+import ai.openonion.oochat.domain.model.NO_PLAN
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
+import ai.openonion.oochat.domain.model.PlanEntry
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -68,6 +72,14 @@ interface ConnectionRepository {
      */
     val dashboardHtml: StateFlow<String?>
 
+    /**
+     * The agent's current Todo List for the active conversation, empty when
+     * it has none. Replaced whole by each `plan` frame and by the plan a
+     * session snapshot carries, so a reconnect restores it. Cleared on every
+     * [connect] and conversation switch, like [approvalMode]. See [PlanEntry].
+     */
+    val plan: StateFlow<List<PlanEntry>> get() = NO_PLAN
+
     fun observeEvents(): Flow<ChatEvent>
 
     /**
@@ -76,6 +88,18 @@ interface ConnectionRepository {
      * never replays one does not have to say so.
      */
     fun releaseServerTranscript() {}
+
+    /**
+     * Forget what the Host said about the session just joined
+     * ([ConnectionState.Connected.status] and [ConnectionState.Connected.serverNewer]),
+     * once a screen has acted on it. The answer describes the moment of the CONNECT, but
+     * the state stays Connected for the life of the socket and every screen created on it
+     * starts from that state, so without this a screen opened an hour later would act on a
+     * turn that ended long ago. The connection also forgets it by itself when it moves to
+     * another conversation and when a turn finishes. Default no-op so a fake that never
+     * reports a status does not have to say so.
+     */
+    fun releaseSessionStatus() {}
 
     /**
      * Connect to an agent, resuming [conversationId]'s own server session.
@@ -104,6 +128,14 @@ interface ConnectionRepository {
      * @param files Non-image file attachments (name + base64 data URL each)
      */
     suspend fun sendMessage(content: String, agentAddress: String, images: List<String>? = null, files: List<OutgoingFileAttachment>? = null)
+
+    /**
+     * Send one direct tool command and wait for its matching EXEC_RESULT.
+     *
+     * The outcome distinguishes commands that were never sent from commands
+     * whose final state became unknown after transmission.
+     */
+    suspend fun executeTool(request: ExecRequest): ExecOutcome
 
     /**
      * Respond to ask_user event.

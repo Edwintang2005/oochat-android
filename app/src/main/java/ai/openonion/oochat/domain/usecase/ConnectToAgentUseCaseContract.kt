@@ -4,7 +4,11 @@ import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
+import ai.openonion.oochat.domain.model.NO_PLAN
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
+import ai.openonion.oochat.domain.model.PlanEntry
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -54,6 +58,12 @@ interface ConnectToAgentUseCaseContract {
     val dashboardHtml: StateFlow<String?>
 
     /**
+     * The agent's current Todo List — see
+     * [ai.openonion.oochat.data.repository.ConnectionRepository.plan].
+     */
+    val plan: StateFlow<List<PlanEntry>> get() = NO_PLAN
+
+    /**
      * Observe chat events from the connected agent (Thinking / Agent
      * reply / Tool / Approval / Onboard / Output).
      */
@@ -66,6 +76,14 @@ interface ConnectToAgentUseCaseContract {
      * Default no-op so a fake with no connection behind it needs no override.
      */
     fun releaseServerTranscript() {}
+
+    /**
+     * Tell the connection a screen has acted on the Host's answer to the last CONNECT and it can
+     * be let go — see
+     * [ai.openonion.oochat.data.repository.ConnectionRepository.releaseSessionStatus].
+     * Default no-op so a fake with no connection behind it needs no override.
+     */
+    fun releaseSessionStatus() {}
 
     /**
      * Connect to an agent by address (relay mode) or URL (direct mode).
@@ -100,6 +118,11 @@ interface ConnectToAgentUseCaseContract {
      * @param files Non-image file attachments (name + base64 data URL each)
      */
     suspend fun sendMessage(content: String, agentAddress: String, images: List<String>? = null, files: List<OutgoingFileAttachment>? = null)
+
+    /**
+     * Send a direct tool command and wait for the corresponding EXEC_RESULT.
+     */
+    suspend fun executeTool(request: ExecRequest): ExecOutcome
 
     /**
      * Reply to an `ask_user` event.

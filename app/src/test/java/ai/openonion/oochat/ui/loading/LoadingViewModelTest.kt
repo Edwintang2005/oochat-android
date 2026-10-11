@@ -5,6 +5,8 @@ import ai.openonion.oochat.data.repository.ConnectionConfigRepository
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ExecOutcome
+import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCaseContract
 import android.app.Application
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -76,6 +78,7 @@ class LoadingViewModelTest {
             _events.tryEmit(ChatEvent.ChatItemReceived(item))
         }
         override suspend fun sendMessage(content: String, agentAddress: String, images: List<String>?, files: List<ai.openonion.oochat.domain.model.OutgoingFileAttachment>?) {}
+        override suspend fun executeTool(request: ExecRequest): ExecOutcome = ExecOutcome.NotSent("Not used in LoadingViewModel tests")
         override suspend fun respond(answer: String) {}
         override suspend fun interrupt() {}
         override suspend fun respondToApproval(approved: Boolean, scope: String, mode: String?, feedback: String?) {}

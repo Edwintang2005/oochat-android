@@ -21,13 +21,26 @@ sealed class ConnectionState {
 
     data class Connected(
         val address: String,
-        val session: SessionSnapshot? = null
+        val session: SessionSnapshot? = null,
+        /**
+         * What the Host said about the session just joined. UNKNOWN from a Host that says nothing, and
+         * again once the answer is out of date: a screen has acted on it, the connection moved to
+         * another conversation, or a turn finished (ConnectionRepository.releaseSessionStatus).
+         */
+        val status: ServerSessionStatus = ServerSessionStatus.UNKNOWN,
+        /** The Host's copy of the session was newer than ours, and [session] is the Host's. */
+        val serverNewer: Boolean = false
     ) : ConnectionState()
 
+    /**
+     * @param retryable false when trying again cannot help (the agent refused
+     *   this app's protocol version), so nothing should retry automatically.
+     */
     data class Error(
         val message: String,
         val technicalDetails: String? = null,
-        val cause: Throwable? = null
+        val cause: Throwable? = null,
+        val retryable: Boolean = true
     ) : ConnectionState() {
         companion object {
             fun fromException(e: Throwable): Error {

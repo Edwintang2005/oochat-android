@@ -33,6 +33,7 @@ private val PUSH_NOTIFICATIONS_ENABLED_KEY = booleanPreferencesKey("push_notific
 private val NOTIFICATION_SOUND_KEY = stringPreferencesKey("notification_sound")
 private val ANALYTICS_ENABLED_KEY = booleanPreferencesKey("analytics_enabled")
 private val SAFE_MODE_ENABLED_KEY = booleanPreferencesKey("safe_mode_enabled")
+private val DEVELOPER_TOOLS_ENABLED_KEY = booleanPreferencesKey("developer_tools_enabled")
 
 class DataStoreAppSettings(context: Context) : AppSettings {
 
@@ -103,5 +104,11 @@ class DataStoreAppSettings(context: Context) : AppSettings {
         dataStore.data.map { it[SAFE_MODE_ENABLED_KEY] ?: true }
     override suspend fun setSafeModeEnabled(value: Boolean) {
         dataStore.edit { it[SAFE_MODE_ENABLED_KEY] = value }
+    }
+
+    override val developerToolsEnabled: Flow<Boolean> =
+        dataStore.data.map { it[DEVELOPER_TOOLS_ENABLED_KEY] ?: false }
+    override suspend fun setDeveloperToolsEnabled(value: Boolean) {
+        dataStore.edit { it[DEVELOPER_TOOLS_ENABLED_KEY] = value }
     }
 }

@@ -2,6 +2,7 @@ package ai.openonion.oochat.data.repository
 
 import ai.openonion.oochat.data.local.db.dao.SessionStateDao
 import ai.openonion.oochat.data.local.db.entity.SessionStateEntity
+import ai.openonion.oochat.data.protocol.PlanEntryWire
 import ai.openonion.oochat.data.protocol.SessionMessage
 import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.util.FileLogger
@@ -36,6 +37,7 @@ class SessionStoreImpl(
                 turn = session.turn,
                 messagesJson = session.messages?.let { json.encodeToString(it) },
                 traceJson = null,
+                planJson = session.plan?.let { json.encodeToString(it) },
                 lastUpdated = System.currentTimeMillis()
             )
             sessionStateDao.saveSession(entity)
@@ -60,7 +62,8 @@ class SessionStoreImpl(
                 messages = entity.messagesJson?.let {
                     json.decodeFromString<List<SessionMessage>>(it)
                 },
-                turn = entity.turn
+                turn = entity.turn,
+                plan = decodePlan(conversationId, entity.planJson)
             ).also {
                 FileLogger.d(LogTags.SESSION_STORE, "Restored session for conversation $conversationId: sid=${it.sessionId}, turn=${it.turn}")
             }
@@ -68,6 +71,18 @@ class SessionStoreImpl(
             FileLogger.e(LogTags.SESSION_STORE, "Failed to restore session: ${e.message}")
         }.getOrNull()
     }
+
+    /**
+     * A plan that no longer decodes is dropped on its own: losing the Todo
+     * List is a cosmetic loss, losing the session would start the
+     * conversation over.
+     */
+    private fun decodePlan(conversationId: String, planJson: String?): List<PlanEntryWire>? =
+        planJson?.let {
+            runCatching { json.decodeFromString<List<PlanEntryWire>>(it) }
+                .onFailure { e -> FileLogger.w(LogTags.SESSION_STORE, "Dropped unreadable plan for $conversationId: ${e.message}") }
+                .getOrNull()
+        }
 
     override suspend fun deleteOrphanedSessions(): Int =
         runCatchingCancellable {

@@ -17,13 +17,16 @@ belongs in one of those classes, or its class belongs in that list.
 
 | Feature | Classes | What is pinned |
 |---|---|---|
-| Add agent by 0x address | `AgentViewModelTest`, `AgentFormScreenComposeTest`, `AgentFormNamingTest`, `EmbeddedDiscoveryPanelComposeTest`, `AgentDiscoveryServiceTest`, `AgentRepositoryImplTest`, `AgentDiscoveryRepositoryImplTest`, `AgentMapperTest` | 0x + 64 hex and every near miss; a URL pasted as an address; what Save hands over (trimmed address, default name, relay or direct) |
+| Add agent by 0x address | `AgentViewModelTest`, `AgentFormScreenComposeTest`, `AgentFormNamingTest`, `EmbeddedDiscoveryPanelComposeTest`, `AgentDiscoveryServiceTest`, `AgentRepositoryImplTest`, `AgentDiscoveryRepositoryImplTest`, `AgentMapperTest` | 0x + 64 hex and every near miss, in Setup too; a URL pasted as an address; what Save hands over (trimmed, lower-cased address, default name, relay or direct); one agent per address in any letter case, on add, edit and discovery; the first agent added becomes the default (W16AAPPLE-57 to -61, -81) |
 | Direct (/ws) and relay (/ws/input) | `AgentConnectionRobolectricTest`, `AgentConnectionTest`, `ProtocolParserTest`, `ConnectionConfigTest`, `ConstantsTest`, `EncryptedPreferencesConnectionConfigRepositoryTest`, `LoadingViewModelTest` | The URL actually dialled in each mode; `to` present on relay frames and absent on direct ones, signed and unsigned; which saved configs count as relay |
-| Ed25519 identity | `IdentityVectorsTest`, `KeyManagerMnemonicTest`, `KeyManagerPersistenceTest`, `KeyManagerTest`, `SettingsViewModelTest` | Phrase -> seed -> address and key -> signature, against outside test data; mint, restore, import, reset and backup |
+| Ed25519 identity | `IdentityVectorsTest`, `KeyManagerMnemonicTest`, `KeyManagerPersistenceTest`, `KeyManagerTest`, `SettingsViewModelTest` | Phrase -> seed -> address and key -> signature, against outside test data; mint, restore, import, reset and backup; every BIP39 phrase length, spacing, and hex keys whose halves do not match (W16AAPPLE-62, -63, -64) |
 | Onboarding gate | `OnboardCardsComposeTest`, `ChatEventReducerTest`, `OutgoingMessagesTest`, `ConnectionRepositoryImplTest`, `ConnectToAgentUseCaseTest`, `OnboardingViewModelTest` | No reconnect behind the user while the gate is open (failure and close); the exact `ONBOARD_SUBMIT` frame; submitting while disconnected |
 | Slash-command palette | `SlashCommandMatcherTest`, `SlashCommandPaletteComposeTest` (plus `ConnectionRepositoryImplTest`) | Skills filled from the relay directory, looked up by the agent's address; a picked command is sent as plain text; hidden when disconnected |
 | Dictation | `DictationMergeTest`, `InputBarDictationComposeTest`, `ChatViewModelTest`, `SpeechRecognizerIntentTest`, `SpeechRecognitionLevelTest`, `VoiceTranscriptionInstructionTest`, `VoiceTranscriptionServiceTest`, `VoiceRecorderStoreTest` | Nothing is ever sent on its own, including when the fallback path fails; one token refresh after a 401 |
 | Low-balance bar | `LowBalanceBarComposeTest` (plus `ConnectionRepositoryImplTest`) | Threshold, wording at zero and below, the tap opening the purchase page, the balance reaching the live profile |
+| Session resume | `ProcessDeathResumeTest` | Killed mid-stream: the relaunch CONNECTs on the same `session_id` with no `last_msg_id` and the replayed turn lands once in Room and on screen; a dropped socket names the last event it handled; a turn that finished while the app was dead arrives once, and a tool call it left running stops spinning |
+| CONNECTED status | `ProtocolParserTest`, `AgentConnectionRobolectricTest`, `ConnectionRepositoryImplTest`, `ChatViewModelTest`, `ProcessDeathResumeTest` | `status` (new, connected, running) and `server_newer` read off the frame and carried to the screen, which acts on each once: running holds the composer and un-fails a dropped turn, connected settles cards left spinning, new fails a lost turn and leaves a brand-new conversation alone, a failed turn stays failed; a message typed offline is marked sent when the connection returns; the Host's newer transcript merges once, without touching a message not yet sent (W16AAPPLE-22) |
+| Wrong clock and failed reconnects | `HostClockTest`, `AgentConnectionRobolectricTest`, `ConnectionRepositoryImplTest`, `ServerErrorTextTest`, `ChatViewModelTest` | Signatures carry the server's time from the upgrade's `Date` (CONNECT, commands, invite codes), the device clock with no header or past the 30-minute bound, a fresh reading per socket, and a clock put right is followed; `signature expired` is shown as advice to check the date and time; a reconnect answered with ERROR ends in Error with Reconnect, an unanswered one climbs the ladder after 15 s, and the relay's offline verdict is a rung; an offline agent is tried every minute after the ladder while the app is on screen; a recreated chat screen does not re-add an old error (W16AAPPLE-90, -82, -79, -74) |
 
 ## Where the test data comes from
 
@@ -53,14 +56,6 @@ purpose. At that point, remove the wrapper, and the test guards the fix.
 | Direct/relay | A direct `wss://host` URL becomes `ws://wss://host/ws`, so the app dials a host called `wss` | `AgentConnectionRobolectricTest` |
 | Direct/relay | A direct URL ending in `/` is dialled at `//ws` (the Add Agent form does not trim it) | `AgentConnectionRobolectricTest` |
 | Direct/relay | The saved `connectionMode` is never read. A relay-mode agent on a self-hosted relay is dialled at `<relay>/ws` | `ChatViewModelTest` |
-| Add agent | `0xAB...` and `0xab...` are saved as two agents | `AgentViewModelTest` |
-| Add agent | Editing an agent onto another's address is not caught. In Room it throws inside an unguarded launch | `AgentViewModelTest` |
-| Add agent | Adding a discovered agent that is already saved saves it again. In Room, REPLACE drops the old row and its API key | `AgentViewModelTest` |
-| Add agent | The first agent added from discovery does not become the default | `AgentViewModelTest` |
-| Onboarding | Setup accepts an address the Add Agent form rejects (no 0x + 64 hex check) | `OnboardingViewModelTest` |
-| Identity | A hex key whose public half does not match its seed is accepted, giving an address the key cannot sign for | `KeyManagerTest` |
-| Identity | A valid 15/18/21-word phrase is rejected as "Invalid key length" (12 and 24 only, as in the web client) | `KeyManagerMnemonicTest` |
-| Identity | A phrase with a double space between two words fails as a 13-word phrase | `KeyManagerMnemonicTest` |
 | Slash palette | Skills from the directory are not de-duplicated, and "No description" is not dropped | `ConnectionRepositoryImplTest` |
 | Slash palette | Two skills with the same name crash the composer when `/` is typed | `SlashCommandPaletteComposeTest` |
 | Low balance | The amount follows the phone's locale: `$0,42` on a German phone | `LowBalanceBarComposeTest` |
@@ -79,4 +74,7 @@ purpose. At that point, remove the wrapper, and the test guards the fix.
   SLIP-0010 instead, so the same phrase gives a different address in the CLI.
   Which one the web client uses needs confirming.
 - **Anything needing a device.** CI runs no instrumented tests, and the
-  screenshot baselines are not verified (see the README).
+  screenshot baselines are not verified (see the README). Process death is
+  therefore modelled in `ProcessDeathResumeTest`: the first launch's objects
+  are abandoned without a flush and the relaunch is rebuilt on the same Room
+  file, rather than the app being killed on an emulator.

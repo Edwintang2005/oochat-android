@@ -107,6 +107,7 @@ fun SettingsScreen(
     val memoryEnabled by viewModel.memoryEnabled.collectAsState(initial = true)
     val fontSizeIndex by viewModel.fontSizeIndex.collectAsState(initial = 1)
     val customInstructions by viewModel.customInstructions.collectAsState(initial = "")
+    val developerToolsEnabled by viewModel.developerToolsEnabled.collectAsState(initial = false)
 
     var showCustomInstructions by remember { mutableStateOf(false) }
     var showDeleteDataSheet by remember { mutableStateOf(false) }
@@ -310,6 +311,15 @@ fun SettingsScreen(
                 )
             }
 
+            SettingsSection("Developer") {
+                SwitchRow(
+                    label = "Direct tool execution",
+                    subtitle = "Show the manual EXEC tool panel in chats",
+                    checked = developerToolsEnabled,
+                    onChange = { viewModel.setDeveloperToolsEnabled(it) }
+                )
+            }
+
             SettingsSection("Personalization") {
                 SwitchRow(
                     label = "Memory",
@@ -430,4 +440,3 @@ fun SettingsScreen(
         }
     }
 }
-

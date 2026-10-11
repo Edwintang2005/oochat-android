@@ -6,6 +6,7 @@ import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.ui.chat.components.ChatTopBar
 import ai.openonion.oochat.ui.chat.components.InputBar
 import ai.openonion.oochat.ui.chat.components.LowBalanceBar
+import ai.openonion.oochat.ui.chat.components.PlanPanel
 import ai.openonion.oochat.ui.chat.components.VoiceInputState
 import ai.openonion.oochat.ui.common.appViewModel
 import ai.openonion.oochat.ui.components.ConnectionBanner
@@ -109,8 +110,10 @@ fun ChatScreen(
     val agentProfile by viewModel.agentProfile.collectAsState()
     val approvalMode by viewModel.approvalMode.collectAsState()
     val modePending by viewModel.modePending.collectAsState()
+    val availableTools = agentProfile?.tools.orEmpty()
 
     val dashboardHtml by viewModel.dashboardHtml.collectAsState()
+    val plan by viewModel.plan.collectAsState()
     val activeSessionId by viewModel.activeSessionId.collectAsState()
     val itemTimestamps by viewModel.itemTimestamps.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
@@ -124,7 +127,7 @@ fun ChatScreen(
     val wasCleared by viewModel.wasCleared.collectAsState()
     val sessionUsage by viewModel.sessionUsage.collectAsState()
     val error by viewModel.error.collectAsState()
-
+    val execItems by viewModel.execItems.collectAsState()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
     // ModalNavigationDrawer composes its drawerContent whether or not the
@@ -146,6 +149,7 @@ fun ChatScreen(
     val renderMarkdown by viewModel.renderMarkdown.collectAsState()
     val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsState()
     val soundEffectsEnabled by viewModel.soundEffectsEnabled.collectAsState()
+    val developerToolsEnabled by viewModel.developerToolsEnabled.collectAsState()
     val haptics = LocalHapticFeedback.current
 
     // The user's font-size preference is applied app-wide by ConnectOnionTheme
@@ -324,6 +328,8 @@ fun ChatScreen(
                 isOffline = isOffline
             )
 
+            PlanPanel(entries = plan)
+
             MessageList(
                 items = uiState.chatItems,
                 timestamps = itemTimestamps,
@@ -345,6 +351,18 @@ fun ChatScreen(
                     .weight(1f)
                     .fillMaxWidth()
             )
+
+            ExecResultList(
+                items = execItems,
+                onDismiss = viewModel::dismissExec
+            )
+
+            if (developerToolsEnabled && availableTools.isNotEmpty()) {
+                ExecToolPanel(
+                    tools = availableTools,
+                    onExecute = viewModel::executeTool
+                )
+            }
 
             // With the composer, not in the transcript: the transcript scrolls
             // away and this is the one notice that has to still be there when
