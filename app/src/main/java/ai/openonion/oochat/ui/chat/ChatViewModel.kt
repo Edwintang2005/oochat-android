@@ -61,6 +61,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -645,7 +646,24 @@ open class ChatViewModel @JvmOverloads constructor(
      */
     private var pendingRuntimeInput: PendingRuntimeInput? = null
 
+    /**
+     * Each user message's "failed after a restart" verdict, in the order its
+     * state changed — see [setUserMessageState]. One consumer writes them, so a
+     * quick QUEUED → SENT cannot land in Room the other way round and leave a
+     * delivered message saved as failed.
+     *
+     * Declared above [init] for the same reason as [serverTurnActive]: the
+     * consumer is started there.
+     */
+    private val failedToSendWrites = Channel<Pair<String, Boolean>>(Channel.UNLIMITED)
+
     init {
+        viewModelScope.launch {
+            for ((messageId, failedToSend) in failedToSendWrites) {
+                conversationHistory.saveFailedToSend(messageId, failedToSend)
+            }
+        }
+
         // Initial state stays ChatUiState's own default (""), so there is
         // nothing to flash or reflow when the real address lands a few
         // milliseconds later. Resolving it on IO also dodges the `by lazy`
@@ -1614,7 +1632,17 @@ open class ChatViewModel @JvmOverloads constructor(
         }
     }
 
-    /** Moves one of the user's own bubbles to [next]. */
+    /**
+     * Moves one of the user's own bubbles to [next], and saves what it should
+     * come back as after a restart.
+     *
+     * That is not always [next]. In memory, a message can be held behind a
+     * running turn (QUEUED) or awaiting the host's answer (AWAITING_ACK); if
+     * the process dies there, it never went or nobody knows whether it did, so
+     * it is saved as failed — the same call a dropped connection makes. Only
+     * the outbox is the exception: it survives a restart and will still send
+     * what it holds, so a message in it is not failed.
+     */
     private fun setUserMessageState(messageId: String, next: UserMessageState) {
         _uiState.update { state ->
             state.copy(
@@ -1623,22 +1651,40 @@ open class ChatViewModel @JvmOverloads constructor(
                 }
             )
         }
+        val failedAfterRestart = when (next) {
+            UserMessageState.SENT -> false
+            UserMessageState.QUEUED -> messageId !in outboxedMessageIds
+            UserMessageState.AWAITING_ACK, UserMessageState.FAILED -> true
+        }
+        failedToSendWrites.trySend(messageId to failedAfterRestart)
     }
 
     /**
-     * Send a message that failed again, in place.
+     * Send a message that failed again, as the newest message.
      *
-     * Reuses the bubble's own id rather than minting a new one, so the
-     * transcript keeps one entry for one message however many attempts it
-     * takes — and so a second attempt cannot leave the first as an orphan the
-     * user has no way to clear.
+     * The bubble moves to the bottom of the chat: this attempt is sent now, and
+     * its reply lands at the bottom, so left where it failed the question would
+     * sit far above its answer. It moves rather than being copied — the id is
+     * reused, so the transcript keeps one entry for one message however many
+     * attempts it takes, and a second attempt cannot leave the first as an
+     * orphan the user has no way to clear. QUEUED keeps it pinned below the
+     * output of any turn still running (see ChatEventHelpers.isGate); the saved
+     * row follows once it actually goes out (see [sendMessage]).
      */
     fun resendMessage(messageId: String) {
         val failed = _uiState.value.chatItems
             .filterIsInstance<ChatItem.User>()
             .firstOrNull { it.id == messageId && it.state == UserMessageState.FAILED } ?: return
 
-        setUserMessageState(messageId, UserMessageState.QUEUED)
+        // Not setUserMessageState, on purpose: that also saves the state, and
+        // the saved row should stay failed until this attempt actually goes
+        // out — the send path's own state changes save it from there.
+        _uiState.update { state ->
+            state.copy(
+                chatItems = state.chatItems.filterNot { it.id == messageId } +
+                    failed.copy(state = UserMessageState.QUEUED)
+            )
+        }
         sendMessage(
             content = failed.content,
             images = failed.images,
@@ -1820,7 +1866,13 @@ open class ChatViewModel @JvmOverloads constructor(
                 // waiting on* — the pinning below keeps the live list right,
                 // but the persisted order won, so the pair rendered as two
                 // questions followed by two answers.
-                if (echoUserMessage) conversationHistory.persistMessage(userItem, targetSessionId)
+                if (echoUserMessage) {
+                    conversationHistory.persistMessage(userItem, targetSessionId)
+                } else if (messageId != null) {
+                    // A resend: the bubble already moved to the bottom, and
+                    // the saved row has to follow or a reload puts it back.
+                    conversationHistory.moveMessageToEnd(userItem, targetSessionId)
+                }
                 // A resend (messageId given) parked its bubble as QUEUED before
                 // getting here, so it has to be settled even when nothing else
                 // flagged it — otherwise it would stay QUEUED after delivery.
@@ -1837,11 +1889,15 @@ open class ChatViewModel @JvmOverloads constructor(
                 sendWhenTheAgentIsIdle(
                     canRideRunningTurn = !payload.hasAttachments,
                     onHeldTooLong = {
-                        // put() never runs for this message, and a resend skips saving
-                        // (echoUserMessage = false), so this is the only place it gets
-                        // saved. Without it, reopening the app shows the agent's answer
+                        // put() never runs for this message, so this is the only place
+                        // it gets saved — or, for a resend, moved to where its bubble
+                        // now is. Without it, reopening the app shows the agent's answer
                         // with no question above it.
-                        if (echoUserMessage) conversationHistory.persistMessage(userItem, targetSessionId)
+                        if (echoUserMessage) {
+                            conversationHistory.persistMessage(userItem, targetSessionId)
+                        } else if (messageId != null) {
+                            conversationHistory.moveMessageToEnd(userItem, targetSessionId)
+                        }
                         setUserMessageState(userId, UserMessageState.FAILED)
                     },
                     send = put

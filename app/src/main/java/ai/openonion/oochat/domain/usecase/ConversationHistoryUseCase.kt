@@ -10,6 +10,7 @@ import ai.openonion.oochat.domain.model.ChatMessage
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.Role
 import ai.openonion.oochat.domain.model.ServerTranscriptEntry
+import ai.openonion.oochat.domain.model.UserMessageState
 import ai.openonion.oochat.domain.model.resolveFalseFailures
 import ai.openonion.oochat.domain.model.stableAssistantId
 import ai.openonion.oochat.util.FileLogger
@@ -437,11 +438,15 @@ class ConversationHistoryUseCase(
                 }
             }
             when (msg.role) {
+                // Failed stays failed, so the bubble and the retry bar still
+                // offer the resend. Everything else comes back sent: in flight
+                // is not a state that survives the process (see saveFailedToSend).
                 Role.USER -> ChatItem.User(
                     id = msg.id,
                     content = msg.content,
                     images = msg.images,
-                    files = msg.files
+                    files = msg.files,
+                    state = if (msg.failedToSend) UserMessageState.FAILED else UserMessageState.SENT
                 )
                 // Turn, not Agent: the live flow renders every assistant
                 // reply as a Turn, and minting the same shape here is what
@@ -578,6 +583,41 @@ class ConversationHistoryUseCase(
                 onPreviewUpdate = { _, _, _ -> }
             )
         }.onFailure { e -> FileLogger.e(LogTags.CONV_HISTORY, "persistMessage failed: ${e.message}") }
+    }
+
+    /**
+     * Records whether a user message got through, for when the conversation is
+     * next loaded — a restart included, which is what in-memory state alone
+     * cannot survive.
+     *
+     * The caller decides what counts as failed *after a restart*, which is
+     * not always the state on screen: a message held in memory or awaiting
+     * the host's answer is lost if the process dies, so it is saved as failed
+     * until it is known to have gone.
+     */
+    suspend fun saveFailedToSend(messageId: String, failedToSend: Boolean) {
+        runCatchingCancellable { messageRepository.updateFailedToSend(messageId, failedToSend) }
+            .onFailure { e -> FileLogger.e(LogTags.CONV_HISTORY, "saveFailedToSend failed: ${e.message}") }
+    }
+
+    /**
+     * Moves a resent message to the end of its conversation.
+     *
+     * [persistMessage] keeps a row's first timestamp, which is right for a
+     * replay and wrong here: the resend went out now, so its reply lands at
+     * the bottom, and on reload the question has to be above it rather than
+     * back where the failed attempt was. Saves it instead if it never was.
+     */
+    suspend fun moveMessageToEnd(item: ChatItem.User, targetSessionId: String? = _activeSessionId.value) {
+        val saved = runCatchingCancellable { messageRepository.existsById(item.id) }.getOrDefault(false)
+        if (!saved) {
+            persistMessage(item, targetSessionId)
+            return
+        }
+        val now = System.currentTimeMillis()
+        addTimestamps(mapOf(item.id to now))
+        runCatchingCancellable { messageRepository.updateTimestamp(item.id, now) }
+            .onFailure { e -> FileLogger.e(LogTags.CONV_HISTORY, "moveMessageToEnd failed: ${e.message}") }
     }
 
     /**
