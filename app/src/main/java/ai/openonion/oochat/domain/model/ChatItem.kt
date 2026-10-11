@@ -245,7 +245,7 @@ sealed class ChatItem {
     /**
      * The agent (or a plugin acting on its behalf) switched session mode —
      * a `mode_changed` server event. [mode] is one of "safe" | "plan" |
-     * "accept_edits" | "ulw" (raw, not an enum: unlike [ThinkingStatus] etc.
+     * "accept_edits" | "ulw" (a legacy Host; see below for 1.7+) (raw, not an enum: unlike [ThinkingStatus] etc.
      * this is free-form content the server may extend, not a fixed UI state
      * machine). [triggeredBy] is one of "user" | "agent" | "ulw_checkpoint"
      * when the server sends it — plan_mode.py's exit path omits the field
@@ -257,11 +257,16 @@ sealed class ChatItem {
      * Either way it is authoritative for
      * [ai.openonion.oochat.data.repository.ConnectionRepository.approvalMode],
      * which the mode chip renders.
+     *
+     * A 1.7+ Host sends the same frame for "read-only" | "auto" |
+     * "full-access", with [turnsLeft] set for full access only, and
+     * [triggeredBy] "full_access_expired" when the budget ran out.
      */
     data class ModeChangedItem(
         override val id: String,
         val mode: String,
-        val triggeredBy: String? = null
+        val triggeredBy: String? = null,
+        val turnsLeft: Int? = null
     ) : ChatItem()
 }
 

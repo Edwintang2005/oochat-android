@@ -2,6 +2,7 @@ package ai.openonion.oochat.ui.chat
 
 import ai.openonion.oochat.domain.model.AgentSkill
 import ai.openonion.oochat.domain.model.ApprovalMode
+import ai.openonion.oochat.domain.model.SessionModes
 import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.ui.chat.components.ChatTopBar
 import ai.openonion.oochat.ui.chat.components.InputBar
@@ -110,6 +111,8 @@ fun ChatScreen(
     val agentProfile by viewModel.agentProfile.collectAsState()
     val approvalMode by viewModel.approvalMode.collectAsState()
     val modePending by viewModel.modePending.collectAsState()
+    val sessionModes by viewModel.sessionModes.collectAsState()
+    val sessionActivity by viewModel.sessionActivity.collectAsState()
     val availableTools = agentProfile?.tools.orEmpty()
 
     val dashboardHtml by viewModel.dashboardHtml.collectAsState()
@@ -316,6 +319,7 @@ fun ChatScreen(
                 },
                 awaitingOnboardCode = awaitingOnboardCode,
                 modelName = agentProfile?.model,
+                sessionActivity = sessionActivity,
                 hasDashboard = dashboardHtml != null,
                 onOpenDashboard = onNavigateToDashboard
             )
@@ -377,6 +381,7 @@ fun ChatScreen(
                 isConnected = isConnected,
                 approvalMode = approvalMode,
                 modePending = modePending,
+                sessionModes = sessionModes,
                 usage = sessionUsage,
                 skills = agentProfile?.skills.orEmpty(),
                 onCycleApprovalMode = viewModel::cycleApprovalMode,
@@ -468,6 +473,7 @@ private fun ChatInput(
     isAgentWorking: Boolean,
     approvalMode: ApprovalMode,
     modePending: Boolean,
+    sessionModes: SessionModes,
     usage: SessionUsageTotals,
     skills: List<AgentSkill>,
     onCycleApprovalMode: () -> Unit,
@@ -491,6 +497,7 @@ private fun ChatInput(
             awaitingOnboardCode = awaitingOnboardCode,
             approvalMode = approvalMode,
             modePending = modePending,
+            sessionModes = sessionModes,
             usage = usage,
             skills = skills,
             onCycleApprovalMode = onCycleApprovalMode,

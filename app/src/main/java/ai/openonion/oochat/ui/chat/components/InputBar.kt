@@ -2,6 +2,7 @@ package ai.openonion.oochat.ui.chat.components
 
 import ai.openonion.oochat.domain.model.AgentSkill
 import ai.openonion.oochat.domain.model.ApprovalMode
+import ai.openonion.oochat.domain.model.SessionModes
 import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.ui.common.rememberPermissionGate
 import ai.openonion.oochat.ui.theme.spacing
@@ -69,6 +70,9 @@ fun InputBar(
     // True while approvalMode is only requested, not yet agent-confirmed —
     // see ConnectionRepository.modePending's doc.
     modePending: Boolean = false,
+    // Which modes the chip and sheet offer, and whether the Host owns them —
+    // see ConnectionRepository.sessionModes.
+    sessionModes: SessionModes = SessionModes.LEGACY,
     usage: SessionUsageTotals = SessionUsageTotals(0, 0.0, null),
     // The connected agent's published skills (AgentLiveProfile.skills), which
     // are the whole candidate set for the `/` palette. Empty for most agents,
@@ -331,7 +335,8 @@ fun InputBar(
             ApprovalModeSheet(
                 current = approvalMode,
                 onSelect = onSelectApprovalMode,
-                onDismiss = { showModeSheet = false }
+                onDismiss = { showModeSheet = false },
+                modes = sessionModes
             )
         }
 
@@ -450,9 +455,12 @@ fun InputBar(
             ApprovalModeChip(
                 mode = approvalMode,
                 // Switching mode is a message to a running agent; with no live
-                // socket there is nothing to send it to.
-                enabled = isConnected,
+                // socket there is nothing to send it to. A Host that owns the
+                // mode also refuses a change mid-turn ("Session is busy"), so
+                // there the chip waits for the turn instead of inviting one.
+                enabled = isConnected && !(sessionModes.hostManaged && isAgentWorking),
                 pending = modePending,
+                turnsLeft = sessionModes.turnsLeft,
                 onCycle = onCycleApprovalMode,
                 onOpenSheet = { showModeSheet = true }
             )

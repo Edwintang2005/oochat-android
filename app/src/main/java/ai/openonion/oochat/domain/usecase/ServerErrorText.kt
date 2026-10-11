@@ -41,6 +41,12 @@ object ServerErrorText {
             // from the Host's clock, on a CONNECT, a command or ONBOARD_SUBMIT
             // (W16AAPPLE-90).
             "unauthorized: signature expired" -> CLOCK_WRONG
+            // ws_router/mode.py and session/mode.py: the Host's own answers to
+            // a mode_change it could not commit (1.7+, host-managed modes).
+            "session is busy" -> MODE_BUSY
+            "permission mode is not available" -> "This agent doesn't offer that mode."
+            "mode change is unavailable" -> "This agent doesn't let you change mode."
+            "unable to change session mode" -> "The agent couldn't change mode. Try again."
             else -> raw
         }
     }
@@ -59,6 +65,26 @@ object ServerErrorText {
      * (connection state, UI, the retry decision) only ever sees the second, so
      * a caller matching the raw prefix alone would silently never fire.
      */
+    /** The Host refuses a mode change while a turn is running; it can be tried again once idle. */
+    const val MODE_BUSY = "The agent is working. Change mode when this turn finishes."
+
+    /**
+     * The Host refusing a `mode_change`, in its raw wording. Exact messages rather than the
+     * JSON-RPC codes the refusals carry (-32000, -32602), which other commands reuse. A legacy
+     * Host's plugin path names the frame itself ("mode_change") instead.
+     */
+    fun isModeRefusal(raw: String): Boolean {
+        val m = raw.trim().lowercase()
+        return "mode_change" in m || m in MODE_REFUSALS
+    }
+
+    private val MODE_REFUSALS = setOf(
+        "session is busy",
+        "permission mode is not available",
+        "mode change is unavailable",
+        "unable to change session mode"
+    )
+
     fun isOfflineVerdict(text: String): Boolean =
         isAgentOffline(text) || text.trim() == AGENT_OFFLINE
 

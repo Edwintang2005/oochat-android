@@ -438,7 +438,9 @@ an `INPUT` instead, so a waiting EXEC is left to its timeout.
 
 Every control frame below except `PONG` is a signed command.
 `mode_change` (`ModeChangeMessage`, sent by `AgentConnection.setMode()`) is
-signed the same way.
+signed the same way; see [Session mode](#session-mode) for its two
+vocabularies. `SESSION_STATUS` (`SessionStatusQuery`) is unsigned; see
+[SESSION_STATUS](#session_status).
 
 | Frame model | Wire `type` | When it is sent |
 | --- | --- | --- |
@@ -474,7 +476,7 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | Server `type` | Fields used by this client | Client behaviour |
 | --- | --- | --- |
 | `PING` | — | Emits `Ping`; `AgentConnection` sends `PONG`. |
-| `CONNECTED` | `session_id`, `status`, `server_newer`, `session` | Marks the connection ready and persists the supplied session. `status` and `server_newer` reach the chat screen, which acts on them once: see [CONNECTED status](#connected-status). |
+| `CONNECTED` | `session_id`, `status`, `server_newer`, `session`, `session_modes` | Marks the connection ready and persists the supplied session. `status` and `server_newer` reach the chat screen, which acts on them once: see [CONNECTED status](#connected-status). `status` also sets the top bar's status line, and `session_modes` makes the Host the authority for the mode: see [Session status and mode](#session-status-and-mode). |
 | `llm_call` | `id`, `model` | Creates a running `ChatItem.Turn` / thinking item. |
 | `llm_result` | `id`, `status`, `model`, `duration_ms` | Updates the matching thinking item to done or error. |
 | `thinking` | `id`, `content`, `kind`, `model` | With `content`, the agent's reasoning: a `ChatItem.Thinking` under the frame's `id` with `kind` set (`intent`, `reflect`, or `reasoning` when absent), rendered as a collapsible "Thought" rather than as a reply. Without `content`, completed thinking metadata on a `ChatItem.Turn`. See [Streaming frames](#streaming-frames). |
@@ -499,6 +501,9 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `RUNTIME_INPUT_ACK` | `session_id`, `id` | Emits `ConnectionEvent.RuntimeInputAcknowledged`: the host queued an `INPUT` that arrived mid-turn for the running turn's next iteration. `id` is the host's own UUID for the queued item, **not** the `input_id` we sent, so it cannot name the message it answers — see [Runtime input](#runtime-input). Not an `OUTPUT`: it does not end the turn. |
 | `OUTPUT` | `input_id`, `result`, `session` | Emits the final output when it belongs to the current input, or for any direct connection; updates the session snapshot. |
 | `EXEC_RESULT` | `exec_id`, `status`, `result`, `error`, `tool`, `duration_ms` | Completes the pending direct `EXEC` request with a success or error outcome. |
+| `mode_changed` | `id`, `mode`, `triggered_by`, `turns_left` | Creates a `ChatItem.ModeChangedItem` (a thin "Switched to … mode" divider) and sets the mode chip; authoritative whether it answers this client's `mode_change` or the agent switched on its own. See [Session mode](#session-mode). |
+| `mode_budget_changed` | `mode`, `turns_left` | Emits `ConnectionEvent.ModeBudgetChanged`: full access's turn budget counted down. Not a chat item. |
+| `SESSION_STATUS` | `session_id`, `status` | Emits `SessionStatusReceived`. Settles turns a drop failed, and sets the top bar's status line when it is about the session on screen. See [SESSION_STATUS](#session_status). |
 | `ERROR` | `code`, `protocol`, `retryable`, `session_id`, `message`, `error` | With `code` `-32010`, emits `ProtocolRejected` (see [Incompatible protocol version](#incompatible-protocol-version)). With `code` `"RUNTIME_INPUT_REJECTED"`, emits `RuntimeInputRejected` instead of an error: the socket and the running turn are healthy, and `ConnectionError` could start the reconnect ladder (see [Runtime input](#runtime-input)). `retryable` is read as true only for a literal boolean `true`. Every other `ERROR` emits `ConnectionError` using `message`, then `error`, then `"Unknown error"`. |
 
 ### `EXEC_RESULT`
@@ -923,6 +928,174 @@ Covered by `ProtocolParserTest` (`status` and `server_newer` off the frame),
 `ChatViewModelTest` (each status, the failed turn that stays failed, the outbox and
 the merge) and `ProcessDeathResumeTest` (a relaunch against the fake Host's three
 answers).
+
+## Session status and mode
+
+What the agent is doing, and how much it may do unasked, are both shown on the
+chat screen at all times (W16AAPPLE-18): the status in the top bar's second
+line, ahead of the model name, and the mode in the chip under the composer.
+
+### SESSION_STATUS
+
+The client asks:
+
+```json
+{"type": "SESSION_STATUS", "session": {"session_id": "550e8400-…"}}
+```
+
+The `session_id` is nested, unlike `CONNECT`'s. The frame is unsigned
+(`SignedCommand.EXEMPT_TYPES`): on a live socket the Host answers for the
+identity `CONNECT` verified. `ConnectToAgentUseCase.querySessionStatus()` sends
+it for the current session after a reconnect that failed a turn in flight (see
+[CONNECTED status](#connected-status)). The Host answers:
+
+```json
+{"type": "SESSION_STATUS", "session_id": "550e8400-…", "status": "running"}
+```
+
+| `status` | The Host | Turns a drop failed | Status line |
+| --- | --- | --- | --- |
+| `running` | Is still running the turn. | Un-failed. | Running |
+| `connected` | Is idle; the turn ended while the socket was away. | Settled from the replay if it carries the answer, else stay failed. | Idle |
+| `not_found` | Has no live session under this id, or it is another caller's. The same answer either way, so the query is no existence oracle. | Stay failed. | Session not found |
+
+`ServerSessionStatus.fromWire` reads all three, plus `CONNECTED`'s `new`.
+
+**The status line.** `ConnectionRepository.hostSessionStatus` keeps the last
+thing the Host said about the session on screen: `CONNECTED`'s `status`, then
+each `SESSION_STATUS` reply whose `session_id` is the current session (a reply
+about a session the user has since left is ignored), then idle once an `OUTPUT`
+ends a turn. Unlike `ConnectionState.Connected.status` it is never released,
+because it is shown rather than acted on. It goes back to unknown on `connect()`
+and on a conversation switch.
+
+`SessionActivity.of` combines it with what the screen itself knows, and
+`ChatViewModel.sessionActivity` feeds `ChatTopBar`:
+
+| Shown | When |
+| --- | --- |
+| nothing | Not connected. The status dot and the connection banner speak instead. |
+| Waiting for you | A gate (approval, question, plan review…) is open on screen. |
+| Running | This app's own turn is unanswered, items are in progress, or the Host said `running`. |
+| Session not found | The last `SESSION_STATUS` reply said `not_found`, and nothing has run since. |
+| Idle | Anything else: `new`, `connected`, or a Host that says nothing. |
+
+### Session mode
+
+There are two generations of the mode protocol, and the client speaks
+whichever the Host does. `ConnectionRepository.sessionModes` (`SessionModes`)
+records which.
+
+| | Legacy Host | ConnectOnion 1.7+ Host with mode policy |
+| --- | --- | --- |
+| How the client knows | `CONNECTED` has no `session_modes`. | `CONNECTED` carries `session_modes`. |
+| Modes | `safe`, `plan`, `accept_edits`, `ulw` | `read-only`, `auto`, `full-access`, or the subset in `availableModes` |
+| Default | `safe` | `currentModeId` (the Host's default is `auto`) |
+| Who applies `mode_change` | The agent's tool_approval plugin, at its next iteration, so the answer can take a whole turn. | The Host itself (`ws_router/mode.py`), at once. |
+| Unattended mode | `ulw`, with a turn budget the user types (`turns`). | `full-access`, with a budget only the Host grants. The client never sends one. |
+| Refused when | The frame misses the agent: `ERROR` naming `mode_change`. | The session is busy, the mode is not on offer, or there is no session: `ERROR` `-32000` `Session is busy` (retryable), `-32602` `Permission mode is not available`, `mode change is unavailable`. |
+
+The 1.7+ Host has no alias for the legacy names, so `ConnectionRepositoryImpl.setMode`
+refuses any mode that is not in the connection's catalogue, in both directions,
+rather than send one that can only be refused.
+
+**`session_modes` on `CONNECTED`** (`ProtocolParser.decodeSessionModes`):
+
+```json
+"session_modes": {
+  "currentModeId": "auto",
+  "turnsLeft": null,
+  "availableModes": [
+    {"id": "read-only", "name": "Read only"},
+    {"id": "auto", "name": "Auto"},
+    {"id": "full-access", "name": "Full access"}
+  ]
+}
+```
+
+It is read field by field from a `JsonElement`, so an odd value costs only that
+value, never the `CONNECTED` frame: an unknown `currentModeId` is treated as
+`auto`, an unknown id in `availableModes` is dropped, and a `turnsLeft` that is
+not a positive integer is ignored. It is confirmed state: it sets the chip,
+clears any pending request, and replaces the catalogue.
+
+**Sending.** `mode_change` is a signed command. To a 1.7+ Host:
+
+```json
+{"type": "mode_change", "mode": "read-only"}
+```
+
+To a legacy Host, `ulw` also carries `turns`:
+
+```json
+{"type": "mode_change", "mode": "ulw", "turns": 25}
+```
+
+The chip moves at once and shows as pending (dimmed, with a sync glyph) until
+the answer. Tapping it cycles `SessionModes.cycle`, which is the catalogue
+without the unattended modes, so no number of taps reaches `ulw` or
+`full-access`. Those are entered from the sheet only, and the chip offers exit
+while one is active, back to `SessionModes.default` (`safe`, or `auto`). On a
+1.7+ Host the chip is disabled while a turn is running, since the Host would
+answer `Session is busy`.
+
+**Applying `mode_changed`.** It is authoritative, whatever asked for it. A mode
+the client knows sets the chip and the confirmed mode, and clears the pending
+flag. `turns_left` is kept for an unattended mode only and shown on the chip
+("full access · 12 left · exit"); any other mode clears it. The same frame is
+also a chat item: a "Switched to auto mode · turns used up" divider, persisted
+with the transcript (`TranscriptItemPayload.ModeChanged`, which now carries
+`turnsLeft`). The Host's own form:
+
+```json
+{"type": "mode_changed", "mode": "full-access", "turns_left": 20, "session_id": "550e8400-…"}
+```
+
+| `triggered_by` | Shown as |
+| --- | --- |
+| `user` | you |
+| `agent` | agent |
+| `ulw_checkpoint` | checkpoint |
+| `full_access_expired` | turns used up |
+| absent | nothing |
+
+`mode_budget_changed` (`{"mode": "full-access", "turns_left": 4,
+"previous_turns_left": 5}`) updates the chip's count when it names the current
+mode. The end of the budget comes as a `mode_changed` back to `auto`.
+
+**Rollback.** An `ERROR` that `ServerErrorText.isModeRefusal` recognises, while a
+request is pending, puts the chip back on the last confirmed mode. It matches
+the Host's exact messages rather than the JSON-RPC codes, which other commands
+reuse. `Session is busy` is shown as "The agent is working. Change mode when this
+turn finishes."
+
+**Resets.** `connect()` forgets the catalogue (back to legacy), the mode and the
+status: it may be a different Host. A conversation switch keeps the catalogue
+(the same Host) but resets the mode to its default and the status to unknown,
+until the new session's `CONNECTED` says.
+
+**Known gaps.**
+
+- An agent's own `mode_changed` in the other vocabulary (for example a 1.8
+  agent's plugin reporting `auto` on a Host that sent no `session_modes`) still
+  moves the chip, but the catalogue stays as it was. A tap from there sends the
+  catalogue's first mode, which that Host refuses, and the chip rolls back.
+- A Host's `mode_changed` is applied without checking its `session_id`; the Host
+  sends it only on the socket that asked.
+- `ULW_RESPONSE`'s `switch_mode` still uses the legacy names.
+- The status line cannot tell a turn that ended in an `ERROR` without an
+  `OUTPUT` from one still running, the same as the composer's Stop button.
+
+Covered by `ProtocolParserStatusEventsTest` (`session_modes`, including odd
+values; `mode_changed` with `turns_left`; `mode_budget_changed`, which still moves
+the replay cursor when malformed; `SESSION_STATUS`), `ConnectionRepositoryImplTest`
+(the Host as authority, the exact frame sent with no budget, modes not on offer
+never sent, the countdown and expiry, the busy rollback, the resets, and
+`hostSessionStatus` following `CONNECTED`, replies about this session only, and
+`OUTPUT`), `ApprovalModeTest` (no tap reaches an unattended mode on either
+catalogue), `SessionActivityTest`, `ChatViewModelTest` (cycling and exit on a
+1.7+ Host; each status line), `ServerErrorTextTest`, `TranscriptItemCodecTest`,
+`ChatTopBarComposeTest` and `ApprovalModeControlsComposeTest`.
 
 ## HTTP exception
 

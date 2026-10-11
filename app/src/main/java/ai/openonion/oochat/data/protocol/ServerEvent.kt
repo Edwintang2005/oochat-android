@@ -144,6 +144,15 @@ data class ServerEvent(
     // with no triggered_by key at all.
     val mode: String? = null,
     @SerialName("triggered_by") val triggeredBy: String? = null,
+    // Full access's remaining turn budget — on the Host's own `mode_changed`
+    // (ws_router/mode.py, null for every other mode) and on the plugin's
+    // `mode_budget_changed` countdown (full_access.py).
+    @SerialName("turns_left") val turnsLeft: Int? = null,
+    // CONNECTED's `session_modes` (`currentModeId`, `turnsLeft`,
+    // `availableModes`), sent by a 1.7+ Host with mode policy enabled. A
+    // JsonElement for the same reason as `protocol` below: a malformed
+    // catalogue must not drop the CONNECTED frame carrying it.
+    @SerialName("session_modes") val sessionModes: JsonElement? = null,
     // "ERROR" frame's machine-readable code. Lenient: the OIP version
     // rejection sends a number (-32010, connect.py), other ERRORs a string
     // ("provider_station_only", session.py), most none at all.

@@ -12,6 +12,7 @@ import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.PlanStatus
 import ai.openonion.oochat.domain.model.ServerSessionStatus
+import ai.openonion.oochat.domain.model.SessionModes
 import ai.openonion.oochat.domain.usecase.ServerErrorText
 import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.network.AgentConnection
@@ -50,6 +51,7 @@ import okio.ByteString
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -1115,5 +1117,228 @@ class ConnectionRepositoryImplTest {
         repository.connect("0xAGENT2")
 
         assertTrue(!repository.modePending.value)
+    }
+
+    // ── Host-managed modes (W16AAPPLE-18) ────────────────────────────
+    // A ConnectOnion 1.7+ Host advertises `session_modes` on CONNECTED and
+    // answers mode_change itself (ws_router/mode.py). Fixtures follow
+    // websocket-protocol.md's CONNECTED example and handle_mode_change's frames.
+
+    private fun simulateHostModes(current: String = "auto", turnsLeft: String = "null") {
+        simulateFrame(
+            """{"type":"CONNECTED","session_id":"sess-1","status":"connected",
+              |"session_modes":{"currentModeId":"$current","turnsLeft":$turnsLeft,"availableModes":[
+              |{"id":"read-only","name":"Read only"},{"id":"auto","name":"Auto"},
+              |{"id":"full-access","name":"Full access"}]}}""".trimMargin()
+        )
+    }
+
+    /** The signed payloads of every mode_change sent, without the envelope's to/timestamp/nonce. */
+    private fun sentModeChanges(): List<JsonObject> =
+        factory.lastWebSocket!!.sentMessages.mapNotNull { sent ->
+            val payload = Json.parseToJsonElement(sent).jsonObject["payload"]?.jsonObject
+            payload?.takeIf { it["type"]?.toString() == "\"mode_change\"" }
+                ?.let { JsonObject(it - setOf("to", "timestamp", "nonce")) }
+        }
+
+    @Test
+    fun `session_modes on CONNECTED makes the Host the authority for mode and catalogue`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateHostModes() }) { repository.sessionModes.value.hostManaged }
+
+        val modes = repository.sessionModes.value
+        assertEquals(listOf(ApprovalMode.READ_ONLY, ApprovalMode.AUTO, ApprovalMode.FULL_ACCESS), modes.available)
+        assertEquals(listOf(ApprovalMode.READ_ONLY, ApprovalMode.AUTO), modes.cycle)
+        assertEquals(ApprovalMode.AUTO, repository.approvalMode.value)
+        assertFalse(repository.modePending.value)
+    }
+
+    @Test
+    fun `CONNECTED in full access carries the Host's turn budget`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateHostModes(current = "full-access", turnsLeft = "7") }) {
+            repository.approvalMode.value == ApprovalMode.FULL_ACCESS
+        }
+
+        assertEquals(7, repository.sessionModes.value.turnsLeft)
+    }
+
+    @Test
+    fun `a CONNECTED without session_modes keeps the legacy catalogue`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+
+        assertEquals(SessionModes.LEGACY, repository.sessionModes.value)
+        assertEquals(ApprovalMode.SAFE, repository.approvalMode.value)
+    }
+
+    @Test
+    fun `setMode on a Host-managed connection sends the exact mode and never a turn budget`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateHostModes() }) { repository.sessionModes.value.hostManaged }
+        factory.lastWebSocket!!.sentMessages.clear()
+
+        repository.setMode(ApprovalMode.FULL_ACCESS, turns = 50)
+
+        assertEquals(
+            listOf(Json.parseToJsonElement("""{"type":"mode_change","mode":"full-access"}""")),
+            sentModeChanges()
+        )
+        assertEquals(ApprovalMode.FULL_ACCESS, repository.approvalMode.value)
+        assertTrue(repository.modePending.value)
+    }
+
+    @Test
+    fun `a mode the connection does not offer is never sent`() = runTest(testDispatcher) {
+        // The Host has no alias reader: "safe" would only come back refused.
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateHostModes() }) { repository.sessionModes.value.hostManaged }
+        factory.lastWebSocket!!.sentMessages.clear()
+
+        repository.setMode(ApprovalMode.SAFE)
+
+        assertTrue(sentModeChanges().isEmpty())
+        assertEquals(ApprovalMode.AUTO, repository.approvalMode.value)
+        assertFalse(repository.modePending.value)
+    }
+
+    @Test
+    fun `a legacy connection does not send the Host's vocabulary either`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+        factory.lastWebSocket!!.sentMessages.clear()
+
+        repository.setMode(ApprovalMode.READ_ONLY)
+
+        assertTrue(sentModeChanges().isEmpty())
+        assertEquals(ApprovalMode.SAFE, repository.approvalMode.value)
+    }
+
+    @Test
+    fun `the Host's mode_changed confirms the request and carries its budget`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateHostModes() }) { repository.sessionModes.value.hostManaged }
+        repository.setMode(ApprovalMode.FULL_ACCESS)
+
+        awaitUntil(retry = {
+            simulateFrame("""{"type":"mode_changed","mode":"full-access","turns_left":20,"session_id":"sess-1"}""")
+        }) { !repository.modePending.value }
+
+        assertEquals(ApprovalMode.FULL_ACCESS, repository.approvalMode.value)
+        assertEquals(20, repository.sessionModes.value.turnsLeft)
+    }
+
+    @Test
+    fun `mode_budget_changed counts down and expiry back to auto clears the budget`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateHostModes(current = "full-access", turnsLeft = "3") }) {
+            repository.approvalMode.value == ApprovalMode.FULL_ACCESS
+        }
+
+        awaitUntil(retry = {
+            simulateFrame("""{"type":"mode_budget_changed","id":"b1","mode":"full-access","turns_left":2,"previous_turns_left":3}""")
+        }) { repository.sessionModes.value.turnsLeft == 2 }
+
+        awaitUntil(retry = {
+            simulateFrame("""{"type":"mode_changed","id":"m9","mode":"auto","turns_left":null,"triggered_by":"full_access_expired"}""")
+        }) { repository.approvalMode.value == ApprovalMode.AUTO }
+
+        assertNull(repository.sessionModes.value.turnsLeft)
+    }
+
+    @Test
+    fun `the Host refusing a busy mode change rolls the chip back`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateHostModes() }) { repository.sessionModes.value.hostManaged }
+
+        repository.setMode(ApprovalMode.READ_ONLY)
+        assertEquals(ApprovalMode.READ_ONLY, repository.approvalMode.value)
+
+        awaitUntil(retry = {
+            simulateFrame("""{"type":"ERROR","code":-32000,"message":"Session is busy","retryable":true}""")
+        }) { !repository.modePending.value }
+
+        assertEquals(ApprovalMode.AUTO, repository.approvalMode.value)
+    }
+
+    @Test
+    fun `reconnecting forgets the Host's catalogue`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateHostModes(current = "read-only") }) { repository.sessionModes.value.hostManaged }
+
+        repository.connect("0xAGENT2")
+
+        assertEquals(SessionModes.LEGACY, repository.sessionModes.value)
+        assertEquals(ApprovalMode.SAFE, repository.approvalMode.value)
+    }
+
+    // ── hostSessionStatus (W16AAPPLE-18) ─────────────────────────────
+
+    @Test
+    fun `hostSessionStatus follows CONNECTED and is not released with it`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnectedWith("running", serverNewer = false) }) {
+            repository.hostSessionStatus.value == ServerSessionStatus.RUNNING
+        }
+
+        repository.releaseSessionStatus()
+
+        assertEquals(ServerSessionStatus.RUNNING, repository.hostSessionStatus.value)
+    }
+
+    @Test
+    fun `a SESSION_STATUS reply about this session is shown`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected("sess-1") }) { repository.connectionState.value is ConnectionState.Connected }
+
+        awaitUntil(retry = {
+            simulateFrame("""{"type":"SESSION_STATUS","session_id":"sess-1","status":"not_found"}""")
+        }) { repository.hostSessionStatus.value == ServerSessionStatus.NOT_FOUND }
+    }
+
+    @Test
+    fun `a SESSION_STATUS reply about another session is not shown`() = runBlocking {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnectedWith("connected", serverNewer = false) }) {
+            repository.hostSessionStatus.value == ServerSessionStatus.CONNECTED
+        }
+
+        // Wait for the reply itself to come through, so the assertion below is not vacuous.
+        withTimeout(3000L) {
+            val deferred = async {
+                repository.observeEvents().first { it is ChatEvent.SessionStatusReceived }
+            }
+            while (deferred.isActive) {
+                simulateFrame("""{"type":"SESSION_STATUS","session_id":"sess-OLD","status":"not_found"}""")
+                delay(20)
+            }
+            deferred.await()
+        }
+
+        assertEquals(ServerSessionStatus.CONNECTED, repository.hostSessionStatus.value)
+    }
+
+    @Test
+    fun `an OUTPUT returns hostSessionStatus to idle`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnectedWith("running", serverNewer = false) }) {
+            repository.hostSessionStatus.value == ServerSessionStatus.RUNNING
+        }
+
+        awaitUntil(retry = { simulateFrame("""{"type":"OUTPUT","result":"done"}""") }) {
+            repository.hostSessionStatus.value == ServerSessionStatus.CONNECTED
+        }
+    }
+
+    @Test
+    fun `reconnecting resets hostSessionStatus`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnectedWith("running", serverNewer = false) }) {
+            repository.hostSessionStatus.value == ServerSessionStatus.RUNNING
+        }
+
+        repository.connect("0xAGENT2")
+
+        assertEquals(ServerSessionStatus.UNKNOWN, repository.hostSessionStatus.value)
     }
 }

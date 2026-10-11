@@ -6,9 +6,13 @@ import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ConnectionState
 import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
+import ai.openonion.oochat.domain.model.LEGACY_SESSION_MODES
 import ai.openonion.oochat.domain.model.NO_PLAN
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.PlanEntry
+import ai.openonion.oochat.domain.model.ServerSessionStatus
+import ai.openonion.oochat.domain.model.SessionModes
+import ai.openonion.oochat.domain.model.UNKNOWN_SESSION_STATUS
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -49,6 +53,19 @@ interface ConnectToAgentUseCaseContract {
      * [ai.openonion.oochat.data.repository.ConnectionRepository.modePending].
      */
     val modePending: StateFlow<Boolean>
+
+    /**
+     * Which modes may be offered, and whether the Host owns them — see
+     * [ai.openonion.oochat.data.repository.ConnectionRepository.sessionModes].
+     * Default for fakes: [SessionModes.LEGACY].
+     */
+    val sessionModes: StateFlow<SessionModes> get() = LEGACY_SESSION_MODES
+
+    /**
+     * The last thing the Host said about the current session, for display — see
+     * [ai.openonion.oochat.data.repository.ConnectionRepository.hostSessionStatus].
+     */
+    val hostSessionStatus: StateFlow<ServerSessionStatus> get() = UNKNOWN_SESSION_STATUS
 
      /**
      * The connected agent's own Home page (untrusted agent-authored HTML),
