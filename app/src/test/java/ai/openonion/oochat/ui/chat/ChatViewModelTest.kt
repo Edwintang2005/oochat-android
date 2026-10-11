@@ -45,6 +45,7 @@ import ai.openonion.oochat.network.SpeechRecognitionEvent
 import ai.openonion.oochat.network.SpeechRecognitionService
 import ai.openonion.oochat.network.VoiceTranscriptionService
 import ai.openonion.oochat.ui.chat.components.VoiceInputPhase
+import ai.openonion.oochat.ui.chat.components.failedUserMessages
 import android.app.Application
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -569,6 +570,9 @@ class ChatViewModelTest {
         override suspend fun updateTimestamp(id: String, timestamp: Long) {
             all.value = all.value.map { if (it.id == id) it.copy(timestamp = timestamp) else it }
         }
+        override suspend fun updateFailedToSend(id: String, failedToSend: Boolean) {
+            all.value = all.value.map { if (it.id == id) it.copy(failedToSend = failedToSend) else it }
+        }
         override suspend fun getOwningSessionId(id: String) =
             all.value.firstOrNull { it.id == id }?.sessionId
         override suspend fun getSessionIdByUserContent(content: String) =
@@ -979,6 +983,26 @@ class ChatViewModelTest {
             saved.single { it.id == lostId }.timestamp > saved.single { it.id == laterId }.timestamp
         )
         assertEquals(UserMessageState.SENT, (vm.uiState.value.chatItems.last() as ChatItem.User).state)
+    }
+
+    @Test
+    fun `a failed send is saved as failed, and a resend that goes through clears it`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        connectUseCase.failNextSend = true
+        vm.sendMessage("did this go?")
+        testScheduler.advanceUntilIdle()
+        val id = (vm.uiState.value.chatItems.single() as ChatItem.User).id
+
+        // On screen alone, a restart would bring it back looking sent.
+        assertTrue(messageRepo.snapshot().single { it.id == id }.failedToSend)
+
+        vm.resendMessage(id)
+        testScheduler.advanceUntilIdle()
+
+        assertFalse(messageRepo.snapshot().single { it.id == id }.failedToSend)
     }
 
     @Test
@@ -2237,6 +2261,57 @@ class ChatViewModelTest {
 
             assertEquals(UserMessageState.FAILED, userMessage("use staging").state)
             assertEquals("no third attempt", 3, connectUseCase.sentMessages.size)
+        }
+
+    // ── What a restart brings a message back as ──────────────────────────
+
+    /** Whether [text]'s saved row says it should come back failed after a restart. */
+    private fun kotlinx.coroutines.test.TestScope.savedAsFailed(text: String): Boolean {
+        testScheduler.runCurrent()
+        return messageRepo.snapshot().single { it.role == Role.USER && it.content == text }.failedToSend
+    }
+
+    @Test
+    fun `a message waiting for the Host's answer is saved as failed until the answer says it got through`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("second")
+            assertEquals("test setup", UserMessageState.AWAITING_ACK, userMessage("second").state)
+
+            // If the app dies now, nobody knows whether the Host took it.
+            assertTrue(savedAsFailed("second"))
+
+            connectUseCase.emit(ChatEvent.RuntimeInputAcknowledged(sessionId = "sess-1"))
+            testScheduler.runCurrent()
+
+            assertFalse(savedAsFailed("second"))
+        }
+
+    @Test
+    fun `a message in the outbox is saved as not failed, since the outbox still sends it after a restart`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            vm.connectToAgent(address)
+            testScheduler.runCurrent()
+            vm.sendMessage("typed offline")
+            testScheduler.runCurrent()
+            assertEquals("test setup", UserMessageState.QUEUED, userMessage("typed offline").state)
+
+            assertFalse(savedAsFailed("typed offline"))
+        }
+
+    @Test
+    fun `a message held in memory for a retry is saved as failed, since a restart loses the hold`() =
+        runTest(testDispatcher) {
+            givenARunningTurn()
+            sendIntoRunningTurn("use staging")
+
+            connectUseCase.emit(ChatEvent.RuntimeInputRejected(sessionId = "sess-1", retryable = true))
+            testScheduler.runCurrent()
+            assertEquals("test setup", UserMessageState.QUEUED, userMessage("use staging").state)
+
+            // QUEUED like an outbox message, but only this process holds it.
+            assertTrue(savedAsFailed("use staging"))
         }
 
     @Test
@@ -5100,6 +5175,27 @@ class ChatViewModelTest {
                 else -> ""
             }
         })
+    }
+
+    @Test
+    fun `a message saved as failed is still failed after a restart, and offered for resending`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        val session = seedPreviousConversation(address)
+        messageRepo.seed(
+            ChatMessage(
+                id = "m3", sessionId = session.id, role = Role.USER, content = "never arrived",
+                timestamp = 300L, failedToSend = true
+            )
+        )
+
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+
+        val users = vm.uiState.value.chatItems.filterIsInstance<ChatItem.User>()
+        assertEquals(UserMessageState.SENT, users.single { it.id == "m1" }.state)
+        assertEquals(UserMessageState.FAILED, users.single { it.id == "m3" }.state)
+        // What the bar above the composer lists.
+        assertEquals(listOf("m3"), vm.uiState.value.chatItems.failedUserMessages().map { it.id })
     }
 
     @Test

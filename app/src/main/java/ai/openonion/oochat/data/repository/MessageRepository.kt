@@ -55,6 +55,14 @@ interface MessageRepository {
     suspend fun updateTimestamp(id: String, timestamp: Long) {}
 
     /**
+     * Record whether a persisted user message got through, so a failed one is
+     * still failed after a restart. A no-op for an id not saved yet.
+     *
+     * Defaulted to a no-op for the same reason as [updateTimestamp].
+     */
+    suspend fun updateFailedToSend(id: String, failedToSend: Boolean) {}
+
+    /**
      * The conversation a persisted message belongs to, or null if this id
      * has never been written.
      *

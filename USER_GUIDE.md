@@ -242,8 +242,10 @@ never saved.
 device and goes out by itself when the connection returns — including after the
 app is killed.
 
-**"Not sent · Tap to try again" in red.** The message did not leave the device.
-Tap it to send it again; it keeps its place in the conversation.
+**"Not sent · Tap to try again" in red.** The message did not reach the agent.
+Tap it, or tap **Retry** in the bar above the message box, to send it again. It
+moves to the bottom of the chat so its reply lands under it. It still shows as
+not sent after the app is closed and reopened.
 
 **A reply says "Failed" with a Retry button.** The agent's turn ended without an
 answer, usually a dropped connection. Retry asks again.
