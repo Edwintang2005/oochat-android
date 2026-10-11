@@ -9,7 +9,7 @@ import java.net.URISyntaxException
 internal data class ScannedAgent(val serverUrl: String, val agentAddress: String)
 
 /**
- * Reads what Setup's QR scanner found. Three forms name an agent:
+ * Reads what Setup's QR scanner found. Four forms name an agent:
  *
  * - A web chat link, `https://chat.openonion.ai/<address>` — what the
  *   website's Share button encodes (openonion/oo-chat `qr-share.tsx`).
@@ -17,6 +17,7 @@ internal data class ScannedAgent(val serverUrl: String, val agentAddress: String
  *   through the default relay, the way the website reaches it.
  * - The app's own deep link, `connectonion://agent/<address>`. Also relayed.
  * - `<serverUrl>/<address>`, for an agent on a server of its own.
+ * - The address on its own, `0x…`: all a QR code needs to hold. Relayed.
  *
  * Reading the first form as the third saved the website as a direct server,
  * which has no WebSocket, so the agent never connected (W16AAPPLE-76).
@@ -34,6 +35,7 @@ internal object AgentQrCode {
         if (text.startsWith(DEEP_LINK_PREFIX, ignoreCase = true)) {
             return relayed(text.substring(DEEP_LINK_PREFIX.length).substringBefore('/'))
         }
+        relayed(text)?.let { return it }
         val uri = try {
             URI(text)
         } catch (e: URISyntaxException) {
@@ -59,16 +61,16 @@ internal object AgentQrCode {
      * `<serverUrl>/<address>`, split on the last "/" since the URL itself
      * contains "//". A trailing slash is ignored rather than leaving the
      * address empty, and a bare `https://host` is not split into a server of
-     * "https:/" and an address of "host".
+     * "https:/" and an address of "host". What follows the last "/" must be a
+     * valid address: anything else is a page of some other site, not an agent.
      */
     private fun serverAndAddress(text: String): ScannedAgent? {
         val trimmed = text.trimEnd('/')
         val lastSlash = trimmed.lastIndexOf('/')
         val hostStart = trimmed.indexOf("://").let { if (it < 0) 0 else it + "://".length }
         if (lastSlash <= hostStart || lastSlash == trimmed.length - 1) return null
-        return ScannedAgent(
-            serverUrl = trimmed.substring(0, lastSlash),
-            agentAddress = trimmed.substring(lastSlash + 1)
-        )
+        val address = trimmed.substring(lastSlash + 1)
+        if (!AgentDiscoveryService.ADDRESS_REGEX.matches(address)) return null
+        return ScannedAgent(serverUrl = trimmed.substring(0, lastSlash), agentAddress = address)
     }
 }

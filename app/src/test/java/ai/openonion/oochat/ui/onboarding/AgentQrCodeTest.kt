@@ -109,6 +109,21 @@ class AgentQrCodeTest {
         )
     }
 
+    // ── the address on its own ────────────────────────────────────────
+
+    @Test
+    fun `a bare address connects through the default relay`() {
+        // The simplest thing a QR code can hold for an agent is its address.
+        assertEquals(relayed, AgentQrCode.parse(address))
+    }
+
+    @Test
+    fun `a bare address is read whatever whitespace surrounds it`() {
+        listOf(" $address", "$address\n", "  $address  ").forEach { scanned ->
+            assertEquals("\"$scanned\"", relayed, AgentQrCode.parse(scanned))
+        }
+    }
+
     // ── not an agent QR code ──────────────────────────────────────────
 
     @Test
@@ -116,6 +131,33 @@ class AgentQrCodeTest {
         // A bare server URL used to split into a server of "https:/" and an
         // address of the host name.
         listOf("", "   ", "hello", "/$address", "https://example.com", "https://example.com/").forEach { scanned ->
+            assertNull("\"$scanned\"", AgentQrCode.parse(scanned))
+        }
+    }
+
+    @Test
+    fun `a URL that does not end in an agent address is not an agent QR code`() {
+        // These used to fill the form with a made-up server and a made-up address,
+        // and turn Direct Connection on.
+        listOf(
+            "https://example.com/menu",
+            "https://example.com/promo/spring-sale",
+            "https://relay.example.com/0x1234",
+            "https://relay.example.com/${address}00"
+        ).forEach { scanned ->
+            assertNull(scanned, AgentQrCode.parse(scanned))
+        }
+    }
+
+    @Test
+    fun `an address that is cut short, too long or not hex is not an agent QR code`() {
+        listOf(
+            "0x1234",
+            address.dropLast(1),
+            address + "0",
+            "0x" + "zz".repeat(32),
+            "WIFI:S:home;T:WPA;P:secret;;"
+        ).forEach { scanned ->
             assertNull("\"$scanned\"", AgentQrCode.parse(scanned))
         }
     }

@@ -106,7 +106,7 @@ fun OnboardingScreen(
     }
 
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-        result.contents?.let(AgentQrCode::parse)?.let { scanned ->
+        onboardingViewModel.onScanned(result.contents)?.let { scanned ->
             formState = formState.copy(
                 serverUrl = scanned.serverUrl,
                 agentAddress = scanned.agentAddress,
