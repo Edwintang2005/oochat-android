@@ -46,6 +46,15 @@ interface MessageRepository {
     suspend fun existsById(id: String): Boolean
 
     /**
+     * Restamp a persisted message, moving it within its conversation (the list
+     * is ordered by timestamp). Used to move a resent message to the end.
+     *
+     * Defaulted to a no-op so in-memory fakes that never reload a conversation
+     * need not care; the Room-backed one overrides it.
+     */
+    suspend fun updateTimestamp(id: String, timestamp: Long) {}
+
+    /**
      * The conversation a persisted message belongs to, or null if this id
      * has never been written.
      *

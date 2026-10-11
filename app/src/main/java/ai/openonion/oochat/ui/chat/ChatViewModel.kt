@@ -1626,19 +1626,28 @@ open class ChatViewModel @JvmOverloads constructor(
     }
 
     /**
-     * Send a message that failed again, in place.
+     * Send a message that failed again, as the newest message.
      *
-     * Reuses the bubble's own id rather than minting a new one, so the
-     * transcript keeps one entry for one message however many attempts it
-     * takes — and so a second attempt cannot leave the first as an orphan the
-     * user has no way to clear.
+     * The bubble moves to the bottom of the chat: this attempt is sent now, and
+     * its reply lands at the bottom, so left where it failed the question would
+     * sit far above its answer. It moves rather than being copied — the id is
+     * reused, so the transcript keeps one entry for one message however many
+     * attempts it takes, and a second attempt cannot leave the first as an
+     * orphan the user has no way to clear. QUEUED keeps it pinned below the
+     * output of any turn still running (see ChatEventHelpers.isGate); the saved
+     * row follows once it actually goes out (see [sendMessage]).
      */
     fun resendMessage(messageId: String) {
         val failed = _uiState.value.chatItems
             .filterIsInstance<ChatItem.User>()
             .firstOrNull { it.id == messageId && it.state == UserMessageState.FAILED } ?: return
 
-        setUserMessageState(messageId, UserMessageState.QUEUED)
+        _uiState.update { state ->
+            state.copy(
+                chatItems = state.chatItems.filterNot { it.id == messageId } +
+                    failed.copy(state = UserMessageState.QUEUED)
+            )
+        }
         sendMessage(
             content = failed.content,
             images = failed.images,
@@ -1820,7 +1829,13 @@ open class ChatViewModel @JvmOverloads constructor(
                 // waiting on* — the pinning below keeps the live list right,
                 // but the persisted order won, so the pair rendered as two
                 // questions followed by two answers.
-                if (echoUserMessage) conversationHistory.persistMessage(userItem, targetSessionId)
+                if (echoUserMessage) {
+                    conversationHistory.persistMessage(userItem, targetSessionId)
+                } else if (messageId != null) {
+                    // A resend: the bubble already moved to the bottom, and
+                    // the saved row has to follow or a reload puts it back.
+                    conversationHistory.moveMessageToEnd(userItem, targetSessionId)
+                }
                 // A resend (messageId given) parked its bubble as QUEUED before
                 // getting here, so it has to be settled even when nothing else
                 // flagged it — otherwise it would stay QUEUED after delivery.
@@ -1837,11 +1852,15 @@ open class ChatViewModel @JvmOverloads constructor(
                 sendWhenTheAgentIsIdle(
                     canRideRunningTurn = !payload.hasAttachments,
                     onHeldTooLong = {
-                        // put() never runs for this message, and a resend skips saving
-                        // (echoUserMessage = false), so this is the only place it gets
-                        // saved. Without it, reopening the app shows the agent's answer
+                        // put() never runs for this message, so this is the only place
+                        // it gets saved — or, for a resend, moved to where its bubble
+                        // now is. Without it, reopening the app shows the agent's answer
                         // with no question above it.
-                        if (echoUserMessage) conversationHistory.persistMessage(userItem, targetSessionId)
+                        if (echoUserMessage) {
+                            conversationHistory.persistMessage(userItem, targetSessionId)
+                        } else if (messageId != null) {
+                            conversationHistory.moveMessageToEnd(userItem, targetSessionId)
+                        }
                         setUserMessageState(userId, UserMessageState.FAILED)
                     },
                     send = put

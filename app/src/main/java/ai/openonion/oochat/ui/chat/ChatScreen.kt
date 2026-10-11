@@ -5,10 +5,12 @@ import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.SessionModes
 import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.ui.chat.components.ChatTopBar
+import ai.openonion.oochat.ui.chat.components.FailedMessagesBar
 import ai.openonion.oochat.ui.chat.components.InputBar
 import ai.openonion.oochat.ui.chat.components.LowBalanceBar
 import ai.openonion.oochat.ui.chat.components.PlanPanel
 import ai.openonion.oochat.ui.chat.components.VoiceInputState
+import ai.openonion.oochat.ui.chat.components.failedUserMessages
 import ai.openonion.oochat.ui.common.appViewModel
 import ai.openonion.oochat.ui.components.ConnectionBanner
 import ai.openonion.oochat.ui.navigation.DrawerAgentSection
@@ -367,6 +369,15 @@ fun ChatScreen(
                     onExecute = viewModel::executeTool
                 )
             }
+
+            // Beside the composer for the same reason as LowBalanceBar below: a
+            // failed bubble far up the transcript is one the user has to go and
+            // find. The bubble keeps its own retry.
+            val failedMessages = remember(uiState.chatItems) { uiState.chatItems.failedUserMessages() }
+            FailedMessagesBar(
+                failed = failedMessages,
+                onRetry = viewModel::resendMessage
+            )
 
             // With the composer, not in the transcript: the transcript scrolls
             // away and this is the one notice that has to still be there when

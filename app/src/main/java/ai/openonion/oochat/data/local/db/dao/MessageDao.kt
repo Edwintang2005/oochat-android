@@ -62,6 +62,14 @@ interface MessageDao {
     suspend fun getTimestampById(id: String): Long?
 
     /**
+     * Restamps one row, which moves it in the list. The deliberate exception
+     * to [getTimestampById]'s rule: a failed message the user resends is sent
+     * now, and belongs above the reply it is about to get.
+     */
+    @Query("UPDATE chat_messages SET timestamp = :timestamp WHERE id = :id")
+    suspend fun updateTimestamp(id: String, timestamp: Long)
+
+    /**
      * Which session already owns this id, or null if it hasn't been
      * persisted yet. Content-derived ids can collide across sessions (a
      * `session_sync` replay landing in a new conversation); callers use
