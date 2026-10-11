@@ -43,6 +43,7 @@ class ConnectToAgentUseCaseTest {
     private class FakeConnectionRepository : ConnectionRepository {
         val state = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
         override val connectionState: StateFlow<ConnectionState> = state
+        override var hasConnectedThisAttempt = false
         override val agentProfile: StateFlow<ai.openonion.oochat.domain.model.AgentLiveProfile?> =
             MutableStateFlow(null)
         override val dashboardHtml: StateFlow<String?> = MutableStateFlow(null)
@@ -59,6 +60,7 @@ class ConnectToAgentUseCaseTest {
         override suspend fun connect(agentAddress: String, conversationId: String?, directUrl: String?) {
             connectCount++
             connectedAddresses += agentAddress
+            hasConnectedThisAttempt = false
             state.value = ConnectionState.Connecting
             val behavior = connectBehaviors.getOrNull(connectCount - 1) ?: connectBehaviors.lastOrNull()
             behavior?.invoke()
@@ -157,6 +159,25 @@ override suspend fun disconnect() {
 
         assertTrue(connected)
         assertEquals(1, fakeRepository.connectCount)
+        assertEquals(0, fakeRepository.resetCount)
+    }
+
+    @Test
+    fun `a connection that drops right after connecting is not retried as a failed attempt`() = runTest(testDispatcher) {
+        // W16AAPPLE-94: CONNECTED, then a normal close before the use case
+        // next looks at the state. The attempt worked; a second one would
+        // open a connection the user never asked for, without last_msg_id.
+        val useCase = newUseCase()
+        fakeRepository.connectBehaviors.add {
+            fakeRepository.hasConnectedThisAttempt = true
+            fakeRepository.state.value = ConnectionState.Connected(address = validAddress)
+            fakeRepository.state.value = ConnectionState.Disconnected
+        }
+
+        val connected = useCase.connect(validAddress)
+
+        assertTrue(connected)
+        assertEquals("no second attempt", 1, fakeRepository.connectCount)
         assertEquals(0, fakeRepository.resetCount)
     }
 

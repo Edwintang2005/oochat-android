@@ -152,7 +152,8 @@ class ConnectionRepositoryImpl(
     }
 
     // Reset at the top of every connect() call — distinguishes a genuine connect-time failure from a business-logic ERROR on an already-established session. See the ConnectionEvent.ConnectionError branch below for the full rationale.
-    private var hasConnectedThisAttempt = false
+    @Volatile override var hasConnectedThisAttempt = false
+        private set
 
     // Guards the teardown-then-rebuild section of connect() below — without
     // it, two near-simultaneous calls (e.g. a double-tapped Reconnect banner
