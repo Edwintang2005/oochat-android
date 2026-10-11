@@ -21,6 +21,7 @@ import ai.openonion.oochat.domain.model.Role
 import ai.openonion.oochat.domain.model.ToolStatus
 import ai.openonion.oochat.domain.model.isInProgress
 import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCase
+import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCaseContract
 import ai.openonion.oochat.domain.usecase.ConversationHistoryUseCase
 import ai.openonion.oochat.domain.usecase.PersistenceTransaction
 import ai.openonion.oochat.knownIssue
@@ -35,7 +36,7 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
@@ -200,6 +201,20 @@ class RelayFailoverTest {
             .build()
     }
 
+    /**
+     * The connection as the screen sees it, counting connect calls that have
+     * returned. A connect call decides it failed by sampling the state, so
+     * breaking the relay before it has returned turns the break into a failed
+     * first attempt and a fresh connection.
+     */
+    private class CountedConnect(
+        private val inner: ConnectToAgentUseCase
+    ) : ConnectToAgentUseCaseContract by inner {
+        val finished = java.util.concurrent.atomic.AtomicInteger()
+        override suspend fun connect(agentAddress: String, conversationId: String?, directUrl: String?): Boolean =
+            inner.connect(agentAddress, conversationId, directUrl).also { finished.incrementAndGet() }
+    }
+
     /** One launch of the app, wired as DefaultAppContainer wires it. */
     private inner class App {
         val db: AppDatabase = Room.databaseBuilder(application, AppDatabase::class.java, DB_NAME)
@@ -241,10 +256,11 @@ class RelayFailoverTest {
                 )
             }
         )
+        val connectCalls = CountedConnect(connection)
         val vm = ChatViewModel(
             application = application,
             agentDiscovery = AgentDiscoveryService(),
-            connectUseCase = connection,
+            connectUseCase = connectCalls,
             agentRepository = agents,
             messageRepository = messages,
             conversationHistory = ConversationHistoryUseCase(
@@ -260,7 +276,11 @@ class RelayFailoverTest {
         val state: ConnectionState get() = vm.connectionState.value
     }
 
-    private val online = MutableStateFlow(true)
+    /**
+     * The phone's network. A SharedFlow, not a StateFlow, so the screen sees
+     * every change: a StateFlow could hand it only the last of an off-on pair.
+     */
+    private val online = MutableSharedFlow<Boolean>(replay = 1).apply { tryEmit(true) }
     private val network = object : NetworkMonitor {
         override val isOnline = online
     }
@@ -372,7 +392,9 @@ class RelayFailoverTest {
             )
         )
         app.vm.connectToAgent(agent)
-        pumpUntil("the app to connect through the relay") { relay.connects.size == 1 && app.connection.isConnected() }
+        pumpUntil("the app to connect through the relay") {
+            relay.connects.size == 1 && app.connection.isConnected() && app.connectCalls.finished.get() == 1
+        }
 
         app.vm.sendMessage(question)
         pumpUntil("INPUT to reach the Host") { relay.inputs.size == 1 }
@@ -539,9 +561,8 @@ class RelayFailoverTest {
 
         // The relay is back; the phone tells the app its network is too.
         relay.refuseUpgrades = 0
-        online.value = false
-        pumpUntil("the offline flag to reach the app") { true }
-        online.value = true
+        online.emit(false)
+        online.emit(true)
 
         pumpUntil("the retry to CONNECT") { relay.connects.size == 2 }
         assertResumedThroughRelay(conversation)
