@@ -9,6 +9,108 @@ For the complete server-side contract, see
 `connectonion-self-deploy/docs/network/websocket-protocol.md`. That repository
 is an internal reference implementation, not an Android project dependency.
 
+## OIP conformance status
+
+This Android client currently targets the OIP 0.1 WebSocket profile. The
+conformance checklist records the frames and lifecycle behaviors implemented by
+the client, together with automated evidence for each status.
+
+- **Supported** means the frame or behavior is implemented and covered by tests.
+- **Partial** means it is recognized but intentionally limited or only partly
+  represented by the Android client.
+- **Missing** means it is defined by the referenced protocol profile but is not
+  implemented here.
+
+OIP 0.2 has not yet been adopted by the Android client. Its status is recorded
+as missing/deferred until version negotiation, frame schemas, and compatibility
+tests are implemented.
+
+The authoritative ConnectOnion OIP implementation reference is the
+[OIP network package](https://github.com/openonion/connectonion/tree/main/connectonion/network/oip).
+
+### Client-to-server frame checklist
+
+| Frame | Status | Evidence |
+| --- | --- | --- |
+| `CONNECT` | Supported | [`OutgoingMessagesTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/OutgoingMessagesTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `INPUT` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `EXEC` | Supported | [`OutgoingMessagesTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/OutgoingMessagesTest.kt), [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `PONG` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `ASK_USER_RESPONSE` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `APPROVAL_RESPONSE` | Supported | [`OutgoingMessagesTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/OutgoingMessagesTest.kt), [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `INTERRUPT` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `PLAN_REVIEW_RESPONSE` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `ULW_RESPONSE` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `mode_change` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `ONBOARD_SUBMIT` | Supported | [`OutgoingMessagesTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/OutgoingMessagesTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `SESSION_STATUS` request | Supported | [`OutgoingMessagesTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/OutgoingMessagesTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| OIP 0.2 descriptor | Missing / deferred | No Android implementation or compatibility test |
+
+### Server-to-client frame checklist
+
+| Frame | Status | Evidence |
+| --- | --- | --- |
+| `PING` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `CONNECTED` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `AGENT_PROFILE` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `DASHBOARD_SNAPSHOT` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `llm_call` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `llm_result` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `thinking` | Supported | [`StreamingFramesSpecTest`](../app/src/test/java/ai/openonion/oochat/network/StreamingFramesSpecTest.kt) |
+| `tool_call` | Supported | [`StreamingFramesSpecTest`](../app/src/test/java/ai/openonion/oochat/network/StreamingFramesSpecTest.kt) |
+| `tool_result` | Supported | [`StreamingFramesSpecTest`](../app/src/test/java/ai/openonion/oochat/network/StreamingFramesSpecTest.kt) |
+| `plan` | Supported | [`StreamingFramesSpecTest`](../app/src/test/java/ai/openonion/oochat/network/StreamingFramesSpecTest.kt) |
+| `agent_image` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `assistant` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `session_sync` | Partial | [`ProtocolParserSessionSyncTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserSessionSyncTest.kt); assistant messages are replayed, while other session entries are not rendered as separate items |
+| `user_input` | Partial by design | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt); ignored because the local user message is authoritative |
+| `ask_user` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `approval_needed` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `ONBOARD_REQUIRED` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `ONBOARD_SUCCESS` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `intent` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `eval` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `compact` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `tool_blocked` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `plan_review` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `files_received` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `diff_preview` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `ulw_turns_reached` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `mode_changed` | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt) |
+| `RUNTIME_INPUT_ACK` | Supported | [`ProtocolParserRuntimeInputTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserRuntimeInputTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `OUTPUT` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `EXEC_RESULT` | Supported | [`ProtocolParserExecTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserExecTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| `ERROR` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`ProtocolParserVersionRejectionTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserVersionRejectionTest.kt), [`ProtocolParserRuntimeInputTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserRuntimeInputTest.kt) |
+| `SESSION_STATUS` response | Supported | [`ProtocolParserStatusEventsTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserStatusEventsTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+
+### Lifecycle and security evidence
+
+| Capability | Status | Evidence |
+| --- | --- | --- |
+| OIP 0.1 descriptor is sent in `CONNECT` | Supported | [`OutgoingMessagesTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/OutgoingMessagesTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| Incompatible protocol versions fail once without a reconnect loop | Supported | [`ProtocolParserVersionRejectionTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserVersionRejectionTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt), [`ConnectToAgentUseCaseTest`](../app/src/test/java/ai/openonion/oochat/domain/usecase/ConnectToAgentUseCaseTest.kt) |
+| `signed_commands` capability is enabled by `CONNECT` | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| Signed command payloads contain a nonce and timestamp | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| Signed command replay and tampering are rejected | Supported | [`SignedCommandTest`](../app/src/test/java/ai/openonion/oochat/data/protocol/SignedCommandTest.kt) |
+| `session_id` is restored and sent on reconnect | Supported | [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt), [`ConnectionRepositorySessionPersistenceTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositorySessionPersistenceTest.kt) |
+| `last_msg_id` is sent for replay recovery | Supported | [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt), [`ProtocolParserLiveFlowTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserLiveFlowTest.kt) |
+| `server_newer` session data is merged | Supported | [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt), [`ChatViewModelTest`](../app/src/test/java/ai/openonion/oochat/ui/chat/ChatViewModelTest.kt) |
+| Reconnect retries use bounded backoff and stop after the attempt limit | Supported | [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
+| Runtime input acknowledgement is handled without ending the turn | Supported | [`ProtocolParserRuntimeInputTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserRuntimeInputTest.kt), [`ChatViewModelTest`](../app/src/test/java/ai/openonion/oochat/ui/chat/ChatViewModelTest.kt) |
+| OIP 0.2 negotiation and frame compatibility | Missing / deferred | No Android implementation or compatibility test |
+
+### Checklist maintenance
+
+Every pull request that changes a wire frame, parser branch, signing rule,
+reconnect rule, or compatibility behavior must update the affected checklist row
+and its evidence links.
+
+A frame or behavior may be marked **Supported** only when its implementation and
+automated evidence are present in the same branch. If support is intentionally
+limited, the row must remain **Partial** and explain the limitation. Deferred
+protocol versions or frames remain **Missing / deferred** until implementation
+and compatibility tests are available.
+
 ## Connection target and lifecycle
 
 The default relay is `Constants.DEFAULT_SERVER_URL`:
