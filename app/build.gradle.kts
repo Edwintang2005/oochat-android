@@ -391,6 +391,9 @@ val regressionSuite = mapOf(
     "session resume" to listOf(
         "ui.chat.ProcessDeathResumeTest",
     ),
+    "relay failover" to listOf(
+        "ui.chat.RelayFailoverTest",
+    ),
 )
 val regressionOnly = providers.gradleProperty("regression").isPresent
 tasks.withType<Test>().configureEach {

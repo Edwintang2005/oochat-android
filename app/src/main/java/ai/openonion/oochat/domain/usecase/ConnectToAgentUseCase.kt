@@ -13,6 +13,8 @@ import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.PlanEntry
+import ai.openonion.oochat.domain.model.ServerSessionStatus
+import ai.openonion.oochat.domain.model.SessionModes
 import ai.openonion.oochat.network.AgentConnection
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.InMemoryPendingMessageSink
@@ -85,6 +87,12 @@ class ConnectToAgentUseCase(
 
     override val modePending: StateFlow<Boolean>
         get() = getOrCreateRepository().modePending
+
+    override val sessionModes: StateFlow<SessionModes>
+        get() = getOrCreateRepository().sessionModes
+
+    override val hostSessionStatus: StateFlow<ServerSessionStatus>
+        get() = getOrCreateRepository().hostSessionStatus
 
     override val dashboardHtml: StateFlow<String?>
         get() = getOrCreateRepository().dashboardHtml
@@ -199,8 +207,13 @@ class ConnectToAgentUseCase(
                     // a "stale session" error as a fast-fail so the outer
                     // connect() can drop the persisted sessionId and retry
                     // without waiting the full 30s.
-                    while (repo.connectionState.value is ConnectionState.Connecting ||
-                           repo.connectionState.value is ConnectionState.Reconnecting) {
+                    // Reaching CONNECTED is the verdict, not still being on it:
+                    // a drop straight after is the connection's own reconnect to
+                    // handle, and a second attempt would start over without
+                    // last_msg_id (W16AAPPLE-94).
+                    while (!repo.hasConnectedThisAttempt &&
+                           (repo.connectionState.value is ConnectionState.Connecting ||
+                            repo.connectionState.value is ConnectionState.Reconnecting)) {
                         val err = (repo.connectionState.value as? ConnectionState.Error)?.message
                         if (err != null && isStaleSessionError(err)) {
                             FileLogger.w(
@@ -212,7 +225,7 @@ class ConnectToAgentUseCase(
                         }
                         delay(100)
                     }
-                    repo.connectionState.value is ConnectionState.Connected
+                    repo.hasConnectedThisAttempt || repo.connectionState.value is ConnectionState.Connected
                 } ?: run {
                     FileLogger.e(LogTags.CONNECT_USE_CASE, "Connection timeout after ${connectionTimeoutMs}ms")
                     repo.disconnect()

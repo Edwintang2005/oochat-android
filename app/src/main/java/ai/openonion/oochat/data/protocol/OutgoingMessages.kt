@@ -221,6 +221,14 @@ data class UlwResponse(
  *
  * The server acknowledges by sending a `mode_changed` notification back
  * (approval.py:341, ulw.py:86) — see [ChatItem.ModeChangedItem][ai.openonion.oochat.domain.model.ChatItem.ModeChangedItem].
+ *
+ * A ConnectOnion 1.7+ Host that advertises `session_modes` on CONNECTED
+ * takes the same frame itself instead (ws_router/mode.py's
+ * handle_mode_change): [mode] is "read-only" | "auto" | "full-access", it is
+ * accepted only while the session is idle, and the answer is immediate —
+ * `mode_changed` with `mode`, `turns_left` and `session_id`, or an `ERROR`
+ * (-32000 busy, -32602 unavailable mode, -32002 no session). [turns] is
+ * never sent there: the Host grants full access's budget itself.
  */
 @Serializable
 data class ModeChangeMessage(

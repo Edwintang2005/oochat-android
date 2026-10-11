@@ -1,8 +1,10 @@
 package ai.openonion.oochat.network
 
+import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.CompactStatus
 import ai.openonion.oochat.domain.model.EvalStatus
+import ai.openonion.oochat.domain.model.HostModeState
 import ai.openonion.oochat.domain.model.IntentStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -378,5 +380,90 @@ class ProtocolParserStatusEventsTest {
         val result = parse("""{"type":"SESSION_STATUS","session_id":"sess-1"}""")
 
         assertEquals(ConnectionEvent.Unknown, result.event)
+    }
+
+    // ── Host-managed mode frames (W16AAPPLE-18) ────────────────────────
+    // ws_router/mode.py's mode_changed, full_access.py's mode_budget_changed,
+    // and CONNECTED's session_modes from websocket-protocol.md.
+
+    @Test
+    fun `the Host's mode_changed carries turns_left`() {
+        val result = parse("""{"type":"mode_changed","mode":"full-access","turns_left":20,"session_id":"s1"}""")
+
+        val item = (result.event as ConnectionEvent.ChatItemReceived).item as ChatItem.ModeChangedItem
+        assertEquals("full-access", item.mode)
+        assertEquals(20, item.turnsLeft)
+    }
+
+    @Test
+    fun `a mode_changed with turns_left null has no budget`() {
+        val result = parse("""{"type":"mode_changed","mode":"auto","turns_left":null,"triggered_by":"full_access_expired"}""")
+
+        val item = (result.event as ConnectionEvent.ChatItemReceived).item as ChatItem.ModeChangedItem
+        assertNull(item.turnsLeft)
+        assertEquals("full_access_expired", item.triggeredBy)
+    }
+
+    @Test
+    fun `mode_budget_changed becomes a ModeBudgetChanged event, not a chat item`() {
+        val result = parse(
+            """{"type":"mode_budget_changed","id":"b1","mode":"full-access","turns_left":4,"previous_turns_left":5}"""
+        )
+
+        assertEquals(ConnectionEvent.ModeBudgetChanged(ApprovalMode.FULL_ACCESS, 4), result.event)
+        assertEquals("b1", result.msgId)
+    }
+
+    @Test
+    fun `mode_budget_changed naming no known mode is Unknown but still moves the cursor`() {
+        val result = parse("""{"type":"mode_budget_changed","id":"b2","mode":"warp","turns_left":4}""")
+
+        assertEquals(ConnectionEvent.Unknown, result.event)
+        assertEquals("b2", result.msgId)
+    }
+
+    @Test
+    fun `CONNECTED's session_modes decodes into the Host's mode state`() {
+        val result = parse(
+            """{"type":"CONNECTED","session_id":"s1","status":"connected","session_modes":{"currentModeId":"full-access",
+              |"turnsLeft":9,"availableModes":[{"id":"read-only","name":"Read only"},{"id":"auto","name":"Auto"},
+              |{"id":"full-access","name":"Full access"}]}}""".trimMargin()
+        )
+
+        val modes = (result.event as ConnectionEvent.Connected).modes
+        assertEquals(
+            HostModeState(
+                current = ApprovalMode.FULL_ACCESS,
+                turnsLeft = 9,
+                available = listOf(ApprovalMode.READ_ONLY, ApprovalMode.AUTO, ApprovalMode.FULL_ACCESS)
+            ),
+            modes
+        )
+    }
+
+    @Test
+    fun `a CONNECTED without session_modes has none`() {
+        val result = parse("""{"type":"CONNECTED","session_id":"s1","status":"new"}""")
+
+        assertNull((result.event as ConnectionEvent.Connected).modes)
+    }
+
+    @Test
+    fun `an odd session_modes costs only the odd values, never the CONNECTED frame`() {
+        val result = parse(
+            """{"type":"CONNECTED","session_id":"s1","status":"connected","session_modes":{"currentModeId":"warp",
+              |"turnsLeft":"lots","availableModes":[{"id":"auto"},{"id":"warp"},"read-only",{"name":"no id"}]}}""".trimMargin()
+        )
+
+        val event = result.event as ConnectionEvent.Connected
+        assertEquals("s1", event.sessionId)
+        assertEquals(HostModeState(current = null, turnsLeft = null, available = listOf(ApprovalMode.AUTO)), event.modes)
+    }
+
+    @Test
+    fun `a session_modes that is not an object is ignored`() {
+        val result = parse("""{"type":"CONNECTED","session_id":"s1","session_modes":"auto"}""")
+
+        assertNull((result.event as ConnectionEvent.Connected).modes)
     }
 }

@@ -805,9 +805,12 @@ class AgentConnection(
      * [respond]/[respondToApproval]: the server forwards this straight into
      * the running agent's mailbox, no CONNECTED handshake of its own needed.
      *
-     * @param mode "safe" | "plan" | "accept_edits" | "ulw"
+     * @param mode "safe" | "plan" | "accept_edits" | "ulw" on a legacy Host;
+     *   "read-only" | "auto" | "full-access" on a Host that advertised
+     *   `session_modes`, which answers at once with `mode_changed` or `ERROR`.
      * @param turns ULW's autonomous-turn budget; ignored by the server for
-     *   every other mode, so callers pass null there.
+     *   every other mode, so callers pass null there. Never sent for
+     *   full access: the Host grants that budget, no client field can.
      */
     fun setMode(mode: String, turns: Int? = null) {
         FileLogger.i(LogTags.AGENT_CONN, "mode_change → $mode${turns?.let { " ($it turns)" } ?: ""}")
@@ -1548,7 +1551,8 @@ class AgentConnection(
                             sessionId = result.updateSessionId,
                             session = result.updateSession,
                             status = event.status,
-                            serverNewer = event.serverNewer
+                            serverNewer = event.serverNewer,
+                            modes = event.modes
                         )
                     )
                 }
@@ -1685,6 +1689,10 @@ class AgentConnection(
                 }
                 is ConnectionEvent.SessionStatusReceived -> {
                     FileLogger.i(LogTags.AGENT_CONN, "SESSION_STATUS ← ${event.status}")
+                    _events.tryEmit(event)
+                }
+                is ConnectionEvent.ModeBudgetChanged -> {
+                    FileLogger.i(LogTags.AGENT_CONN, "mode_budget_changed ← ${event.mode.wire} (${event.turnsLeft} turns left)")
                     _events.tryEmit(event)
                 }
                 is ConnectionEvent.PlanUpdated -> {

@@ -22,6 +22,8 @@ import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.PlanEntry
 import ai.openonion.oochat.domain.model.ServerSessionStatus
+import ai.openonion.oochat.domain.model.SessionActivity
+import ai.openonion.oochat.domain.model.SessionModes
 import ai.openonion.oochat.domain.model.SessionUsageTotals
 import ai.openonion.oochat.domain.model.ThinkingStatus
 import ai.openonion.oochat.domain.model.UserMessageState
@@ -316,6 +318,10 @@ open class ChatViewModel @JvmOverloads constructor(
     // we asked for — see ConnectionRepository.modePending's doc.
     val modePending: StateFlow<Boolean> = connectUseCase.modePending
 
+    // Which modes the chip and sheet may offer, and whether the Host owns
+    // them — see ConnectionRepository.sessionModes.
+    val sessionModes: StateFlow<SessionModes> = connectUseCase.sessionModes
+
     // The agent's own Home page, or null when it hasn't sent one for this
     // connection — which is also what gates the top bar's entry point, since
     // nothing on the wire says "this agent has no dashboard". Untrusted
@@ -582,6 +588,30 @@ open class ChatViewModel @JvmOverloads constructor(
      * at that point.
      */
     private val serverTurnActive = MutableStateFlow(false)
+
+    /**
+     * The top bar's status line: running, waiting for you, idle, or session not found. See
+     * [SessionActivity.of] for how this screen's own knowledge and the Host's last word
+     * ([ConnectToAgentUseCaseContract.hostSessionStatus]: CONNECTED's status and each
+     * SESSION_STATUS reply) combine. Null while not connected.
+     *
+     * Declared below [serverTurnActive], which it reads, and eager for the same reason as
+     * [isAgentWorking].
+     */
+    val sessionActivity: StateFlow<SessionActivity?> = combine(
+        connectionState,
+        serverTurnActive,
+        isAgentWorking,
+        chatAwaitsUser,
+        connectUseCase.hostSessionStatus
+    ) { state, ownTurn, onScreen, awaitsUser, host ->
+        SessionActivity.of(
+            connected = state is ConnectionState.Connected,
+            turnRunning = ownTurn || onScreen,
+            awaitsUser = awaitsUser,
+            host = host
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
      * The messages handed to the connection while the socket was down. The connection parks them in
@@ -2460,21 +2490,26 @@ open class ChatViewModel @JvmOverloads constructor(
     }
 
     /**
-     * Advance the mode chip one step through [ApprovalMode.CYCLE].
+     * Advance the mode chip one step through [SessionModes.cycle] — the
+     * legacy [ApprovalMode.CYCLE], or the modes the Host advertised.
      *
-     * This is the *only* path a tap can take, and it cannot reach
-     * [ApprovalMode.ULW] — see [ApprovalMode.CYCLE]'s doc. Entering ULW goes
-     * through [setApprovalMode] with an explicit turn budget instead. From
-     * ULW itself this lands on the first cycle entry, which is the exit the
-     * chip offers while ULW is active.
+     * This is the *only* path a tap can take, and it cannot reach an
+     * unattended mode ([ApprovalMode.ULW], [ApprovalMode.FULL_ACCESS]) — see
+     * [ApprovalMode.CYCLE]'s doc. Entering one goes through [setApprovalMode]
+     * from the sheet instead. From one, this lands on [SessionModes.default]
+     * (safe, or the Host's auto), which is the exit the chip offers while it
+     * is active.
      */
     fun cycleApprovalMode() {
-        setApprovalMode(approvalMode.value.next())
+        val modes = sessionModes.value
+        val current = approvalMode.value
+        setApprovalMode(if (current.isUnattended) modes.default else current.next(modes.cycle))
     }
 
     /**
      * Switch to an explicitly chosen mode. [turns] is ULW's autonomous-turn
-     * budget and is ignored by the server for every other mode.
+     * budget and is ignored by the server for every other mode. A mode this
+     * connection does not offer is dropped by the repository.
      */
     fun setApprovalMode(mode: ApprovalMode, turns: Int? = null) {
         launchScoped { connectUseCase.setMode(mode, turns) }

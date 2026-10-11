@@ -232,6 +232,7 @@ internal fun ModeChangedDivider(item: ChatItem.ModeChangedItem) {
         Text(
             text = buildString {
                 append("Switched to ${modeLabel(item.mode)}")
+                item.turnsLeft?.let { append(" · $it turns") }
                 triggeredBySource(item.triggeredBy)?.let { append(" · $it") }
             },
             style = MaterialTheme.typography.labelSmall,
@@ -247,6 +248,9 @@ private fun modeLabel(mode: String): String = when (mode) {
     "plan" -> "plan mode"
     "accept_edits" -> "accept-edits mode"
     "ulw" -> "ULW mode"
+    "read-only" -> "read-only mode"
+    "auto" -> "auto mode"
+    "full-access" -> "full-access mode"
     else -> "$mode mode"
 }
 
@@ -257,6 +261,7 @@ private fun triggeredBySource(triggeredBy: String?): String? = when (triggeredBy
     "user" -> "you"
     "agent" -> "agent"
     "ulw_checkpoint" -> "checkpoint"
+    "full_access_expired" -> "turns used up"
     else -> triggeredBy
 }
 

@@ -7,9 +7,11 @@ import ai.openonion.oochat.data.protocol.SessionState
 import ai.openonion.oochat.data.protocol.SkillWire
 import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.AgentSkill
+import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.CompactStatus
 import ai.openonion.oochat.domain.model.EvalStatus
+import ai.openonion.oochat.domain.model.HostModeState
 import ai.openonion.oochat.domain.model.IntentStatus
 import ai.openonion.oochat.domain.model.PlanEntry
 import ai.openonion.oochat.domain.model.PlanPriority
@@ -23,10 +25,12 @@ import ai.openonion.oochat.util.FileLogger
 import ai.openonion.oochat.util.LogSanitizer
 import ai.openonion.oochat.util.LogTags
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 
 /**
  * Pure function for parsing WebSocket messages into ConnectionEvents.
@@ -98,7 +102,8 @@ object ProtocolParser {
                     sessionId = event.sessionId,
                     session = event.session,
                     status = ServerSessionStatus.fromWire(event.status),
-                    serverNewer = event.serverNewer == true
+                    serverNewer = event.serverNewer == true,
+                    modes = decodeSessionModes(event.sessionModes)
                 ),
                 updateSession = event.session,
                 updateSessionId = event.sessionId
@@ -585,10 +590,26 @@ object ProtocolParser {
                         ChatItem.ModeChangedItem(
                             id = event.id ?: generateId(),
                             mode = mode,
-                            triggeredBy = event.triggeredBy
+                            triggeredBy = event.triggeredBy,
+                            turnsLeft = event.turnsLeft
                         )
                     )
                 )
+            }
+
+            // Full access's per-turn countdown (full_access.py's
+            // consume_configured_full_access_turn). Not a chat item: the mode
+            // did not change, only how long it lasts. The expiry itself comes
+            // as a mode_changed back to auto.
+            // A value, not an early return, for a frame naming no known mode:
+            // it is still a log entry, so it must still move the replay cursor.
+            "mode_budget_changed" -> {
+                val mode = event.mode?.let { ApprovalMode.fromWire(it) }
+                if (mode == null) {
+                    ParseResult(event = ConnectionEvent.Unknown)
+                } else {
+                    ParseResult(event = ConnectionEvent.ModeBudgetChanged(mode = mode, turnsLeft = event.turnsLeft))
+                }
             }
 
             // Reply to AgentConnection.querySessionStatus — see
@@ -733,6 +754,22 @@ object ProtocolParser {
             )
         }
         return entries
+    }
+
+    /**
+     * CONNECTED's `session_modes`, or null when it is absent or not an object (a pre-1.7 Host,
+     * or one with mode policy off). Read field by field rather than through a serializer, so one
+     * odd value costs that value and not the catalogue: an unknown `currentModeId` is null, an
+     * unknown `availableModes` id is dropped, and a non-positive `turnsLeft` is null.
+     */
+    fun decodeSessionModes(raw: JsonElement?): HostModeState? {
+        val obj = raw as? JsonObject ?: return null
+        val available = (obj["availableModes"] as? JsonArray).orEmpty().mapNotNull { entry ->
+            ((entry as? JsonObject)?.get("id") as? JsonPrimitive)?.contentOrNull?.let { ApprovalMode.fromWire(it) }
+        }
+        val current = (obj["currentModeId"] as? JsonPrimitive)?.contentOrNull?.let { ApprovalMode.fromWire(it) }
+        val turnsLeft = (obj["turnsLeft"] as? JsonPrimitive)?.intOrNull?.takeIf { it > 0 }
+        return HostModeState(current = current, turnsLeft = turnsLeft, available = available)
     }
 
     /** [decodePlan]'s inverse, for a plan kept on the session it is sent back in. */
@@ -884,7 +921,9 @@ sealed class ConnectionEvent {
         /** What the Host says about the session just joined. */
         val status: ServerSessionStatus = ServerSessionStatus.UNKNOWN,
         /** The Host's copy of the session was newer than the one sent; [session] is the Host's. */
-        val serverNewer: Boolean = false
+        val serverNewer: Boolean = false,
+        /** `session_modes`, or null from a Host that manages no modes — see [ai.openonion.oochat.domain.model.SessionModes]. */
+        val modes: HostModeState? = null
     ) : ConnectionEvent()
     /**
      * @param fromSessionSnapshot true when this item came out of a
@@ -954,6 +993,12 @@ sealed class ConnectionEvent {
      * values come from.
      */
     data class SessionStatusReceived(val sessionId: String?, val status: String) : ConnectionEvent()
+
+    /**
+     * `mode_budget_changed`: an unattended mode's turn budget counted down by one finished turn.
+     * Connection state, like [SessionStatusReceived]; the mode itself is unchanged.
+     */
+    data class ModeBudgetChanged(val mode: ApprovalMode, val turnsLeft: Int?) : ConnectionEvent()
 
     /**
      * `RUNTIME_INPUT_ACK` — the host accepted an INPUT that arrived while the

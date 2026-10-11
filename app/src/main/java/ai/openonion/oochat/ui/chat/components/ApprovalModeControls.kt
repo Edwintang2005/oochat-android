@@ -1,6 +1,7 @@
 package ai.openonion.oochat.ui.chat.components
 
 import ai.openonion.oochat.domain.model.ApprovalMode
+import ai.openonion.oochat.domain.model.SessionModes
 import ai.openonion.oochat.ui.theme.ConnectOnionTheme
 import ai.openonion.oochat.ui.theme.spacing
 import androidx.compose.foundation.BorderStroke
@@ -26,10 +27,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
@@ -63,14 +66,17 @@ import androidx.compose.ui.unit.dp
  *
  * Two affordances, both Android-native, in place of the web client's
  * hover-tooltip + ⇧Tab + dropdown:
- *  - tapping the chip cycles the three base modes ([ApprovalMode.CYCLE]);
- *  - the trailing tune button opens [ApprovalModeSheet], the only way into ULW.
+ *  - tapping the chip cycles the base modes ([SessionModes.cycle]: the legacy
+ *    three, or the ones the Host advertised minus full access);
+ *  - the trailing tune button opens [ApprovalModeSheet], the only way into an
+ *    unattended mode (ULW, or full access).
  *
  * The modes are told apart by icon, label and weight, never by hue. The one
- * colored state is ULW: the whole chip turns `error` because the agent is
- * running every tool without asking, and nothing else in this control may
- * compete with that signal. While ULW is active the chip stops cycling and
- * offers exit only.
+ * colored state is an unattended mode ([ApprovalMode.isUnattended]): the whole
+ * chip turns `error` because the agent is running every tool without asking,
+ * and nothing else in this control may compete with that signal. While one is
+ * active the chip stops cycling and offers exit only, and shows full access's
+ * remaining turns ([turnsLeft]) when the Host says.
  *
  * [pending] marks a request the agent hasn't confirmed yet — dimmed content
  * plus a small static sync glyph, no new hue. Static rather than an
@@ -92,18 +98,19 @@ fun ApprovalModeChip(
     onCycle: () -> Unit,
     onOpenSheet: () -> Unit,
     pending: Boolean = false,
+    turnsLeft: Int? = null,
     modifier: Modifier = Modifier
 ) {
-    val isUlw = mode == ApprovalMode.ULW
+    val isUnattended = mode.isUnattended
 
     val baseContentColor = when {
         !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-        isUlw -> MaterialTheme.colorScheme.error
+        isUnattended -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurface
     }
     val contentColor = if (pending) baseContentColor.copy(alpha = baseContentColor.alpha * 0.7f) else baseContentColor
     val containerColor =
-        if (isUlw) MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+        if (isUnattended) MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
         else MaterialTheme.colorScheme.surfaceContainerHighest
 
     Row(
@@ -116,7 +123,7 @@ fun ApprovalModeChip(
             shape = RoundedCornerShape(50),
             color = containerColor,
             contentColor = contentColor,
-            border = if (isUlw) BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)) else null
+            border = if (isUnattended) BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)) else null
         ) {
             Row(
                 modifier = Modifier
@@ -131,7 +138,11 @@ fun ApprovalModeChip(
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
-                    text = if (isUlw) "${mode.shortLabel} · exit" else mode.shortLabel,
+                    text = when {
+                        !isUnattended -> mode.shortLabel
+                        turnsLeft != null -> "${mode.shortLabel} · $turnsLeft left · exit"
+                        else -> "${mode.shortLabel} · exit"
+                    },
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Medium
                 )
@@ -168,10 +179,14 @@ fun ApprovalModeChip(
 }
 
 /**
- * The full mode picker. The three base modes are plain rows; ULW is below a
- * divider in its own danger-styled block with an editable turn budget,
- * because it is the one mode that hands the agent every tool with no
- * approval gate.
+ * The full mode picker. The base modes ([SessionModes.cycle]) are plain rows;
+ * the unattended mode the connection offers — ULW on a legacy Host, full
+ * access on one that advertised it — is below a divider in its own
+ * danger-styled block, because it is the one mode that hands the agent every
+ * tool with no approval gate. Neither block appears when it is not offered.
+ *
+ * ULW's block has an editable turn budget. Full access's has none: the Host
+ * grants that budget and no client field can set it.
  *
  * The budget is a field, not the reference client's hardcoded 100
  * (mode-switcher.tsx:147): the number is how long the agent runs unattended,
@@ -187,12 +202,13 @@ fun ApprovalModeChip(
 fun ApprovalModeSheet(
     current: ApprovalMode,
     onSelect: (ApprovalMode, Int?) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    modes: SessionModes = SessionModes.LEGACY
 ) {
     var turnsText by remember { mutableStateOf(ULW_DEFAULT_TURNS.toString()) }
     val turns = turnsText.toIntOrNull()
     val turnsValid = turns != null && turns > 0
-    val isUlw = current == ApprovalMode.ULW
+    val unattended = modes.available.firstOrNull { it.isUnattended }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -223,7 +239,7 @@ fun ApprovalModeSheet(
             )
             Spacer(Modifier.height(MaterialTheme.spacing.sm))
 
-            ApprovalMode.CYCLE.forEach { mode ->
+            modes.cycle.forEach { mode ->
                 ModeRow(
                     mode = mode,
                     selected = mode == current,
@@ -234,25 +250,30 @@ fun ApprovalModeSheet(
                 )
             }
 
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = MaterialTheme.spacing.md),
-                color = MaterialTheme.colorScheme.outlineVariant
-            )
+            if (unattended != null) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = MaterialTheme.spacing.md),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
 
-            UlwBlock(
-                active = isUlw,
-                turnsText = turnsText,
-                onTurnsChange = { input -> turnsText = input.filter(Char::isDigit).take(4) },
-                turnsValid = turnsValid,
-                onStart = {
-                    onSelect(ApprovalMode.ULW, turns)
-                    onDismiss()
-                },
-                onExit = {
-                    onSelect(ApprovalMode.SAFE, null)
-                    onDismiss()
-                }
-            )
+                UnattendedBlock(
+                    mode = unattended,
+                    active = current == unattended,
+                    exitTo = modes.default,
+                    turnsLeft = modes.turnsLeft,
+                    turnsText = turnsText,
+                    onTurnsChange = { input -> turnsText = input.filter(Char::isDigit).take(4) },
+                    turnsValid = turnsValid,
+                    onStart = {
+                        onSelect(unattended, if (unattended == ApprovalMode.ULW) turns else null)
+                        onDismiss()
+                    },
+                    onExit = {
+                        onSelect(modes.default, null)
+                        onDismiss()
+                    }
+                )
+            }
         }
     }
 }
@@ -302,9 +323,16 @@ private fun ModeRow(mode: ApprovalMode, selected: Boolean, onClick: () -> Unit) 
     }
 }
 
+/**
+ * The danger block for an unattended [mode]. Only ULW asks for a turn budget;
+ * full access shows the one the Host granted ([turnsLeft]) while it is active.
+ */
 @Composable
-private fun UlwBlock(
+private fun UnattendedBlock(
+    mode: ApprovalMode,
     active: Boolean,
+    exitTo: ApprovalMode,
+    turnsLeft: Int?,
     turnsText: String,
     onTurnsChange: (String) -> Unit,
     turnsValid: Boolean,
@@ -324,13 +352,13 @@ private fun UlwBlock(
             horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.sm)
         ) {
             Icon(
-                imageVector = Icons.Default.RocketLaunch,
+                imageVector = mode.icon(),
                 contentDescription = null,
                 modifier = Modifier.size(20.dp),
                 tint = error
             )
             Text(
-                text = ApprovalMode.ULW.label,
+                text = mode.label,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = error
@@ -345,9 +373,19 @@ private fun UlwBlock(
                 tint = error
             )
             Text(
-                text = "Edits files and runs commands without asking, until the turn " +
-                    "budget runs out. Only start this if you are willing to leave the " +
-                    "agent unattended.",
+                text = when {
+                    mode != ApprovalMode.ULW && active && turnsLeft != null ->
+                        "Edits files and runs commands without asking. $turnsLeft " +
+                            "turns left before it returns to ${exitTo.label.lowercase()}."
+                    mode != ApprovalMode.ULW ->
+                        "Edits files and runs commands without asking, for as many turns " +
+                            "as the agent's host allows. Only start this if you are willing " +
+                            "to leave the agent unattended."
+                    else ->
+                        "Edits files and runs commands without asking, until the turn " +
+                            "budget runs out. Only start this if you are willing to leave the " +
+                            "agent unattended."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -365,37 +403,39 @@ private fun UlwBlock(
                     contentColor = error
                 )
             ) {
-                Text("Exit to safe mode")
+                Text("Exit to ${exitTo.label.lowercase()} mode")
             }
         } else {
-            OutlinedTextField(
-                value = turnsText,
-                onValueChange = onTurnsChange,
-                label = { Text("Turns") },
-                supportingText = {
-                    Text(
-                        if (turnsValid) "Pauses for you after this many turns."
-                        else "Enter a turn budget of 1 or more."
-                    )
-                },
-                isError = !turnsValid,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                // The field's focused accent defaults to `primary`, which puts
-                // a second hue inside the one block that is meant to read as a
-                // single danger signal. Re-tinted to `error` so nothing in here
-                // competes with it.
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = error,
-                    focusedLabelColor = error,
-                    cursorColor = error
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(MaterialTheme.spacing.sm))
+            if (mode == ApprovalMode.ULW) {
+                OutlinedTextField(
+                    value = turnsText,
+                    onValueChange = onTurnsChange,
+                    label = { Text("Turns") },
+                    supportingText = {
+                        Text(
+                            if (turnsValid) "Pauses for you after this many turns."
+                            else "Enter a turn budget of 1 or more."
+                        )
+                    },
+                    isError = !turnsValid,
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    // The field's focused accent defaults to `primary`, which puts
+                    // a second hue inside the one block that is meant to read as a
+                    // single danger signal. Re-tinted to `error` so nothing in here
+                    // competes with it.
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = error,
+                        focusedLabelColor = error,
+                        cursorColor = error
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(MaterialTheme.spacing.sm))
+            }
             Button(
                 onClick = onStart,
-                enabled = turnsValid,
+                enabled = mode != ApprovalMode.ULW || turnsValid,
                 modifier = Modifier
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = 48.dp),
@@ -404,7 +444,7 @@ private fun UlwBlock(
                     contentColor = error
                 )
             ) {
-                Text("Start ultra work")
+                Text(if (mode == ApprovalMode.ULW) "Start ultra work" else "Start ${mode.label.lowercase()}")
             }
         }
     }
@@ -423,6 +463,9 @@ private val ApprovalMode.shortLabel: String
         ApprovalMode.PLAN -> "plan"
         ApprovalMode.ACCEPT_EDITS -> "accept edits"
         ApprovalMode.ULW -> "ultra"
+        ApprovalMode.READ_ONLY -> "read only"
+        ApprovalMode.AUTO -> "auto"
+        ApprovalMode.FULL_ACCESS -> "full access"
     }
 
 private val ApprovalMode.label: String
@@ -431,6 +474,9 @@ private val ApprovalMode.label: String
         ApprovalMode.PLAN -> "Plan"
         ApprovalMode.ACCEPT_EDITS -> "Accept edits"
         ApprovalMode.ULW -> "Ultra work"
+        ApprovalMode.READ_ONLY -> "Read only"
+        ApprovalMode.AUTO -> "Auto"
+        ApprovalMode.FULL_ACCESS -> "Full access"
     }
 
 private val ApprovalMode.description: String
@@ -439,6 +485,9 @@ private val ApprovalMode.description: String
         ApprovalMode.PLAN -> "Research first, then approve a plan"
         ApprovalMode.ACCEPT_EDITS -> "Edit files without asking"
         ApprovalMode.ULW -> "Fully autonomous for a set number of turns"
+        ApprovalMode.READ_ONLY -> "Ask before anything that changes files or runs commands"
+        ApprovalMode.AUTO -> "Run routine edits and commands; ask before risky ones"
+        ApprovalMode.FULL_ACCESS -> "Fully autonomous for the turns the host allows"
     }
 
 private fun ApprovalMode.icon(): ImageVector = when (this) {
@@ -446,6 +495,9 @@ private fun ApprovalMode.icon(): ImageVector = when (this) {
     ApprovalMode.PLAN -> Icons.Default.Assignment
     ApprovalMode.ACCEPT_EDITS -> Icons.Default.Bolt
     ApprovalMode.ULW -> Icons.Default.RocketLaunch
+    ApprovalMode.READ_ONLY -> Icons.Default.Visibility
+    ApprovalMode.AUTO -> Icons.Default.Shield
+    ApprovalMode.FULL_ACCESS -> Icons.Default.LockOpen
 }
 
 @Preview(showBackground = true)

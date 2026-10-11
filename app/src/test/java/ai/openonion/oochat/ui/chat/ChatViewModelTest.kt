@@ -26,6 +26,8 @@ import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.Role
 import ai.openonion.oochat.domain.model.ServerSessionStatus
 import ai.openonion.oochat.domain.model.ServerTranscriptEntry
+import ai.openonion.oochat.domain.model.SessionActivity
+import ai.openonion.oochat.domain.model.SessionModes
 import ai.openonion.oochat.domain.model.ThinkingStatus
 import ai.openonion.oochat.domain.model.ToolStatus
 import ai.openonion.oochat.domain.model.UserMessageState
@@ -106,6 +108,12 @@ class ChatViewModelTest {
 
         val _modePending = MutableStateFlow(false)
         override val modePending: StateFlow<Boolean> = _modePending
+
+        val _sessionModes = MutableStateFlow(SessionModes.LEGACY)
+        override val sessionModes: StateFlow<SessionModes> = _sessionModes
+
+        val _hostSessionStatus = MutableStateFlow(ServerSessionStatus.UNKNOWN)
+        override val hostSessionStatus: StateFlow<ServerSessionStatus> = _hostSessionStatus
 
         val setModeCalls = mutableListOf<Pair<ai.openonion.oochat.domain.model.ApprovalMode, Int?>>()
         override suspend fun setMode(mode: ai.openonion.oochat.domain.model.ApprovalMode, turns: Int?) {
@@ -3432,6 +3440,107 @@ class ChatViewModelTest {
 
         assertEquals(ApprovalMode.ULW, vm.approvalMode.value)
         assertTrue(connectUseCase.setModeCalls.isEmpty())
+    }
+
+    // ── Host-managed modes and session activity (W16AAPPLE-18) ─────────
+
+    private val hostModes = SessionModes(
+        available = listOf(ApprovalMode.READ_ONLY, ApprovalMode.AUTO, ApprovalMode.FULL_ACCESS),
+        hostManaged = true
+    )
+
+    @Test
+    fun `on a Host-managed connection the chip cycles the advertised base modes only`() = runTest(testDispatcher) {
+        connectUseCase._sessionModes.value = hostModes
+        connectUseCase._approvalMode.value = ApprovalMode.AUTO
+
+        repeat(4) {
+            vm.cycleApprovalMode()
+            testScheduler.runCurrent()
+        }
+
+        assertEquals(
+            listOf(ApprovalMode.READ_ONLY, ApprovalMode.AUTO, ApprovalMode.READ_ONLY, ApprovalMode.AUTO),
+            connectUseCase.setModeCalls.map { it.first }
+        )
+    }
+
+    @Test
+    fun `the chip exits full access to the Host's default, auto`() = runTest(testDispatcher) {
+        connectUseCase._sessionModes.value = hostModes.copy(turnsLeft = 4)
+        connectUseCase._approvalMode.value = ApprovalMode.FULL_ACCESS
+
+        vm.cycleApprovalMode()
+        testScheduler.runCurrent()
+
+        assertEquals(ApprovalMode.AUTO to null, connectUseCase.setModeCalls.single())
+    }
+
+    @Test
+    fun `sessionActivity is null while not connected`() = runTest(testDispatcher) {
+        connectUseCase._hostSessionStatus.value = ServerSessionStatus.RUNNING
+        testScheduler.runCurrent()
+
+        assertNull(vm.sessionActivity.value)
+    }
+
+    @Test
+    fun `sessionActivity is idle once connected and nothing is running`() = runTest(testDispatcher) {
+        connectUseCase.markConnected()
+        connectUseCase._hostSessionStatus.value = ServerSessionStatus.CONNECTED
+        testScheduler.runCurrent()
+
+        assertEquals(SessionActivity.IDLE, vm.sessionActivity.value)
+    }
+
+    @Test
+    fun `sessionActivity reflects a SESSION_STATUS running or not_found answer`() = runTest(testDispatcher) {
+        connectUseCase.markConnected()
+        connectUseCase._hostSessionStatus.value = ServerSessionStatus.RUNNING
+        testScheduler.runCurrent()
+        assertEquals(SessionActivity.RUNNING, vm.sessionActivity.value)
+
+        connectUseCase._hostSessionStatus.value = ServerSessionStatus.NOT_FOUND
+        testScheduler.runCurrent()
+        assertEquals(SessionActivity.NOT_FOUND, vm.sessionActivity.value)
+    }
+
+    @Test
+    fun `sessionActivity is running while a turn is in progress on screen`() = runTest(testDispatcher) {
+        connectUseCase.markConnected()
+        connectUseCase.emit(ChatEvent.ChatItemReceived(ChatItem.Thinking(id = "t1", status = ThinkingStatus.RUNNING)))
+        testScheduler.runCurrent()
+
+        assertEquals(SessionActivity.RUNNING, vm.sessionActivity.value)
+    }
+
+    @Test
+    fun `joined while running, a turn that fails stops saying Running`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        // Joined a turn the Host is still running: this process never sent its INPUT.
+        connectUseCase._hostSessionStatus.value = ServerSessionStatus.RUNNING
+        connectUseCase.markConnected(address, status = ServerSessionStatus.RUNNING)
+        testScheduler.runCurrent()
+        assertEquals(SessionActivity.RUNNING, vm.sessionActivity.value)
+
+        // The turn fails: an ERROR in place of the OUTPUT, which the repository answers by
+        // settling its status (ConnectionRepositoryImplTest covers that half).
+        connectUseCase.emit(ChatEvent.ConnectionErrorOccurred("Unable to run agent"))
+        connectUseCase._hostSessionStatus.value = ServerSessionStatus.CONNECTED
+        testScheduler.runCurrent()
+
+        assertEquals(SessionActivity.IDLE, vm.sessionActivity.value)
+    }
+
+    @Test
+    fun `sessionActivity is waiting for you while a gate is open`() = runTest(testDispatcher) {
+        connectUseCase.markConnected()
+        raiseGate()
+        testScheduler.runCurrent()
+
+        assertEquals(SessionActivity.AWAITING_USER, vm.sessionActivity.value)
     }
 
     @Test
