@@ -475,6 +475,8 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | --- | --- | --- |
 | `PING` | — | Emits `Ping`; `AgentConnection` sends `PONG`. |
 | `CONNECTED` | `session_id`, `status`, `server_newer`, `session` | Marks the connection ready and persists the supplied session. `status` and `server_newer` reach the chat screen, which acts on them once: see [CONNECTED status](#connected-status). |
+| `AGENT_PROFILE` | `session_id`, `name`, `address`, `model`, `tools`, `skills`, `balance_usd` | Emits `AgentProfileReceived` with the agent's connection profile, tools, skills, and optional balance. |
+| `DASHBOARD_SNAPSHOT` | `html` | Emits `DashboardSnapshotReceived` for a non-blank dashboard within the size limit; oversized or blank content is ignored. |
 | `llm_call` | `id`, `model` | Creates a running `ChatItem.Turn` / thinking item. |
 | `llm_result` | `id`, `status`, `model`, `duration_ms` | Updates the matching thinking item to done or error. |
 | `thinking` | `id`, `content`, `kind`, `model` | With `content`, the agent's reasoning: a `ChatItem.Thinking` under the frame's `id` with `kind` set (`intent`, `reflect`, or `reasoning` when absent), rendered as a collapsible "Thought" rather than as a reply. Without `content`, completed thinking metadata on a `ChatItem.Turn`. See [Streaming frames](#streaming-frames). |
@@ -492,6 +494,7 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `intent` | `id`, `status`, `ack`, `is_build` | Updates a `ChatItem.IntentItem`. Status is `UNDERSTOOD` only when `status` is exactly `"understood"`, otherwise `ANALYZING`. |
 | `eval` | `id`, `status`, `passed`, `summary`, `expected`, `eval_path` | Updates a `ChatItem.EvalItem` holding the agent's self-grading result. Status is `DONE` only when `status` is exactly `"done"`, otherwise `EVALUATING`. |
 | `compact` | `id`, `status`, `context_before`, `context_after`, `context_percent`, `message`, `error` | Updates a `ChatItem.CompactItem` tracking context-window compaction. Status is `DONE` for `"done"`, `ERROR` for `"error"`, otherwise `COMPACTING` — the one status event with three terminal states rather than two. Rendered as a subtle divider in the chat timeline (see [Compaction in the timeline](#compaction-in-the-timeline)). |
+| `diff_preview` | `id`, `path`, `preview`, `truncated`, `file_exists` | Creates a `ChatItem.DiffPreviewItem` showing the pending file change before its approval request. |
 | `tool_blocked` | `id`, `tool`, `reason`, `message`, `command` | Creates a `ChatItem.ToolBlockedItem` for a tool call that policy vetoed before it ran. Missing `tool`, `reason`, and `message` default to the empty string. |
 | `plan_review` | `id`, `plan_content` | Creates a `ChatItem.PlanReviewItem` and enters a waiting state until the user answers with `PLAN_REVIEW_RESPONSE`. |
 | `files_received` | `id`, `files[].name`, `files[].path` | Creates a `ChatItem.FilesReceivedItem` listing files the agent returned; an absent `files` array yields an empty list. |
@@ -499,6 +502,8 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `RUNTIME_INPUT_ACK` | `session_id`, `id` | Emits `ConnectionEvent.RuntimeInputAcknowledged`: the host queued an `INPUT` that arrived mid-turn for the running turn's next iteration. `id` is the host's own UUID for the queued item, **not** the `input_id` we sent, so it cannot name the message it answers — see [Runtime input](#runtime-input). Not an `OUTPUT`: it does not end the turn. |
 | `OUTPUT` | `input_id`, `result`, `session` | Emits the final output when it belongs to the current input, or for any direct connection; updates the session snapshot. |
 | `EXEC_RESULT` | `exec_id`, `status`, `result`, `error`, `tool`, `duration_ms` | Completes the pending direct `EXEC` request with a success or error outcome. |
+| `mode_changed` | `id`, `mode`, `triggered_by`, `turns_left` | Creates a `ChatItem.ModeChangedItem` and updates the displayed session mode. |
+| `SESSION_STATUS` | `session_id`, `status` | Emits `SessionStatusReceived` for the current session so reconnect recovery can settle or resume the turn. |
 | `ERROR` | `code`, `protocol`, `retryable`, `session_id`, `message`, `error` | With `code` `-32010`, emits `ProtocolRejected` (see [Incompatible protocol version](#incompatible-protocol-version)). With `code` `"RUNTIME_INPUT_REJECTED"`, emits `RuntimeInputRejected` instead of an error: the socket and the running turn are healthy, and `ConnectionError` could start the reconnect ladder (see [Runtime input](#runtime-input)). `retryable` is read as true only for a literal boolean `true`. Every other `ERROR` emits `ConnectionError` using `message`, then `error`, then `"Unknown error"`. |
 
 ### `EXEC_RESULT`
