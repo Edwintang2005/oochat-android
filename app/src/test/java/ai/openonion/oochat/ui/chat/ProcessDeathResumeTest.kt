@@ -24,7 +24,7 @@ import ai.openonion.oochat.domain.usecase.PersistenceTransaction
 import ai.openonion.oochat.network.AgentConnection
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.NetworkMonitor
-import ai.openonion.oochat.network.WebSocketFactory
+import ai.openonion.oochat.testing.FakeOipHost
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.Dispatchers
@@ -34,15 +34,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import okio.ByteString
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -54,7 +46,6 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -71,153 +62,11 @@ import java.util.concurrent.Executors
  * production classes [ai.openonion.oochat.di.DefaultAppContainer] uses; only
  * the socket is fake.
  *
- * The fake Host replays the way `connectonion`'s does: each turn has its own
- * event buffer (a fresh `WebSocketIO` per INPUT), and a CONNECT for a
- * `running` session restarts forwarding just after `last_msg_id`, or from the
- * start of the turn when that id is absent or unknown
- * (`WebSocketIO.position_after`).
+ * The fake Host ([FakeOipHost]) replays the way `connectonion`'s does.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class ProcessDeathResumeTest {
-
-    /** One socket the app opened. Once [dead], the Host never hears from it again. */
-    private class HostSocket(val listener: WebSocketListener) : WebSocket {
-        val sent = CopyOnWriteArrayList<String>()
-        @Volatile var opened = false
-        @Volatile var dead = false
-        override fun request(): Request = Request.Builder().url("wss://fake.example.com/ws/input").build()
-        override fun queueSize(): Long = 0
-        override fun send(text: String): Boolean {
-            if (dead) return false
-            sent += text
-            return true
-        }
-        override fun send(bytes: ByteString): Boolean = !dead
-        override fun close(code: Int, reason: String?): Boolean = true
-        override fun cancel() {}
-    }
-
-    /**
-     * The Host's side of OIP, reduced to what resume depends on: answer
-     * CONNECT, record INPUT, and keep the running turn's events so a
-     * reattaching client can be replayed from its cursor.
-     */
-    private class FakeHost : WebSocketFactory {
-        /**
-         * Frames reach the app on one background thread, in order, as OkHttp's
-         * reader thread delivers them. Robolectric's test thread is the main
-         * thread, and the app rightly refuses to touch Room from there.
-         */
-        private val reader = Executors.newSingleThreadExecutor()
-        val sockets = CopyOnWriteArrayList<HostSocket>()
-        val connects = CopyOnWriteArrayList<JsonObject>()
-        val inputs = CopyOnWriteArrayList<JsonObject>()
-        private val answered = mutableSetOf<String>()
-
-        /** This turn's events, in order — the Host's `_msgs_from_agent`. */
-        private val turnEvents = mutableListOf<String>()
-        var running = false
-            private set
-
-        /** The transcript the Host holds once the turn has finished. */
-        var finishedSession: String? = null
-
-        override fun create(request: Request, listener: WebSocketListener): WebSocket =
-            HostSocket(listener).also { sockets += it }
-
-        private val live: HostSocket? get() = sockets.lastOrNull { !it.dead }
-
-        /** Open new sockets and answer every CONNECT and INPUT not yet seen. */
-        fun pump() {
-            for (socket in sockets) {
-                if (socket.dead) continue
-                if (!socket.opened) {
-                    socket.opened = true
-                    deliver { socket.listener.onOpen(socket, switchingProtocols()) }
-                }
-                for (text in socket.sent) {
-                    if (!answered.add(text)) continue
-                    val frame = Json.parseToJsonElement(text).jsonObject
-                    when (frame.string("type")) {
-                        "CONNECT" -> answerConnect(socket, frame)
-                        "INPUT" -> {
-                            inputs += frame
-                            turnEvents.clear()
-                            running = true
-                        }
-                    }
-                }
-            }
-        }
-
-        private fun answerConnect(socket: HostSocket, frame: JsonObject) {
-            connects += frame
-            val sid = frame.string("session_id") ?: "host-minted-${connects.size}"
-            val finished = finishedSession
-            val reply = when {
-                running -> """{"type":"CONNECTED","session_id":"$sid","status":"running"}"""
-                // The turn ended while the client was gone: the Host's copy is
-                // newer, so it sends it (merge_sessions → server_newer).
-                finished != null ->
-                    """{"type":"CONNECTED","session_id":"$sid","status":"connected",""" +
-                        """"server_newer":true,"session":$finished}"""
-                else -> """{"type":"CONNECTED","session_id":"$sid","status":"new"}"""
-            }
-            deliver(socket, reply)
-            if (running) {
-                // resume_forwarding: start just past last_msg_id, else replay all.
-                val cursor = frame.string("last_msg_id")
-                val start = turnEvents.indexOfFirst { idOf(it) == cursor }.let { if (it < 0) 0 else it + 1 }
-                turnEvents.drop(start).forEach { deliver(socket, it) }
-            }
-        }
-
-        /** The agent emits [frame]: buffered for replay, forwarded if anyone is attached. */
-        fun emit(frame: String) {
-            turnEvents += frame
-            live?.let { deliver(it, frame) }
-        }
-
-        /** OUTPUT: the turn is over and its transcript becomes the session's. */
-        fun finish(output: String, session: String) {
-            running = false
-            finishedSession = session
-            live?.let { deliver(it, output) }
-        }
-
-        /** The socket fails as a lost network does: no close frame, just an error. */
-        fun drop(socket: HostSocket) {
-            socket.dead = true
-            deliver { socket.listener.onFailure(socket, java.io.IOException("Software caused connection abort"), null) }
-        }
-
-        private fun deliver(socket: HostSocket, frame: String) = deliver { socket.listener.onMessage(socket, frame) }
-
-        private fun deliver(call: () -> Unit) {
-            reader.execute(call)
-        }
-
-        fun shutdown() {
-            reader.shutdownNow()
-        }
-
-        /** The turn ends with nobody attached to hear it. */
-        fun finishUnheard(session: String) {
-            running = false
-            finishedSession = session
-        }
-
-        private fun idOf(frame: String): String? =
-            Json.parseToJsonElement(frame).jsonObject.string("id")
-
-        private fun switchingProtocols(): Response = Response.Builder()
-            .request(Request.Builder().url("wss://fake.example.com/ws/input").build())
-            .protocol(Protocol.HTTP_1_1)
-            .code(101)
-            .message("Switching Protocols")
-            .build()
-    }
 
     /**
      * Everything one launch of the app holds in memory, wired as
@@ -294,7 +143,7 @@ class ProcessDeathResumeTest {
 
     private lateinit var application: ConnectOnionApplication
     private lateinit var keyManager: KeyManager
-    private lateinit var host: FakeHost
+    private lateinit var host: FakeOipHost
     private lateinit var main: ExecutorService
     private val processes = mutableListOf<AppProcess>()
 
@@ -312,7 +161,7 @@ class ProcessDeathResumeTest {
         Dispatchers.setMain(main.asCoroutineDispatcher())
         keyManager = KeyManager(application)
         keyManager.save(TestIdentity.keys())
-        host = FakeHost()
+        host = FakeOipHost()
     }
 
     @After
