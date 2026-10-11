@@ -16,7 +16,7 @@ class ProtocolFrameCoverageTest {
     private data class FrameFixture(
         val type: String,
         val json: String,
-        val shouldBeIgnored: Boolean = false
+        val shouldBeIgnored: Boolean = false    // frame user_input is an intentionally ignored frame
     )
 
     private val frames = listOf(
@@ -48,7 +48,7 @@ class ProtocolFrameCoverageTest {
         FrameFixture(
             "user_input",
             """{"type":"user_input","content":"Hello"}""",
-            shouldBeIgnored = true
+            shouldBeIgnored = true  // the Host echoes the user's message back, rendering the echo would duplicate the frame
         ),
         FrameFixture("ask_user", """{"type":"ask_user","id":"ask-1","question":"Continue?"}"""),
         FrameFixture("approval_needed", """{"type":"approval_needed","id":"approval-1","tool":"bash"}"""),
