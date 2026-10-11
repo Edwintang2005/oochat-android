@@ -60,7 +60,6 @@ purpose. At that point, remove the wrapper, and the test guards the fix.
 | Slash palette | Skills from the directory are not de-duplicated, and "No description" is not dropped | `ConnectionRepositoryImplTest` |
 | Slash palette | Two skills with the same name crash the composer when `/` is typed | `SlashCommandPaletteComposeTest` |
 | Low balance | The amount follows the phone's locale: `$0,42` on a German phone | `LowBalanceBarComposeTest` |
-| Relay failover | When the Host drops off mid-turn, the relay's `Agent not connected` on the live socket stays in the conversation as "This agent is offline…" after the turn resumes | `RelayFailoverTest` |
 
 ## Not covered, and why
 
