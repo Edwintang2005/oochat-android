@@ -34,6 +34,13 @@ interface ConnectionRepository {
     val connectionState: StateFlow<ConnectionState>
 
     /**
+     * Whether the current [connect] call has reached CONNECTED, even if the
+     * connection has dropped since. [connectionState] alone can miss a
+     * Connected that lasted less than one look at it (W16AAPPLE-94).
+     */
+    val hasConnectedThisAttempt: Boolean
+
+    /**
      * The currently-connected agent's own name card, or null when no
      * `AGENT_PROFILE` frame has arrived yet for the live connection. Reset
      * to null at the start of every [connect] call — see [connect]'s own
