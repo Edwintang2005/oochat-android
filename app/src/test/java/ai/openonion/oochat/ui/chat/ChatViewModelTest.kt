@@ -566,6 +566,9 @@ class ChatViewModelTest {
             all.value.count { it.sessionId == sessionId }
         override suspend fun existsById(id: String) =
             all.value.any { it.id == id }
+        override suspend fun updateTimestamp(id: String, timestamp: Long) {
+            all.value = all.value.map { if (it.id == id) it.copy(timestamp = timestamp) else it }
+        }
         override suspend fun getOwningSessionId(id: String) =
             all.value.firstOrNull { it.id == id }?.sessionId
         override suspend fun getSessionIdByUserContent(content: String) =
@@ -943,6 +946,39 @@ class ChatViewModelTest {
         assertEquals("one message, one bubble, however many attempts", 1, bubbles.size)
         assertEquals(id, bubbles.single().id)
         assertEquals(UserMessageState.SENT, bubbles.single().state)
+    }
+
+    @Test
+    fun `resending moves the message to the bottom, on screen and in what a reload reads`() = runTest(testDispatcher) {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        connectUseCase.failNextSend = true
+        vm.sendMessage("lost one")
+        testScheduler.runCurrent()
+        val lostId = (vm.uiState.value.chatItems.single() as ChatItem.User).id
+        vm.sendMessage("later one")
+        testScheduler.advanceUntilIdle()
+        val laterId = vm.uiState.value.chatItems.filterIsInstance<ChatItem.User>().single { it.content == "later one" }.id
+
+        vm.resendMessage(lostId)
+
+        // Moved at once, while still waiting to go: the reply lands at the
+        // bottom, so the question it answers has to be there too.
+        val users = vm.uiState.value.chatItems.filterIsInstance<ChatItem.User>()
+        assertEquals(listOf(laterId, lostId), users.map { it.id })
+        assertEquals("moved, not copied", 1, users.count { it.id == lostId })
+        assertEquals(lostId, vm.uiState.value.chatItems.last().id)
+
+        testScheduler.advanceUntilIdle()
+
+        val saved = messageRepo.snapshot()
+        assertTrue(
+            "the saved row follows, or a reload puts the question back above the old reply",
+            saved.single { it.id == lostId }.timestamp > saved.single { it.id == laterId }.timestamp
+        )
+        assertEquals(UserMessageState.SENT, (vm.uiState.value.chatItems.last() as ChatItem.User).state)
     }
 
     @Test

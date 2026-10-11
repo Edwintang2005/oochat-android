@@ -581,6 +581,26 @@ class ConversationHistoryUseCase(
     }
 
     /**
+     * Moves a resent message to the end of its conversation.
+     *
+     * [persistMessage] keeps a row's first timestamp, which is right for a
+     * replay and wrong here: the resend went out now, so its reply lands at
+     * the bottom, and on reload the question has to be above it rather than
+     * back where the failed attempt was. Saves it instead if it never was.
+     */
+    suspend fun moveMessageToEnd(item: ChatItem.User, targetSessionId: String? = _activeSessionId.value) {
+        val saved = runCatchingCancellable { messageRepository.existsById(item.id) }.getOrDefault(false)
+        if (!saved) {
+            persistMessage(item, targetSessionId)
+            return
+        }
+        val now = System.currentTimeMillis()
+        addTimestamps(mapOf(item.id to now))
+        runCatchingCancellable { messageRepository.updateTimestamp(item.id, now) }
+            .onFailure { e -> FileLogger.e(LogTags.CONV_HISTORY, "moveMessageToEnd failed: ${e.message}") }
+    }
+
+    /**
      * Creates the deferred Room row for a [SessionResolution.Pending]
      * resolution, the moment there's actually something to persist into it.
      * Returns null (and does nothing) if there's no pending session — the
