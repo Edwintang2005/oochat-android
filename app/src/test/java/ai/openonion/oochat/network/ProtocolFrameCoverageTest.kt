@@ -2,6 +2,8 @@ package ai.openonion.oochat.network
 
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.reflect.KClass
 
 /**
@@ -103,6 +105,11 @@ class ProtocolFrameCoverageTest {
             "SESSION_STATUS",
             """{"type":"SESSION_STATUS","session_id":"session-1","status":"connected"}""",
             ConnectionEvent.SessionStatusReceived::class
+        ),
+        FrameFixture(
+            "mode_budget_changed",
+            """{"type":"mode_budget_changed","mode":"full-access","turns_left":4}""",
+            ConnectionEvent.ModeBudgetChanged::class
         )
     )
 
@@ -132,5 +139,34 @@ class ProtocolFrameCoverageTest {
         )
 
         assertTrue(result.event is ConnectionEvent.Unknown)
+    }
+
+    @Test
+    fun `fixture list stays in sync with the documented server frame table`() {
+        val protocolPath = sequenceOf(
+            Path.of("docs/protocol.md"),
+            Path.of("../docs/protocol.md")
+        ).firstOrNull(Files::isRegularFile)
+            ?: error("Could not find docs/protocol.md from the test working directory")
+
+        val documentedFrames = Files.readAllBytes(protocolPath).toString(Charsets.UTF_8)
+            .substringAfter("## Server to client events")
+            .substringBefore("### `EXEC_RESULT`")
+            .lineSequence()
+            .mapNotNull { line ->
+                Regex("^\\| `([^`]+)` \\|").find(line)?.groupValues?.get(1)
+            }
+            .toSet()
+
+        val fixtureFrames = frames
+            .map { it.name.substringBefore(":") }
+            .toSet()
+
+        assertTrue(
+            "Protocol fixtures do not match the server-frame table. " +
+                "Missing fixtures: ${documentedFrames - fixtureFrames}; " +
+                "undocumented fixtures: ${fixtureFrames - documentedFrames}",
+            documentedFrames == fixtureFrames
+        )
     }
 }
