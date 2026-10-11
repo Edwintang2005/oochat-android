@@ -174,9 +174,13 @@ class RelayFailoverTest {
         private fun fromRelay(socket: FakeOipSocket, frame: String) =
             deliver { socket.listener.onMessage(socket, frame) }
 
+        /** Every agent event the relay forwarded, as (connection, event id), in order. */
+        val forwarded = CopyOnWriteArrayList<Pair<String, String?>>()
+
         override fun onTheWire(socket: FakeOipSocket, frame: String): String {
             val connId = connIds[socket] ?: return frame
             val fields = Json.parseToJsonElement(frame).jsonObject.toMutableMap()
+            forwarded += connId to (fields["id"] as? JsonPrimitive)?.content
             fields["conn_id"] = JsonPrimitive(connId)
             sessionIds[socket]?.let { sid -> fields.putIfAbsent("session_id", JsonPrimitive(sid)) }
             return JsonObject(fields).toString()
@@ -341,9 +345,20 @@ class RelayFailoverTest {
         """{"type":"OUTPUT","result":"$reply","session_id":"$sid","duration_ms":2400,""" +
             """"session":${finishedSession.replace("SID", sid)}}"""
 
-    /** The rest of the turn, after the tool call the relay failed during. */
-    private fun finishTurn(conversation: String) {
+    /**
+     * The agent finishes the tool call while the app cannot hear it: the Host
+     * buffers the tool_result for replay, and the relay has nowhere to send it.
+     */
+    private fun missWhileDown() {
+        assertTrue("the frame must be missed, so no socket may be open to it", relay.sockets.all { it.dead })
+        connsBeforeMiss = relay.connIdsUsed
         relay.emit(toolResult)
+    }
+
+    private var connsBeforeMiss: Set<String> = emptySet()
+
+    /** The rest of the turn, sent live once the app is back. */
+    private fun finishTurn(conversation: String) {
         relay.emit(llmCall2)
         relay.emit(llmResult2)
         relay.emit(assistant)
@@ -429,7 +444,35 @@ class RelayFailoverTest {
         assertEquals("the reconnect must name the last event it handled", "ev-3", resume.string("last_msg_id"))
     }
 
+    /**
+     * The tool_result the app missed while the relay was down is replayed on
+     * the new connection, once, and lands once in Room and on screen, before
+     * any later frame is sent.
+     */
+    private suspend fun assertMissedFrameReplayedOnce(app: App, conversation: String) {
+        pumpUntil("the missed tool_result to be replayed") {
+            app.items.any { it is ChatItem.ToolCall && it.id == "tool-1" && it.status == ToolStatus.DONE }
+        }
+        pumpUntil("the replayed tool_result to be saved") {
+            val saved = runBlocking { app.rows(conversation) }.firstOrNull { it.id == "tool-1" }?.payload
+            (saved?.let(TranscriptItemCodec::decode) as? ChatItem.ToolCall)?.status == ToolStatus.DONE
+        }
+        val deliveries = relay.forwarded.filter { it.second == "ev-4" }.map { it.first }
+        assertEquals("the missed tool_result must be forwarded exactly once: $deliveries", 1, deliveries.size)
+        assertTrue(
+            "it must come over a connection opened after it was missed: ${deliveries.single()} vs $connsBeforeMiss",
+            deliveries.single() !in connsBeforeMiss
+        )
+        assertEquals(
+            "the replayed tool_result must fold into the one tool call on screen",
+            listOf(ToolStatus.DONE),
+            app.items.filterIsInstance<ChatItem.ToolCall>().map { it.status }
+        )
+        assertEquals("the tool call must be saved once", 1, app.rows(conversation).count { it.id == "tool-1" })
+    }
+
     private suspend fun finishAndAssertArrivedOnce(app: App, conversation: String) {
+        assertMissedFrameReplayedOnce(app, conversation)
         finishTurn(conversation)
         pumpUntil("the reply to be saved") {
             runBlocking { app.rows(conversation) }.any { it.role == Role.ASSISTANT && it.content == reply }
@@ -449,6 +492,7 @@ class RelayFailoverTest {
         val (app, conversation) = connectedMidTurn()
 
         relay.drop(liveSocket)
+        missWhileDown()
 
         pumpUntil("the reconnect to CONNECT") { relay.connects.size == 2 }
         assertResumedThroughRelay(conversation)
@@ -460,6 +504,7 @@ class RelayFailoverTest {
         val (app, conversation) = connectedMidTurn()
 
         relay.restart(liveSocket, code = 1012, reason = "Service Restart")
+        missWhileDown()
 
         pumpUntil("the reconnect to CONNECT") { relay.connects.size == 2 }
         assertResumedThroughRelay(conversation)
@@ -471,6 +516,7 @@ class RelayFailoverTest {
         val (app, conversation) = connectedMidTurn()
 
         relay.restart(liveSocket, code = 1001, reason = "Going Away")
+        missWhileDown()
 
         pumpUntil("the reconnect to CONNECT") { relay.connects.size == 2 }
         assertResumedThroughRelay(conversation)
@@ -485,6 +531,7 @@ class RelayFailoverTest {
 
         val droppedAt = scheduler.currentTime
         relay.drop(liveSocket)
+        missWhileDown()
 
         pumpUntil("the fourth dial to CONNECT") { relay.connects.size == 2 }
         assertEquals("three refused upgrades, then the one that got through", dialsBefore + 4, relay.dialledAt.size)
@@ -507,6 +554,7 @@ class RelayFailoverTest {
         relay.agentAway = 2
 
         relay.drop(liveSocket)
+        missWhileDown()
 
         pumpUntil("the Host to be reached again") { relay.connects.size == 2 }
         assertEquals("both CONNECTs before the Host was back were turned away", 2, relay.connectsTurnedAway)
@@ -530,6 +578,7 @@ class RelayFailoverTest {
         relay.hostGone = true
         relay.ping(socket)
         pumpUntil("the relay to drop the socket") { socket.dead }
+        missWhileDown()
         // The Host's own supervisor re-announces within a second, well inside
         // the app's first 2 s rung; its turn kept running throughout.
         relay.hostGone = false
@@ -555,6 +604,7 @@ class RelayFailoverTest {
         relay.refuseUpgrades = Int.MAX_VALUE
 
         relay.drop(liveSocket)
+        missWhileDown()
 
         pumpUntil("the ladder to give up") { app.state is ConnectionState.Disconnected || app.state is ConnectionState.Error }
         assertEquals("the app stops after its last rung", 1, relay.connects.size)
@@ -598,6 +648,7 @@ class RelayFailoverTest {
         val (app, conversation) = connectedMidTurn()
 
         relay.restart(liveSocket, code = 1000, reason = "")
+        missWhileDown()
 
         // A 1000 close is taken as deliberate: no retry on its own, as the
         // ConnectOnion web client does after any close.
