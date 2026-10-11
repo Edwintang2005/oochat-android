@@ -346,6 +346,7 @@ val regressionSuite = mapOf(
         "data.repository.AgentRepositoryImplTest",
         "data.repository.AgentDiscoveryRepositoryImplTest",
         "data.local.mapper.AgentMapperTest",
+        "ui.onboarding.AgentQrCodeTest",
     ),
     "direct (/ws) and relay (/ws/input)" to listOf(
         "network.AgentConnectionRobolectricTest",

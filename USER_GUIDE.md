@@ -21,9 +21,16 @@ agents currently online.
 their owners start and stop them.
 
 If you were given an address instead, scroll to **Or enter Agent Address
-manually** and paste it. An address is `0x` followed by 64 hex characters. The
-QR button in the top right scans one from a screen or a printout, including
-the code behind the **Share** button on chat.openonion.ai.
+manually** and paste it. An address is `0x` followed by 64 hex characters.
+
+**Or scan a QR code.** The QR button in the top right opens the camera. It reads
+the code behind the **Share** button on chat.openonion.ai, a code that holds just
+the address, `connectonion://agent/0x…`, and `https://your-server/0x…` for an
+agent on a server of its own. A code it understands fills the form below, and
+**Connect** goes in. Any other QR code is refused with a message above the
+Connect button, and the form stays as it was. The camera only reads the code:
+nothing is recorded or uploaded. To make a code for your own agent, put its
+address into any QR generator.
 
 **Relay Server or Direct Connection.** Leave it on *Relay Server* unless you
 were told otherwise — the relay handles agents behind home routers, which is
