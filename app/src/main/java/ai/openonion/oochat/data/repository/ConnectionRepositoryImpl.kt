@@ -284,7 +284,13 @@ class ConnectionRepositoryImpl(
                         // Post-Connected ERROR is non-fatal (matches web client): a business-logic rejection like "Insufficient ConnectOnion Credits"; the server keeps the socket open (verified via PING/PONG). Pre-Connected ERROR must flip state to Error, or LoadingScreen hangs on "Connecting…".
                         // Logs keep the server's raw wording; only what the user reads goes through the mapper.
                         val shown = ServerErrorText.humanize(event.message)
-                        if (hasConnectedThisAttempt) {
+                        if (hasConnectedThisAttempt && ServerErrorText.isAgentOffline(event.message)) {
+                            // The relay answering a live socket after the Host dropped off
+                            // (W16AAPPLE-93). It drops the socket straight after, and that
+                            // reconnect is the status the user sees, so this is no reply:
+                            // the web client never adds an ERROR to the conversation either.
+                            FileLogger.eRepeating(LogTags.CONN_REPO, "→ Error (agent offline, reconnect follows): ${event.message}")
+                        } else if (hasConnectedThisAttempt) {
                             FileLogger.eRepeating(LogTags.CONN_REPO, "→ Error (non-fatal, socket stays open): ${event.message}")
                             // The two windows a mode_change frame can miss its
                             // mark (session.py's active_io gate, or the

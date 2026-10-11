@@ -24,7 +24,6 @@ import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCase
 import ai.openonion.oochat.domain.usecase.ConnectToAgentUseCaseContract
 import ai.openonion.oochat.domain.usecase.ConversationHistoryUseCase
 import ai.openonion.oochat.domain.usecase.PersistenceTransaction
-import ai.openonion.oochat.knownIssue
 import ai.openonion.oochat.network.AgentConnection
 import ai.openonion.oochat.network.AgentDiscoveryService
 import ai.openonion.oochat.network.NetworkMonitor
@@ -587,15 +586,10 @@ class RelayFailoverTest {
         assertResumedThroughRelay(conversation)
         finishAndAssertArrivedOnce(app, conversation)
 
-        knownIssue(
-            "the relay's \"Agent not connected\" on a live socket mid-turn is added to the conversation as a " +
-                "reply (\"This agent is offline…\") and stays there after the turn resumes and finishes"
-        ) {
-            assertTrue(
-                "the relay's offline error must not be left in the conversation: ${app.items.map { it.agentText() }}",
-                app.items.none { it.agentText()?.contains("offline", ignoreCase = true) == true }
-            )
-        }
+        assertTrue(
+            "the relay's offline error must not be left in the conversation: ${app.items.map { it.agentText() }}",
+            app.items.none { it.agentText()?.contains("offline", ignoreCase = true) == true }
+        )
     }
 
     @Test

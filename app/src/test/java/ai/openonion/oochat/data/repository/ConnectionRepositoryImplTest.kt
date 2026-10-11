@@ -652,6 +652,29 @@ class ConnectionRepositoryImplTest {
         )
     }
 
+    @Test
+    fun `the relay's agent offline on a live socket is not added to the conversation`() = runBlocking {
+        // W16AAPPLE-93: the relay sends it when the Host drops off mid-turn,
+        // then drops the socket; the reconnect is what the user sees.
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnectedWith("running", serverNewer = false) }) {
+            repository.hostSessionStatus.value == ServerSessionStatus.RUNNING
+        }
+
+        val received = withTimeout(3000L) {
+            val deferred = async { repository.observeEvents().first { it is ChatEvent.ConnectionErrorOccurred } }
+            while (deferred.isActive) {
+                simulateError("Agent not connected: 0xc31dd64abc")
+                simulateError("Insufficient ConnectOnion Credits")
+                delay(20)
+            }
+            deferred.await()
+        } as ChatEvent.ConnectionErrorOccurred
+
+        assertEquals("Insufficient ConnectOnion Credits", received.message)
+        assertTrue(repository.connectionState.value is ConnectionState.Connected)
+    }
+
     // ── W16AAPPLE-82, -90: a refused reconnect ends in Error ────────
 
     @Test
