@@ -1,5 +1,6 @@
 import java.io.FileInputStream
 import java.util.Properties
+import org.gradle.api.tasks.PathSensitivity
 
 plugins {
     id("com.android.application")
@@ -271,6 +272,12 @@ dependencies {
 // Robolectric 用自己的沙箱类加载器，JDK 9+ 下 JaCoCo 默认看不到这些类；
 // includeNoLocationClasses + 排除 jdk.internal.* 是官方推荐组合。
 tasks.withType<Test>().configureEach {
+    // ProtocolFrameCoverageTest reads docs/protocol.md. Without this,
+    // a documentation-only change can leave the test task up to date.
+    inputs.file(rootProject.file("docs/protocol.md"))
+        .withPropertyName("protocolDoc")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+
     configure<JacocoTaskExtension> {
         isIncludeNoLocationClasses = true
         excludes = listOf("jdk.internal.*")
