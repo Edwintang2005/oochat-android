@@ -1,6 +1,6 @@
+import org.gradle.api.tasks.PathSensitivity
 import java.io.FileInputStream
 import java.util.Properties
-import org.gradle.api.tasks.PathSensitivity
 
 plugins {
     id("com.android.application")
