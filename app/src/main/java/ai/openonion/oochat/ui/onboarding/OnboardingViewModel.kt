@@ -92,6 +92,23 @@ class OnboardingViewModel @JvmOverloads constructor(
         }
     }
 
+    /**
+     * What Setup's QR scanner found. A code that names an agent is returned for the form to take,
+     * and clears any earlier message. Anything else is refused: nothing is returned and
+     * [errorMessage] says so. [contents] is null when the user backed out of the scanner, which is
+     * neither, so nothing changes.
+     */
+    internal fun onScanned(contents: String?): ScannedAgent? {
+        if (contents == null) return null
+        val agent = AgentQrCode.parse(contents)
+        _errorMessage.value = if (agent == null) {
+            "That QR code isn't a ConnectOnion agent. Scan the code behind an agent's Share button, or paste its address."
+        } else {
+            null
+        }
+        return agent
+    }
+
     private fun validate(trimmedUrl: String, trimmedAddress: String): String? = when {
         trimmedUrl.length > 500 ->
             "URL is too long (maximum 500 characters)"
