@@ -8,6 +8,7 @@ import ai.openonion.oochat.data.local.mapper.TranscriptItemCodec
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.Role
 import ai.openonion.oochat.domain.model.ThinkingStatus
+import ai.openonion.oochat.domain.model.UserMessageState
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -174,6 +175,22 @@ class PersistenceTransactionTest {
         // insertMessage is REPLACE: without carrying it over, any re-save (a
         // resend that was never saved, a replay) would quietly mark it sent.
         persist()
+
+        assertEquals(ChatMessageEntity.DELIVERY_FAILED, database.messageDao().getDeliveryStateById("u1"))
+    }
+
+    @Test
+    fun `a message saved already failed is recorded as failed in the same write`() = runTest(testDispatcher) {
+        val sessionId = "session-1"
+        insertSession(sessionId, "Existing")
+
+        // A message held behind a running turn is saved like this at the tap.
+        transaction.persistMessageAtomically(
+            sessionId = sessionId,
+            item = ChatItem.User(id = "u1", content = "hello", state = UserMessageState.FAILED),
+            onTitleUpdate = { _, _ -> },
+            onPreviewUpdate = { _, _, _ -> }
+        )
 
         assertEquals(ChatMessageEntity.DELIVERY_FAILED, database.messageDao().getDeliveryStateById("u1"))
     }

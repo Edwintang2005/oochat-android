@@ -2011,43 +2011,61 @@ class ChatViewModelTest {
             )
         }
 
-    @Test
-    fun `a held message is written to the transcript when it is sent, not when it is typed`() =
-        runTest(testDispatcher) {
-            val address = validHexAddress()
-            vm.connectToAgent(address)
-            testScheduler.runCurrent()
-            connectUseCase.markConnected(address)
+    /** Connected, one question asked, and its turn still running. */
+    private fun kotlinx.coroutines.test.TestScope.givenAQuestionWhoseTurnIsRunning(address: String) {
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        vm.sendMessage("first question")
+        testScheduler.runCurrent()
+        connectUseCase.emit(startTurn("turn-1"))
+        testScheduler.runCurrent()
+    }
 
-            vm.sendMessage("first question")
-            testScheduler.runCurrent()
-            connectUseCase.emit(startTurn("turn-1"))
-            testScheduler.runCurrent()
+    @Test
+    fun `a held message is saved at the tap as failed, and moves below the reply once it is sent`() =
+        runTest(testDispatcher) {
+            givenAQuestionWhoseTurnIsRunning(validHexAddress())
 
             vm.sendMessage("and another thing")
             testScheduler.runCurrent()
 
-            // The row carries the time it was written, and the transcript is
-            // ordered by that. Writing it at the tap dated it *before* the
-            // reply it is waiting on, so a reload — or any rebuild from the
-            // persisted order — showed both questions, then both answers.
-            assertEquals(
-                "a held message must not be in the transcript yet",
-                listOf("first question"),
-                messageRepo.snapshot().map { it.content }
-            )
+            // Saved now, so dying during the hold cannot lose it; failed,
+            // because it has not gone anywhere yet.
+            assertTrue(savedAsFailed("and another thing"))
 
             connectUseCase.endTurn()
             testScheduler.runCurrent()
 
-            // The reply sits between the two questions, which is the whole
-            // point: written at the tap, the held message would have been
-            // dated before it and rendered above it.
+            // Read as a reload reads it, ordered by timestamp. Dated at the tap,
+            // the held message sat above the reply it waited behind — both
+            // questions, then both answers. Sending moves it to the end.
             assertEquals(
                 "the reply lands between the question it answers and the one that waited",
                 listOf("first question", "done", "and another thing"),
-                messageRepo.snapshot().map { it.content }
+                messageRepo.getMessagesListBySession(vm.activeSessionId.value!!).map { it.content }
             )
+            assertFalse("delivered, so no longer failed", savedAsFailed("and another thing"))
+        }
+
+    @Test
+    fun `a held message survives a restart during the hold, failed and offered for resending`() =
+        runTest(testDispatcher) {
+            val address = validHexAddress()
+            givenAQuestionWhoseTurnIsRunning(address)
+            vm.sendMessage("and another thing")
+            testScheduler.runCurrent()
+
+            // The process dies here, before the turn ends. A new screen on the
+            // same storage is what the restart sees.
+            val restarted = newChatViewModel()
+            restarted.connectToAgent(address)
+            testScheduler.runCurrent()
+
+            val held = restarted.uiState.value.chatItems.filterIsInstance<ChatItem.User>()
+                .single { it.content == "and another thing" }
+            assertEquals(UserMessageState.FAILED, held.state)
+            assertEquals(listOf(held.id), restarted.uiState.value.chatItems.failedUserMessages().map { it.id })
         }
 
     @Test
@@ -5721,6 +5739,10 @@ class FakePersistenceTransaction(
         if (content.isBlank() && images.isNullOrEmpty()) return
 
         val now = 0L
+        // As the real one: an item already failed is saved failed; otherwise a
+        // re-save keeps what was recorded.
+        val failedToSend = (item as? ChatItem.User)?.state == UserMessageState.FAILED ||
+            messageRepo.getMessagesListBySession(sessionId).any { it.id == item.id && it.failedToSend }
         messageRepo.createMessage(
             ChatMessage(
                 id = item.id,
@@ -5728,7 +5750,8 @@ class FakePersistenceTransaction(
                 role = role,
                 content = content,
                 timestamp = now,
-                images = images
+                images = images,
+                failedToSend = failedToSend
             )
         )
 

@@ -1859,29 +1859,45 @@ open class ChatViewModel @JvmOverloads constructor(
             // [intoRunningTurn] is true when the INPUT left while a turn was
             // still running (the idle hold timed out), which is the only time
             // the host can answer it with RUNTIME_INPUT_ACK / _REJECTED.
-            val put: suspend (intoRunningTurn: Boolean) -> Boolean = { intoRunningTurn ->
-                // Persisted here rather than when the bubble went up. The row's
-                // timestamp is what orders the transcript, and stamping it at
-                // the tap put a queued message *ahead of the reply it is
-                // waiting on* — the pinning below keeps the live list right,
-                // but the persisted order won, so the pair rendered as two
-                // questions followed by two answers.
-                if (echoUserMessage) {
-                    conversationHistory.persistMessage(userItem, targetSessionId)
-                } else if (messageId != null) {
-                    // A resend: the bubble already moved to the bottom, and
-                    // the saved row has to follow or a reload puts it back.
+            // Held behind a running turn, a new message would otherwise live
+            // only in memory until it goes out, and a process death in between
+            // lost it without a trace. Saved now as failed, so a restart brings
+            // it back resendable. Same check as sendWhenTheAgentIsIdle's.
+            val savedWhileHeld = echoUserMessage && waitForRunningTurn && hasSomethingToSend &&
+                (serverTurnActive.value || isAgentWorking.value)
+            if (savedWhileHeld) {
+                conversationHistory.persistMessage(userItem.copy(state = UserMessageState.FAILED), targetSessionId)
+            }
+
+            // Where the row has to be once this message settles: a resend's
+            // bubble already moved to the bottom, and one saved while held is
+            // dated at the tap — before the reply it waited behind. Either way
+            // the saved row follows it to the end, or a reload puts it back
+            // above that reply (two questions, then two answers).
+            suspend fun saveAtTheEnd() {
+                if (savedWhileHeld || messageId != null) {
                     conversationHistory.moveMessageToEnd(userItem, targetSessionId)
+                } else if (echoUserMessage) {
+                    conversationHistory.persistMessage(userItem, targetSessionId)
                 }
+            }
+
+            val put: suspend (intoRunningTurn: Boolean) -> Boolean = { intoRunningTurn ->
+                // Saved (or moved) here, when it goes out, rather than when the
+                // bubble went up: the row's timestamp is what orders the
+                // transcript. See saveAtTheEnd.
+                saveAtTheEnd()
                 // A resend (messageId given) parked its bubble as QUEUED before
                 // getting here, so it has to be settled even when nothing else
                 // flagged it — otherwise it would stay QUEUED after delivery.
+                // One saved while held is saved as failed, and settling is
+                // what clears that once it is delivered.
                 transmit(
                     userId = userId,
                     payload = payload,
                     intoRunningTurn = intoRunningTurn,
                     offline = offline,
-                    settleBubble = queuedAtSend || messageId != null,
+                    settleBubble = queuedAtSend || messageId != null || savedWhileHeld,
                     attempt = 0
                 )
             }
@@ -1889,15 +1905,11 @@ open class ChatViewModel @JvmOverloads constructor(
                 sendWhenTheAgentIsIdle(
                     canRideRunningTurn = !payload.hasAttachments,
                     onHeldTooLong = {
-                        // put() never runs for this message, so this is the only place
-                        // it gets saved — or, for a resend, moved to where its bubble
-                        // now is. Without it, reopening the app shows the agent's answer
-                        // with no question above it.
-                        if (echoUserMessage) {
-                            conversationHistory.persistMessage(userItem, targetSessionId)
-                        } else if (messageId != null) {
-                            conversationHistory.moveMessageToEnd(userItem, targetSessionId)
-                        }
+                        // put() never runs for this message, so this is where it is
+                        // saved, or moved to where its bubble now is. Without it,
+                        // reopening the app shows the agent's answer with no
+                        // question above it.
+                        saveAtTheEnd()
                         setUserMessageState(userId, UserMessageState.FAILED)
                     },
                     send = put
