@@ -8,6 +8,7 @@ import ai.openonion.oochat.data.local.mapper.MessageMapper
 import ai.openonion.oochat.data.local.mapper.TranscriptItemCodec
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.Role
+import ai.openonion.oochat.domain.model.UserMessageState
 import androidx.room.withTransaction
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -112,9 +113,16 @@ open class PersistenceTransaction(
                 files = MessageMapper.encodeFiles(files),
                 itemType = turnThinking?.let { TranscriptItemCodec.TURN_ITEM_TYPE },
                 payload = turnThinking,
-                // Written as it changes (MessageDao.updateDeliveryState), not
-                // here — so a re-save must not wipe a "failed" already recorded.
-                deliveryState = messageDao.getDeliveryStateById(item.id)
+                // Otherwise written as it changes (MessageDao.updateDeliveryState),
+                // so a re-save keeps what is recorded rather than wiping a
+                // "failed". An item already failed is saved failed in this same
+                // write: a message saved while held, so it is never on disk for
+                // even a moment as delivered.
+                deliveryState = if ((item as? ChatItem.User)?.state == UserMessageState.FAILED) {
+                    ChatMessageEntity.DELIVERY_FAILED
+                } else {
+                    messageDao.getDeliveryStateById(item.id)
+                }
             )
             messageDao.insertMessage(entity)
 

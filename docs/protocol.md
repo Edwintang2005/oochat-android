@@ -696,11 +696,13 @@ turn and gets no such reply.
 | Disconnect / reconnect | `FAILED`. No reply can arrive on a dead socket and whether the host queued it is unknown. |
 
 **After a restart.** Only `FAILED` is saved (`chat_messages.delivery_state`,
-added in database v14). `SENT` and outbox messages come back `SENT`. A saved
-message that was awaiting an answer, or held in memory for a retry (a resend, or
-one the host refused as retryable), comes back `FAILED`, since its delivery is
-unknown or the hold was lost. Two gaps remain; see the last two items under
-Known gaps below.
+added in database v14). `SENT` and outbox messages come back `SENT`. A message
+that was awaiting an answer, or held in memory (behind a running turn, for a
+resend, or after a retryable refusal), comes back `FAILED`, since its delivery
+is unknown or the hold was lost. A new message held behind a running turn is
+saved at the tap for this reason, already `FAILED`, and its row is moved to the
+end of the conversation when it is sent, so it still reloads below the reply it
+waited behind. One gap remains; see the last item under Known gaps below.
 
 **When this happens at all.** `ChatViewModel.sendWhenTheAgentIsIdle` still holds
 ordinary messages until the running turn ends (see `architecture.md`), so a
@@ -720,9 +722,6 @@ If the turn is still running after 2 minutes, the message is marked failed
   message is not resent.
 - Hosts older than the change that made the ACK truthful acknowledge input they
   never drain. Nothing on the wire identifies such a host.
-- A new message held behind a running turn is not saved until it is sent or
-  the hold times out, which keeps the saved order right. If the process dies
-  during the hold, the message is lost rather than coming back `FAILED`.
 - A message marked `FAILED` because the connection dropped while it awaited an
   answer may still have reached the host. Its reply can arrive in the replay,
   but the `FAILED` mark is saved, so it stays, with a resend on offer right
