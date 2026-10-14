@@ -52,8 +52,14 @@ data class ControlCenterSnapshot(
         const val MAX_SKILLS = 2000
         private const val MAX_SKILL_NAME = 64
         private const val MAX_SKILL_DESCRIPTION = 256
+        const val MAX_SKILL_BYTES = 512 * 1024
+        private const val SKILL_OVERHEAD_BYTES = 32
 
-        /** Skills come from the agent, so they are cut to `boundControlSnapshot`'s limits. */
+        /**
+         * Skills come from the agent, so they are cut to `boundControlSnapshot`'s limits, and to
+         * [MAX_SKILL_BYTES] of JSON so they cannot push the snapshot past the bridge's size limit.
+         * As upstream, dropping skills does not set [truncated], which is about chat items.
+         */
         fun of(
             sessionId: String?,
             agentAddress: String,
@@ -65,14 +71,26 @@ data class ControlCenterSnapshot(
             agentAddress = agentAddress,
             status = ControlCenterAgentStatus.of(activity),
             connectionState = ControlCenterConnection.of(connection),
-            skills = skills.take(MAX_SKILLS).map { skill ->
-                ControlCenterSkill(
-                    name = skill.name.take(MAX_SKILL_NAME),
-                    description = skill.description?.takeIf { it.isNotBlank() }?.take(MAX_SKILL_DESCRIPTION)
-                )
-            },
-            truncated = skills.size > MAX_SKILLS
+            skills = boundSkills(skills)
         )
+
+        private fun boundSkills(skills: List<AgentSkill>): List<ControlCenterSkill> {
+            var bytes = 0
+            return skills.take(MAX_SKILLS).asSequence()
+                .map { skill ->
+                    ControlCenterSkill(
+                        name = skill.name.take(MAX_SKILL_NAME),
+                        description = skill.description?.takeIf { it.isNotBlank() }?.take(MAX_SKILL_DESCRIPTION)
+                    )
+                }
+                .takeWhile { skill ->
+                    bytes += jsonBytes(skill.name) + (skill.description?.let(::jsonBytes) ?: 0) + SKILL_OVERHEAD_BYTES
+                    bytes <= MAX_SKILL_BYTES
+                }
+                .toList()
+        }
+
+        private fun jsonBytes(text: String) = JsonPrimitive(text).toString().toByteArray(Charsets.UTF_8).size
     }
 }
 

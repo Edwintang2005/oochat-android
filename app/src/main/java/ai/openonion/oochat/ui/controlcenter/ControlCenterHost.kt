@@ -6,9 +6,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
@@ -21,6 +22,8 @@ import java.security.SecureRandom
 /** The app's MessagePort, by way of the parent page. */
 fun interface ControlCenterPort {
     fun post(message: JsonObject)
+
+    fun close() {}
 }
 
 /** Which chat an action runs in. Only [CURRENT] is supported for now. */
@@ -76,14 +79,15 @@ class ControlCenterHost(
 
     init {
         require(REVISION.matches(revision) && ID.matches(epoch)) { "Invalid Control Center bridge scope" }
-        state = snapshot.toJson()
-        require(fits(state)) { "Control Center frame exceeds size limit" }
+        state = sendable(snapshot)
         sendSnapshot()
     }
 
-    fun onMessage(data: JsonElement) {
-        val value = data as? JsonObject ?: return
-        if (closed || !isScoped(value)) return
+    /** [raw] is the app's message as JSON text, checked for size and nesting before parsing. */
+    fun onMessage(raw: String) {
+        if (closed || raw.toByteArray(Charsets.UTF_8).size > MAX_FRAME_BYTES || !nestsAtMost(raw, MAX_DEPTH)) return
+        val value = runCatching { Json.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return
+        if (!isScoped(value)) return
         when (value.stringField("type")) {
             PREFIX + "resnapshot" -> sendSnapshot()
             PREFIX + "cancel" -> value.stringField("id")?.let { pending.remove(it)?.cancel() }
@@ -91,23 +95,18 @@ class ControlCenterHost(
         }
     }
 
-    /** Skips (and logs) a snapshot over the size limit; W16AAPPLE-30 bounds it. */
     fun publish(next: ControlCenterSnapshot) {
         if (closed) return
-        val json = next.toJson()
-        if (!fits(json)) {
-            FileLogger.w(LogTags.CONTROL_CENTER, "Snapshot over ${MAX_FRAME_BYTES}B not published")
-            return
-        }
-        state = json
+        state = sendable(next)
         send(PREFIX + "event") { put("sequence", ++sequence); put("snapshot", state) }
     }
 
-    /** Cancels pending actions and sends nothing more. */
+    /** Cancels pending actions, closes the port and sends nothing more. */
     fun dispose() {
         closed = true
-        pending.values.forEach { it.cancel() }
+        pending.values.toList().forEach { it.cancel() }
         pending.clear()
+        port.close()
     }
 
     private fun onRequest(value: JsonObject) {
@@ -155,7 +154,10 @@ class ControlCenterHost(
             val outcome = try {
                 Result.success(action())
             } catch (e: CancellationException) {
-                throw e
+                // Only this job's own cancellation goes unanswered; one thrown by the action is a failure.
+                if (!isActive) throw e
+                FileLogger.e(LogTags.CONTROL_CENTER, "Action cancelled itself: ${e.message}")
+                Result.failure(ControlCenterActionRejected("Control Center action failed"))
             } catch (e: ControlCenterActionRejected) {
                 Result.failure(e)
             } catch (e: Exception) {
@@ -170,6 +172,8 @@ class ControlCenterHost(
             }
         }
         pending[id] = job
+        // Also covers a job that never runs because the scope is already cancelled.
+        job.invokeOnCompletion { pending.remove(id) }
         job.start()
     }
 
@@ -214,8 +218,16 @@ class ControlCenterHost(
         val version = value["version"] as? JsonPrimitive
         return version != null && !version.isString && version.intOrNull == BRIDGE_VERSION &&
             value.stringField("revision") == revision &&
-            value.stringField("epoch") == epoch &&
-            fits(value)
+            value.stringField("epoch") == epoch
+    }
+
+    /** The snapshot as sent. One over the size limit is sent without its skills and chat items. */
+    private fun sendable(snapshot: ControlCenterSnapshot): JsonObject {
+        val json = snapshot.toJson()
+        if (fits(json)) return json
+        FileLogger.w(LogTags.CONTROL_CENTER, "Snapshot over ${MAX_FRAME_BYTES}B sent without skills and chat items")
+        val dropped = snapshot.truncated || snapshot.chatItems.isNotEmpty()
+        return snapshot.copy(skills = emptyList(), chatItems = emptyList(), truncated = dropped).toJson()
     }
 
     companion object {
@@ -228,6 +240,9 @@ class ControlCenterHost(
         const val MAX_MESSAGE_CHARS = 10_000
         const val MAX_ARGS_CHARS = 2_000
 
+        /** Bridge messages are a few levels deep; deeper ones are refused before parsing. */
+        const val MAX_DEPTH = 32
+
         private val REVISION = Regex("^sha256:[a-f0-9]{64}$")
         private val ID = Regex("^[A-Za-z0-9._:-]{1,128}$")
         private val SKILL_NAME = Regex("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -237,6 +252,23 @@ class ControlCenterHost(
 
         private fun fits(value: JsonObject): Boolean =
             value.toString().toByteArray(Charsets.UTF_8).size <= MAX_FRAME_BYTES
+
+        /** True when no array or object in [raw] is nested deeper than [max]. Parsing deeper JSON can overflow the stack. */
+        private fun nestsAtMost(raw: String, max: Int): Boolean {
+            var depth = 0
+            var inString = false
+            var escaped = false
+            for (c in raw) {
+                when {
+                    escaped -> escaped = false
+                    inString -> if (c == '\\') escaped = true else if (c == '"') inString = false
+                    c == '"' -> inString = true
+                    c == '{' || c == '[' -> if (++depth > max) return false
+                    c == '}' || c == ']' -> depth--
+                }
+            }
+            return true
+        }
 
         private fun JsonObject.stringField(key: String): String? =
             (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content

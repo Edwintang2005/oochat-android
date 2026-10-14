@@ -359,9 +359,27 @@ class ProtocolParserTest {
     }
 
     @Test
-    fun `capabilities that are not strings are dropped, and none is an empty list`() {
-        assertEquals(listOf("camera"), parsedApp(appFrame("capabilities" to """["camera",3,null]"""))?.capabilities)
-        assertEquals(emptyList<String>(), parsedApp(appFrame("capabilities" to "null"))?.capabilities)
+    fun `an app may only declare the capabilities the React SDK allows`() {
+        // They become the iframe's permissions, so React refuses the whole descriptor otherwise.
+        assertEquals(
+            listOf("camera", "microphone", "geolocation", "clipboard-read"),
+            parsedApp(appFrame("capabilities" to """["camera","microphone","geolocation","clipboard-read"]"""))?.capabilities
+        )
+        assertEquals(emptyList<String>(), parsedApp(appFrame("capabilities" to "[]"))?.capabilities)
+        listOf(
+            """["camera *; payment"]""",
+            """["usb"]""",
+            """["camera",3]""",
+            "null",
+            "\"camera\""
+        ).forEach { assertNull(it, parsedApp(appFrame("capabilities" to it))) }
+    }
+
+    @Test
+    fun `an app that declares no capabilities has none`() {
+        val frame = appFrame().replace(""","capabilities":["clipboard-write","fullscreen"]""", "")
+
+        assertEquals(emptyList<String>(), parsedApp(frame)?.capabilities)
     }
 
     @Test

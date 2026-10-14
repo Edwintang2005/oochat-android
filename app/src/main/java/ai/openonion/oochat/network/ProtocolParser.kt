@@ -765,6 +765,11 @@ object ProtocolParser {
 
     private val CONTROL_CENTER_REVISION = Regex("^sha256:[a-f0-9]{64}$")
 
+    /** `CONTROL_CENTER_CAPABILITIES` in connectonion-react's `remote-agent.ts`. */
+    private val CONTROL_CENTER_CAPABILITIES = setOf(
+        "camera", "microphone", "geolocation", "clipboard-read", "clipboard-write", "fullscreen"
+    )
+
     /**
      * The app a `CONTROL_CENTER_APP` descriptor names, or null. The checks match what the
      * Host guarantees before activating a revision (control_center/runtime.py), so only a
@@ -774,21 +779,25 @@ object ProtocolParser {
         val app = element as? JsonObject ?: return null
         val url = app.stringField("url")
         val revision = app.stringField("revision")
+        val capabilities = app["capabilities"]?.let { value ->
+            (value as? JsonArray)?.map { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+        }
         val refused = when {
             app.stringField("schema") != CONTROL_APP_SCHEMA -> "unknown schema"
             app.stringField("sdk_version") != CONTROL_CENTER_BRIDGE_VERSION -> "unsupported bridge version"
             (app["review"] as? JsonObject)?.stringField("status") != "approved" -> "not approved"
             revision == null || !CONTROL_CENTER_REVISION.matches(revision) -> "malformed revision"
             url == null || !isPinnedHttpsUrl(url) -> "not a plain https address"
+            // As the React SDK: these become the iframe's permissions, so anything else refuses the app.
+            app.containsKey("capabilities") && (capabilities == null || capabilities.any { it !in CONTROL_CENTER_CAPABILITIES }) ->
+                "unknown capability"
             else -> null
         }
         if (refused != null) {
             FileLogger.w(LogTags.PROTOCOL, "CONTROL_CENTER_APP refused: $refused")
             return null
         }
-        val capabilities = (app["capabilities"] as? JsonArray).orEmpty()
-            .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
-        return ControlCenterApp(url = url!!, revision = revision!!, capabilities = capabilities)
+        return ControlCenterApp(url = url!!, revision = revision!!, capabilities = capabilities.orEmpty().filterNotNull())
     }
 
     /** No credentials, query or fragment: the fragment is added by the bridge. */

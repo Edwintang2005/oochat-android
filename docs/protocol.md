@@ -1143,18 +1143,34 @@ connectonion-react `src/control-center.ts`, and the app side
 **The descriptor.** `ProtocolParser.controlCenterAppOf` keeps an `app` only when it
 is what the Host's own runtime activates: schema `connectonion.control-app/1`,
 `sdk_version` `"1"` (the bridge version this client speaks), `review.status`
-`approved`, a `revision` of `sha256:` and 64 lowercase hex characters, and an
-`https` URL with a host and no credentials, query or fragment. Anything else, and
-`app: null`, reads as no app, so a withdrawn or refused app never outlives the
-frame that replaced it. `ConnectionRepository.controlCenterApp` holds it, reset on
-every `connect()` with `dashboardHtml`.
+`approved`, a `revision` of `sha256:` and 64 lowercase hex characters, an
+`https` URL with a host and no credentials, query or fragment, and `capabilities`
+(if present) drawn only from `camera`, `microphone`, `geolocation`,
+`clipboard-read`, `clipboard-write` and `fullscreen`, as the React SDK requires,
+since they become the iframe's permissions. Anything else, and `app: null`, reads
+as no app. `ConnectionRepository.controlCenterApp` holds it, reset on every
+`connect()` with `dashboardHtml`.
+
+Where this differs from the React SDK, on purpose:
+
+- A refused `CONTROL_CENTER_APP` clears the app; React keeps the last valid one
+  and clears it only from `CONTROL_CENTER_STATE`. The Host always sends the two
+  together, so the result is the same from a conforming Host, and a refused one
+  never leaves an older app on screen.
+- React drops both frames unless their `session_id` is the current session's.
+  This client does not check it: the relay stamps its own `session_id` on frames
+  it forwards, so the check could drop real frames in relay mode.
+- `java.net.URI` is stricter than the Host's `urlsplit` (an underscore in a host
+  name, for example, gives no host), so such an app reads as none. This fails safe.
 
 **The bridge.** `ui/controlcenter/ControlCenterHost` is the chat's side, a port of
 `createControlCenterHost`, message for message. Every message both ways carries
 `version: 1`, the app's `revision` and a fresh per-load `epoch`; one that does not
-match all three, or is over 2 MiB, is ignored, which is what stops a stale port.
+match all three is ignored, which is what stops a stale port. Messages arrive as
+JSON text and are dropped unparsed when over 2 MiB or nested more than 32 deep.
 The host sends a `snapshot` (numbered 1) as soon as it exists, then each change as
-the next numbered `event`, and answers `resnapshot` with the current state. The
+the next numbered `event`, and answers `resnapshot` with the current state. A
+snapshot that would be over 2 MiB is sent without its skills and chat items. The
 app's requests:
 
 | `action` | Becomes | Checked first |
@@ -1165,22 +1181,25 @@ app's requests:
 Every request also needs a well-formed `id` used once in this load, a connected
 agent, an object `payload`, and `conversation` `current` (the default) or `new`; at
 most 16 wait at once and 512 per load. A refusal is a `response` with
-`ok: false` and `error.code` `action_rejected`; `cancel` stops the wait and no
-reply is sent.
+`ok: false` and `error.code` `action_rejected`. A cancelled request gets no reply.
 
-**Actions** (`ChatViewModel.controlCenterActions`) run only while the status line
-is idle: queued behind a running turn, the answer would be that turn's. The
-message goes through the ordinary send path, so it is a visible, saved user
-turn, and the reply (`result.sessionId`, the conversation's session) comes when
-that turn's `OUTPUT` arrives. A failed send, an agent `ERROR` or a dropped
-connection end it with a refusal instead. `conversation: "new"` is refused for
-now. Cancelling only stops the wait: the message has gone, and its turn runs on
-in the chat.
+**Actions** (`ChatViewModel.controlCenterActions`) run one at a time, and only
+while the status line is idle and no stopped turn is still closing: queued behind
+a running turn, the answer would be that turn's. The message goes through the
+ordinary send path, so it is a visible, saved user turn. The action waits for the
+turn that message starts (not merely the next `OUTPUT`) and answers with
+`result.sessionId`, the session that turn ran in, even if the user has switched
+conversation meanwhile. A failed send, an agent `ERROR`, Stop in the chat or a
+dropped connection end it with a refusal instead. `conversation: "new"` is refused
+for now. As in the React SDK, cancelling an action (the app gave up, or the page
+closed) interrupts the turn it started.
 
 **The snapshot** (`ChatViewModel.controlCenterSnapshot`) carries the agent's
 address, the session, its published skills (at most 2,000, names cut to 64
-characters and descriptions to 256), the status (`working`, `waiting` or
-`idle`, read off the chat's own status line) and the connection (`connected`,
+characters and descriptions to 256, and at most 512 KiB of JSON; dropping skills
+does not set `truncated`, which is about chat items), the status (`working`
+while an action or a stopped turn is in progress, otherwise read off the chat's
+own status line, so `working`, `waiting` or `idle`) and the connection (`connected`,
 `reconnecting`, or `disconnected`, which includes a first connect still in
 progress). Chat items and their live updates are W16AAPPLE-30.
 

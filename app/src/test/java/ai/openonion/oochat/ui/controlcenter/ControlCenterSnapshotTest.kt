@@ -43,10 +43,20 @@ class ControlCenterSnapshotTest {
         val trimmed = of(skills = listOf(long, AgentSkill(name = "plain", description = " "))).skills
 
         assertEquals(2000, bounded.skills.size)
-        assertTrue("dropping skills is reported", bounded.truncated)
-        assertFalse(of(skills = many.take(5)).truncated)
+        // As boundControlSnapshot: truncated is about chat items, not skills.
+        assertFalse(bounded.truncated)
         assertEquals(64, trimmed[0].name.length)
         assertEquals(256, trimmed[0].description?.length)
         assertNull("a blank description is left out", trimmed[1].description)
+    }
+
+    @Test
+    fun `skills that escape badly in JSON cannot outgrow the snapshot`() {
+        // A control character encodes as six bytes, so 2000 such skills would be about 4 MB.
+        val heavy = (0 until 2000).map { AgentSkill(name = "\u0001".repeat(64) + it, description = "\u0001".repeat(256)) }
+
+        val skills = of(skills = heavy).toJson()["skills"].toString().toByteArray(Charsets.UTF_8).size
+
+        assertTrue("skills JSON was $skills bytes", skills <= ControlCenterSnapshot.MAX_SKILL_BYTES)
     }
 }

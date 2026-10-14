@@ -79,6 +79,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.flow.stateIn
@@ -605,13 +606,29 @@ open class ChatViewModel @JvmOverloads constructor(
     private val serverTurnActive = MutableStateFlow(false)
 
     /**
-     * How each turn ended, emitted wherever [serverTurnActive] is cleared by the agent or the
-     * socket. A StateFlow collector can miss a turn that starts and ends quickly; a subscriber
-     * to this cannot. Declared above [init] for the same reason as [serverTurnActive].
+     * Which message started each turn and how each turn ended, so a Control Center action can
+     * wait for its own turn. A StateFlow collector can miss a turn that starts and ends quickly;
+     * a subscriber to this cannot. Declared above [init] for the same reason as [serverTurnActive].
      */
-    private val turnEnds = MutableSharedFlow<TurnEnd>(extraBufferCapacity = 8)
+    private val turnEvents = MutableSharedFlow<TurnEvent>(extraBufferCapacity = 16)
 
-    private enum class TurnEnd { OUTPUT, ERROR, CONNECTION_LOST }
+    private sealed interface TurnEvent {
+        data class Started(val messageId: String) : TurnEvent
+        data class Ended(val how: TurnEnd) : TurnEvent
+    }
+
+    private enum class TurnEnd { OUTPUT, ERROR, CONNECTION_LOST, INTERRUPTED, NOT_SENT }
+
+    /** Stop was pressed and the stopped turn's closing reply has not arrived yet. */
+    private val interruptPending = MutableStateFlow(false)
+
+    /** A Control Center action is between its idle check and the end of its turn. */
+    private val controlCenterTurnInFlight = MutableStateFlow(false)
+
+    private fun turnEnded(how: TurnEnd) {
+        if (how != TurnEnd.INTERRUPTED) interruptPending.value = false
+        turnEvents.tryEmit(TurnEvent.Ended(how))
+    }
 
     /**
      * The top bar's status line: running, waiting for you, idle, or session not found. See
@@ -644,9 +661,12 @@ open class ChatViewModel @JvmOverloads constructor(
     val controlCenterSnapshot: StateFlow<ControlCenterSnapshot> = combine(
         connectionState,
         sessionActivity,
-        agentProfile
-    ) { state, activity, profile ->
-        controlCenterSnapshotOf(state, activity, profile)
+        agentProfile,
+        controlCenterTurnInFlight,
+        interruptPending
+    ) { state, activity, profile, actionInFlight, stopping ->
+        val shown = if (activity != null && (actionInFlight || stopping)) SessionActivity.RUNNING else activity
+        controlCenterSnapshotOf(state, shown, profile)
     }.stateIn(
         viewModelScope,
         SharingStarted.Eagerly,
@@ -824,7 +844,7 @@ open class ChatViewModel @JvmOverloads constructor(
                         // into a turn the server is still running, which the
                         // server merges; leaving it shut hangs the composer.
                         serverTurnActive.value = false
-                        turnEnds.tryEmit(TurnEnd.CONNECTION_LOST)
+                        turnEnded(TurnEnd.CONNECTION_LOST)
                         // No reply to a mid-turn send can arrive on a dead
                         // socket, and whether the host queued it is unknown.
                         // Say it did not go, and let the user resend it.
@@ -880,6 +900,8 @@ open class ChatViewModel @JvmOverloads constructor(
                         offscreen.itemToPersist?.let { item ->
                             conversationHistory.persistMessage(item, owner)
                         }
+                        if (event is ChatEvent.OutputReceived) turnEnded(TurnEnd.OUTPUT)
+                        if (event is ChatEvent.ConnectionErrorOccurred) turnEnded(TurnEnd.ERROR)
                         return@collect
                     }
 
@@ -916,7 +938,7 @@ open class ChatViewModel @JvmOverloads constructor(
                         event is ChatEvent.ConnectionErrorOccurred
                     ) {
                         serverTurnActive.value = false
-                        turnEnds.tryEmit(if (event is ChatEvent.OutputReceived) TurnEnd.OUTPUT else TurnEnd.ERROR)
+                        turnEnded(if (event is ChatEvent.OutputReceived) TurnEnd.OUTPUT else TurnEnd.ERROR)
                     }
                     when (event) {
                         is ChatEvent.RuntimeInputAcknowledged ->
@@ -1776,44 +1798,76 @@ open class ChatViewModel @JvmOverloads constructor(
 
     /**
      * Sends [content] as a normal user message and returns the session once its turn ends.
-     * Only starts while idle, since a queued message's answer would belong to the running turn.
-     * Cancelling stops the wait, not the turn.
+     * Only one runs at a time, and only while idle, since a queued message's answer would
+     * belong to the running turn. Cancelling interrupts the turn it started, as in the React
+     * SDK, where an app owns only the idle turn it starts.
      */
     private suspend fun runControlCenterTurn(content: String, conversation: ControlCenterConversation): String {
         if (conversation != ControlCenterConversation.CURRENT) {
             throw ControlCenterActionRejected("Starting a new chat from the Control Center is not supported yet")
         }
-        when (sessionActivity.value) {
-            SessionActivity.IDLE, SessionActivity.NOT_FOUND -> Unit
-            SessionActivity.RUNNING, SessionActivity.AWAITING_USER ->
-                throw ControlCenterActionRejected("The agent is busy. Try again when its current turn has finished")
-            null -> throw ControlCenterActionRejected("Agent connection is not ready")
+        val activity = sessionActivity.value
+        if (activity == null || _targetAgentAddress.isBlank()) {
+            throw ControlCenterActionRejected("Agent connection is not ready")
         }
+        if (activity == SessionActivity.RUNNING || activity == SessionActivity.AWAITING_USER ||
+            controlCenterTurnInFlight.value || interruptPending.value
+        ) {
+            throw ControlCenterActionRejected("The agent is busy. Try again when its current turn has finished")
+        }
+        controlCenterTurnInFlight.value = true
         val messageId = java.util.UUID.randomUUID().toString()
-        val end = coroutineScope {
-            // Subscribe before sending so a turn that ends at once is not missed.
-            val subscribed = CompletableDeferred<Unit>()
-            val ended = async {
-                merge(
-                    turnEnds.onSubscription { subscribed.complete(Unit) },
-                    // A failed send starts no turn, so nothing else would end the wait.
-                    _uiState.map { ui -> ui.chatItems.any { it is ChatItem.User && it.id == messageId && it.state == UserMessageState.FAILED } }
-                        .filter { it }
-                        .map { null }
-                ).first()
+        var started = false
+        var ended = false
+        var session: String? = null
+        try {
+            val end = coroutineScope {
+                // Subscribe before sending so a turn that ends at once is not missed.
+                val subscribed = CompletableDeferred<Unit>()
+                val waiting = async {
+                    merge(
+                        turnEvents.onSubscription { subscribed.complete(Unit) },
+                        // A failed send starts no turn, so nothing else would end the wait.
+                        _uiState.map { ui -> ui.chatItems.any { it is ChatItem.User && it.id == messageId && it.state == UserMessageState.FAILED } }
+                            .filter { it }
+                            .map { TurnEvent.Ended(TurnEnd.NOT_SENT) }
+                    ).mapNotNull { event ->
+                        when (event) {
+                            is TurnEvent.Started -> {
+                                if (event.messageId == messageId) {
+                                    started = true
+                                    session = controlCenterSessionId(_targetAgentAddress)
+                                }
+                                null
+                            }
+                            // An end before this message's turn started belongs to an earlier turn,
+                            // unless it means this message cannot be sent at all.
+                            is TurnEvent.Ended -> event.how.takeIf {
+                                started || it == TurnEnd.NOT_SENT || it == TurnEnd.CONNECTION_LOST
+                            }
+                        }
+                    }.first()
+                }
+                subscribed.await()
+                FileLogger.i(LogTags.CHAT_VM, "Control Center action: ${LogSanitizer.contentSummary(content)}")
+                sendMessage(content, messageId = messageId)
+                waiting.await()
             }
-            subscribed.await()
-            FileLogger.i(LogTags.CHAT_VM, "Control Center action: ${LogSanitizer.contentSummary(content)}")
-            sendMessage(content, messageId = messageId)
-            ended.await()
-        }
-        return when (end) {
-            TurnEnd.OUTPUT -> controlCenterSessionId(_targetAgentAddress)
-                ?: throw ControlCenterActionRejected("The turn finished, but this chat has no session yet")
-            TurnEnd.ERROR -> throw ControlCenterActionRejected("The agent stopped with an error. See the chat")
-            TurnEnd.CONNECTION_LOST ->
-                throw ControlCenterActionRejected("The connection dropped before the turn finished. Check the chat before retrying")
-            null -> throw ControlCenterActionRejected("The message did not reach the agent")
+            ended = true
+            return when (end) {
+                TurnEnd.OUTPUT -> session ?: controlCenterSessionId(_targetAgentAddress)
+                    ?: throw ControlCenterActionRejected("The turn finished, but this chat has no session yet")
+                TurnEnd.ERROR -> throw ControlCenterActionRejected("The agent stopped with an error. See the chat")
+                TurnEnd.INTERRUPTED -> throw ControlCenterActionRejected("The turn was stopped in the chat")
+                TurnEnd.CONNECTION_LOST ->
+                    throw ControlCenterActionRejected("The connection dropped before the turn finished. Check the chat before retrying")
+                TurnEnd.NOT_SENT -> throw ControlCenterActionRejected("The message did not reach the agent")
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            if (started && !ended) interrupt()
+            throw e
+        } finally {
+            controlCenterTurnInFlight.value = false
         }
     }
 
@@ -2115,6 +2169,7 @@ open class ChatViewModel @JvmOverloads constructor(
             // for the host's answer: if that answer is the turn's OUTPUT, it clears this,
             // and setting it after the wait would resurrect a turn that already ended.
             serverTurnActive.value = true
+            turnEvents.tryEmit(TurnEvent.Started(userId))
             if (pending == null) {
                 if (offline) outboxedMessageIds += userId
                 // Off the tail once it lands, so anything the new turn emits
@@ -2587,6 +2642,10 @@ open class ChatViewModel @JvmOverloads constructor(
      */
     fun interrupt() {
         FileLogger.i(LogTags.CHAT_VM, "interrupt: stopping current run")
+        // The Host answers a stopped run with a closing OUTPUT; until then a new
+        // Control Center action would be answered by that OUTPUT instead of its own.
+        if (serverTurnActive.value || isAgentWorking.value) interruptPending.value = true
+        turnEnded(TurnEnd.INTERRUPTED)
         markRunningItemsDone()
         // markRunningItemsDone only freezes the spinners. Without this the
         // send gate stayed shut, so Stop looked like it had worked and the

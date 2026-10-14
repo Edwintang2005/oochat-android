@@ -3,6 +3,7 @@ package ai.openonion.oochat.ui.controlcenter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -73,10 +74,8 @@ class ControlCenterHostTest {
     private fun host(scope: CoroutineScope, snapshot: ControlCenterSnapshot = snapshot()) =
         ControlCenterHost(revision, epoch, snapshot, posted::add, actions, scope)
 
-    private fun fromApp(vararg fields: Pair<String, Any?>, version: Any = 1, rev: String = revision, ep: String = epoch): JsonElement {
-        val all = mapOf("version" to version, "revision" to rev, "epoch" to ep) + fields
-        return Json.parseToJsonElement(toJson(all))
-    }
+    private fun fromApp(vararg fields: Pair<String, Any?>, version: Any = 1, rev: String = revision, ep: String = epoch): String =
+        toJson(mapOf("version" to version, "revision" to rev, "epoch" to ep) + fields)
 
     private fun toJson(value: Any?): String = when (value) {
         null -> "null"
@@ -144,7 +143,8 @@ class ControlCenterHostTest {
             fromApp("type" to prefix + "resnapshot", rev = "sha256:" + "d".repeat(64)),
             fromApp("type" to prefix + "resnapshot", version = 2),
             fromApp("type" to prefix + "resnapshot", version = "1"),
-            JsonPrimitive("resnapshot"),
+            "\"resnapshot\"",
+            "not json",
             fromApp("type" to prefix + "resnapshot", "padding" to "x".repeat(ControlCenterHost.MAX_FRAME_BYTES))
         ).forEach(host::onMessage)
 
@@ -393,6 +393,65 @@ class ControlCenterHostTest {
 
         assertEquals(1, actions.cancelled)
         assertTrue(posted.isEmpty())
+    }
+
+    @Test
+    fun `a message nested deeper than the bridge needs is ignored before parsing`() = runTest {
+        val host = host(backgroundScope)
+        posted.clear()
+        fun nested(depth: Int) = Json.parseToJsonElement("[".repeat(depth) + "]".repeat(depth))
+
+        host.onMessage(fromApp("type" to prefix + "resnapshot", "padding" to nested(40)))
+        host.onMessage(fromApp("type" to prefix + "resnapshot").dropLast(1) + ",\"padding\":${"[".repeat(100_000)}}")
+        host.onMessage(fromApp("type" to prefix + "resnapshot", "padding" to nested(3)))
+
+        assertEquals("only the shallow one counts", 1, posted.size)
+    }
+
+    @Test
+    fun `a snapshot over the size limit is sent without its skills instead of failing`() = runTest {
+        // Built directly, past ControlCenterSnapshot.of's own bound, to reach the host's last line of defence.
+        val huge = snapshot().copy(skills = (0 until 40_000).map { ControlCenterSkill("skill$it", "d".repeat(60)) })
+
+        val host = host(backgroundScope, huge)
+        host.publish(huge)
+
+        assertEquals(2, posted.size)
+        posted.forEach { assertTrue(it["snapshot"]!!.jsonObject["skills"]!!.jsonArray.isEmpty()) }
+        assertFalse("no chat items were dropped", posted.last()["snapshot"]!!.jsonObject["truncated"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `requests on a host whose scope has ended do not use up its capacity`() = runTest {
+        val ended = CoroutineScope(Job().apply { cancel() })
+        val host = host(ended)
+
+        repeat(ControlCenterHost.MAX_PENDING + 1) { host.onMessage(sendMessage("r$it", "hi")) }
+
+        assertTrue(responses().none { errorOf(it["id"]!!.jsonPrimitive.content) == "Bridge request capacity reached; reload the app" })
+    }
+
+    @Test
+    fun `an action that throws a cancellation of its own is still answered`() = runTest {
+        val host = host(backgroundScope)
+        actions.refuseWith = kotlinx.coroutines.CancellationException("timed out inside the action")
+
+        host.onMessage(sendMessage("request-1", "hi"))
+        runCurrent()
+
+        assertEquals("Control Center action failed", errorOf("request-1"))
+    }
+
+    @Test
+    fun `disposing the host closes its port`() = runTest {
+        var closed = false
+        val port = object : ControlCenterPort {
+            override fun post(message: JsonObject) { posted += message }
+            override fun close() { closed = true }
+        }
+        ControlCenterHost(revision, epoch, snapshot(), port, actions, backgroundScope).dispose()
+
+        assertTrue(closed)
     }
 
     // --- scope ---
