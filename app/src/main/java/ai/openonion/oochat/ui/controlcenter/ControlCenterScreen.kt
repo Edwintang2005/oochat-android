@@ -5,6 +5,7 @@ import ai.openonion.oochat.ui.components.BackTopAppBar
 import ai.openonion.oochat.ui.components.EmptyStateMessage
 import ai.openonion.oochat.ui.dashboard.ChatAwaitsUserBar
 import ai.openonion.oochat.ui.dashboard.NavigationBlockedBar
+import android.webkit.WebView
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.webkit.WebViewCompat
 
 /**
  * The agent's Home when it has published a Control Center app (W16AAPPLE-29). Built like
@@ -33,6 +35,7 @@ import androidx.compose.ui.unit.dp
  *
  * @param app The published app, or null until the Host sends it for this connection.
  * @param supported Whether this device's WebView can host it; see [controlCenterSupported].
+ * @param addMessageListener For tests: Robolectric's WebView cannot register one.
  */
 @Composable
 fun ControlCenterScreen(
@@ -43,15 +46,17 @@ fun ControlCenterScreen(
     agentName: String? = null,
     chatAwaitsUser: Boolean = false,
     supported: Boolean = remember { controlCenterSupported() },
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    addMessageListener: (WebView, WebViewCompat.WebMessageListener) -> Unit = ::addPageListener
 ) {
     var navigationBlocked by remember(app) { mutableStateOf(false) }
     var stopped by remember(app) { mutableStateOf(false) }
+    var listenerFailed by remember(app) { mutableStateOf(false) }
 
     ControlCenterScreenContent(
         // The parser refuses most unpinnable addresses; our own origin is the one it cannot know.
         app = app?.takeIf { ControlCenterPage.appOriginOf(it.url) != null },
-        supported = supported,
+        supported = supported && !listenerFailed,
         stopped = stopped,
         onReload = { stopped = false },
         content = { loaded ->
@@ -61,7 +66,9 @@ fun ControlCenterScreen(
                 actions = actions,
                 onNavigationBlocked = { navigationBlocked = true },
                 onStopped = { stopped = true },
-                modifier = Modifier.fillMaxSize()
+                onUnavailable = { listenerFailed = true },
+                modifier = Modifier.fillMaxSize(),
+                addMessageListener = addMessageListener
             )
         },
         onNavigateBack = onNavigateBack,

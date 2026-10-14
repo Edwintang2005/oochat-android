@@ -16,6 +16,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.lifecycle.Lifecycle
+import androidx.webkit.WebViewCompat
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -58,6 +59,10 @@ class ControlCenterWebViewTest {
 
     private var blocked = 0
     private var stopped = 0
+    private var unavailable = 0
+
+    /** Robolectric's WebView cannot register a message listener, so tests choose the outcome. */
+    private val listens: (WebView, WebViewCompat.WebMessageListener) -> Unit = { _, _ -> }
 
     private fun webViews(): List<WebView> {
         val found = mutableListOf<WebView>()
@@ -85,7 +90,7 @@ class ControlCenterWebViewTest {
     private fun showWebView(app: () -> ControlCenterApp = { this.app }, snapshot: () -> ControlCenterSnapshot = { this.snapshot }) {
         composeRule.setContent {
             ConnectOnionTheme {
-                ControlCenterWebView(app(), snapshot(), actions, onNavigationBlocked = { blocked++ }, onStopped = { stopped++ })
+                ControlCenterWebView(app(), snapshot(), actions, onNavigationBlocked = { blocked++ }, onStopped = { stopped++ }, onUnavailable = { unavailable++ }, addMessageListener = listens)
             }
         }
         composeRule.waitForIdle()
@@ -98,7 +103,7 @@ class ControlCenterWebViewTest {
         var theme by mutableStateOf(ThemeMode.LIGHT)
         composeRule.setContent {
             ConnectOnionTheme(themeMode = theme) {
-                ControlCenterWebView(current, latest, actions, onNavigationBlocked = {}, onStopped = {})
+                ControlCenterWebView(current, latest, actions, onNavigationBlocked = {}, onStopped = {}, onUnavailable = {}, addMessageListener = listens)
             }
         }
         composeRule.waitForIdle()
@@ -123,7 +128,7 @@ class ControlCenterWebViewTest {
     fun `the WebView is destroyed with the screen`() {
         var shown by mutableStateOf(true)
         composeRule.setContent {
-            if (shown) ControlCenterWebView(app, snapshot, actions, onNavigationBlocked = {}, onStopped = {})
+            if (shown) ControlCenterWebView(app, snapshot, actions, onNavigationBlocked = {}, onStopped = {}, onUnavailable = {}, addMessageListener = listens)
         }
         composeRule.waitForIdle()
         val view = webView()
@@ -191,7 +196,7 @@ class ControlCenterWebViewTest {
     fun `a stopped app says so, and Reload starts a fresh WebView`() {
         composeRule.setContent {
             ConnectOnionTheme {
-                ControlCenterScreen(app, snapshot, actions, onNavigateBack = {}, supported = true)
+                ControlCenterScreen(app, snapshot, actions, onNavigateBack = {}, supported = true, addMessageListener = listens)
             }
         }
         composeRule.waitForIdle()
@@ -209,5 +214,25 @@ class ControlCenterWebViewTest {
 
         assertNotSame(crashed, webView())
         assertEquals(ControlCenterPage.PAGE_URL, shadowOf(webView()).lastLoadedUrl)
+    }
+
+    @Test
+    fun `a message channel that cannot be set up says so instead of leaving a blank page`() {
+        composeRule.setContent {
+            ConnectOnionTheme {
+                ControlCenterScreen(
+                    app,
+                    snapshot,
+                    actions,
+                    onNavigateBack = {},
+                    supported = true,
+                    addMessageListener = { _, _ -> throw UnsupportedOperationException("no listener") }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("Control Center unavailable").assertExists()
+        assertTrue(webViews().isEmpty())
     }
 }

@@ -1,11 +1,11 @@
 package ai.openonion.oochat.ui.controlcenter
 
 import ai.openonion.oochat.domain.model.ControlCenterApp
+import ai.openonion.oochat.util.stringField
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -154,8 +154,5 @@ class ControlCenterPage(
                 |</html>
             """.trimMargin()
         }
-
-        private fun JsonObject.stringField(key: String): String? =
-            (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
     }
 }

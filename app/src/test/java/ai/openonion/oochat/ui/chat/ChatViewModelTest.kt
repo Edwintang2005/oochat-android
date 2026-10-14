@@ -5848,6 +5848,53 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun `a cancelled action's message still being sent keeps the agent busy until it resolves`() = runTest(testDispatcher) {
+        // Otherwise a second action could be answered by the first turn's closing reply.
+        connectedForControlCenter()
+        val gate = CompletableDeferred<Unit>()
+        connectUseCase.sendGate = gate
+        val first = controlCenterSend("first")
+        testScheduler.runCurrent()
+        first.cancel(ControlCenterCancelled())
+        testScheduler.runCurrent()
+
+        val second = controlCenterSend("second")
+        testScheduler.runCurrent()
+        assertEquals("The agent is busy. Try again when its current turn has finished", second.await().refusal())
+
+        connectUseCase.failNextSend = true
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+        connectUseCase.sendGate = null
+
+        controlCenterSend("third")
+        testScheduler.runCurrent()
+        assertEquals(listOf("third"), connectUseCase.sentMessages.map { it.content })
+    }
+
+    @Test
+    fun `the Control Center snapshot names the conversation on screen after a switch`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        vm.sendMessage("in A")
+        testScheduler.runCurrent()
+        connectUseCase.emit(ChatEvent.OutputReceived("answer A", null))
+        testScheduler.runCurrent()
+        val a = vm.activeSessionId.value!!
+        vm.startNewSession()
+        testScheduler.runCurrent()
+        vm.sendMessage("in B")
+        testScheduler.runCurrent()
+        connectUseCase.emit(ChatEvent.OutputReceived("answer B", null))
+        testScheduler.runCurrent()
+        assertNotEquals(a, vm.controlCenterSnapshot.value.sessionId)
+
+        vm.switchToSession(a)
+        testScheduler.runCurrent()
+
+        assertEquals(a, vm.controlCenterSnapshot.value.sessionId)
+    }
+
+    @Test
     fun `leaving the Control Center screen does not stop the turn`() = runTest(testDispatcher) {
         // The user going back to the chat to watch the turn closes the page; that must not end it.
         connectedForControlCenter()

@@ -491,4 +491,20 @@ class ControlCenterHostTest {
         assertEquals("connected", json["connectionState"]!!.jsonPrimitive.content)
         assertEquals("""{"name":"daily-brief"}""", json["skills"]!!.jsonArray.first().toString())
     }
+
+    @Test
+    fun `message sizes are counted as UTF-8 without encoding a copy`() {
+        val samples = listOf(
+            "",
+            "plain",
+            "caf\u00e9",
+            "\u4e2d\u6587",
+            "\ud83d\ude00 emoji",
+            "lone \ud83d high",
+            "lone \ude00 low",
+            "\ud83d"
+        )
+
+        samples.forEach { assertEquals(it, it.toByteArray(Charsets.UTF_8).size, ControlCenterHost.utf8Length(it)) }
+    }
 }

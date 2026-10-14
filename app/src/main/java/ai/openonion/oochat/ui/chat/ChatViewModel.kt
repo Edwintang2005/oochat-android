@@ -666,13 +666,18 @@ open class ChatViewModel @JvmOverloads constructor(
      * connection, status or profile changes. Declared below [sessionActivity], which it reads.
      */
     val controlCenterSnapshot: StateFlow<ControlCenterSnapshot> = combine(
-        connectionState,
-        sessionActivity,
-        agentProfile,
-        controlCenterTurnInFlight,
-        interruptPending
-    ) { state, activity, profile, actionInFlight, stopping ->
-        val shown = if (activity != null && (actionInFlight || stopping)) SessionActivity.RUNNING else activity
+        combine(
+            connectionState,
+            sessionActivity,
+            agentProfile,
+            controlCenterTurnInFlight,
+            interruptPending
+        ) { state, activity, profile, actionInFlight, stopping ->
+            Triple(state, if (activity != null && (actionInFlight || stopping)) SessionActivity.RUNNING else activity, profile)
+        },
+        // Only a trigger: a conversation switch changes the session id but often nothing above.
+        conversationHistory.activeSessionId
+    ) { (state, shown, profile), _ ->
         controlCenterSnapshotOf(state, shown, profile)
     }.stateIn(
         viewModelScope,
@@ -1818,8 +1823,9 @@ open class ChatViewModel @JvmOverloads constructor(
         if (activity == null || _targetAgentAddress.isBlank()) {
             throw ControlCenterActionRejected("Agent connection is not ready")
         }
+        // A cancelled action's message still being sent is busy too: its turn is about to start.
         if (activity == SessionActivity.RUNNING || activity == SessionActivity.AWAITING_USER ||
-            controlCenterTurnInFlight.value || interruptPending.value
+            controlCenterTurnInFlight.value || interruptPending.value || interruptWhenStarted != null
         ) {
             throw ControlCenterActionRejected("The agent is busy. Try again when its current turn has finished")
         }
@@ -1827,6 +1833,7 @@ open class ChatViewModel @JvmOverloads constructor(
         val messageId = java.util.UUID.randomUUID().toString()
         var started = false
         var ended = false
+        var handedOff = false
         var session: String? = null
         try {
             val end = coroutineScope {
@@ -1858,6 +1865,7 @@ open class ChatViewModel @JvmOverloads constructor(
                 }
                 subscribed.await()
                 FileLogger.i(LogTags.CHAT_VM, "Control Center action: ${LogSanitizer.contentSummary(content)}")
+                handedOff = true
                 sendMessage(content, messageId = messageId)
                 waiting.await()
             }
@@ -1873,7 +1881,11 @@ open class ChatViewModel @JvmOverloads constructor(
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             if (e is ControlCenterCancelled && !ended) {
-                if (started || lastStartedMessageId == messageId) interrupt() else interruptWhenStarted = messageId
+                if (started || lastStartedMessageId == messageId) {
+                    interrupt()
+                } else if (handedOff) {
+                    interruptWhenStarted = messageId
+                }
             }
             throw e
         } finally {
@@ -2172,6 +2184,7 @@ open class ChatViewModel @JvmOverloads constructor(
                 FileLogger.e(LogTags.CHAT_VM, "Send failed: ${it.message}")
             }.isSuccess
             if (!delivered) {
+                if (interruptWhenStarted == userId) interruptWhenStarted = null
                 setUserMessageState(userId, UserMessageState.FAILED)
                 return false
             }

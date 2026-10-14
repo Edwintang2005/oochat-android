@@ -58,7 +58,8 @@ data class ControlCenterSnapshot(
         /**
          * Skills come from the agent, so they are cut to `boundControlSnapshot`'s limits, and to
          * [MAX_SKILL_BYTES] of JSON so they cannot push the snapshot past the bridge's size limit.
-         * As upstream, dropping skills does not set [truncated], which is about chat items.
+         * As upstream, dropping skills does not set [truncated], which is about chat items. Unlike
+         * upstream, an over-long name is dropped, not cut: the cut name would be a different skill.
          */
         fun of(
             sessionId: String?,
@@ -76,10 +77,10 @@ data class ControlCenterSnapshot(
 
         private fun boundSkills(skills: List<AgentSkill>): List<ControlCenterSkill> {
             var bytes = 0
-            return skills.take(MAX_SKILLS).asSequence()
+            return skills.filter { it.name.length <= MAX_SKILL_NAME }.take(MAX_SKILLS).asSequence()
                 .map { skill ->
                     ControlCenterSkill(
-                        name = skill.name.take(MAX_SKILL_NAME),
+                        name = skill.name,
                         description = skill.description?.takeIf { it.isNotBlank() }?.take(MAX_SKILL_DESCRIPTION)
                     )
                 }

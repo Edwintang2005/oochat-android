@@ -56,7 +56,9 @@ class ControlCenterScreenshotTest {
                 onNavigateBack = {},
                 agentName = "research-assistant",
                 chatAwaitsUser = awaiting,
-                supported = supported
+                supported = supported,
+                // Robolectric's WebView cannot register one; a real device does.
+                addMessageListener = { _, _ -> }
             )
         }
 

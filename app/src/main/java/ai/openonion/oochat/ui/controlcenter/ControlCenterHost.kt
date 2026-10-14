@@ -2,6 +2,7 @@ package ai.openonion.oochat.ui.controlcenter
 
 import ai.openonion.oochat.util.FileLogger
 import ai.openonion.oochat.util.LogTags
+import ai.openonion.oochat.util.stringField
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -91,7 +92,7 @@ class ControlCenterHost(
 
     /** [raw] is the app's message as JSON text, checked for size and nesting before parsing. */
     fun onMessage(raw: String) {
-        if (closed || raw.toByteArray(Charsets.UTF_8).size > MAX_FRAME_BYTES || !nestsAtMost(raw, MAX_DEPTH)) return
+        if (closed || utf8Length(raw) > MAX_FRAME_BYTES || !nestsAtMost(raw, MAX_DEPTH)) return
         val value = runCatching { Json.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return
         if (!isScoped(value)) return
         when (value.stringField("type")) {
@@ -256,8 +257,26 @@ class ControlCenterHost(
 
         fun newEpoch(): String = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
 
-        private fun fits(value: JsonObject): Boolean =
-            value.toString().toByteArray(Charsets.UTF_8).size <= MAX_FRAME_BYTES
+        private fun fits(value: JsonObject): Boolean = utf8Length(value.toString()) <= MAX_FRAME_BYTES
+
+        /** UTF-8 size of [text] without encoding a copy of it, which for a snapshot can be megabytes. */
+        internal fun utf8Length(text: String): Int {
+            var bytes = 0
+            var i = 0
+            while (i < text.length) {
+                val c = text[i]
+                bytes += when {
+                    c.code < 0x80 -> 1
+                    c.code < 0x800 -> 2
+                    // A valid pair is one 4-byte character; a lone surrogate encodes as "?".
+                    c.isHighSurrogate() && i + 1 < text.length && text[i + 1].isLowSurrogate() -> { i++; 4 }
+                    c.isSurrogate() -> 1
+                    else -> 3
+                }
+                i++
+            }
+            return bytes
+        }
 
         /** True when no array or object in [raw] is nested deeper than [max]. Parsing deeper JSON can overflow the stack. */
         private fun nestsAtMost(raw: String, max: Int): Boolean {
@@ -275,8 +294,5 @@ class ControlCenterHost(
             }
             return true
         }
-
-        private fun JsonObject.stringField(key: String): String? =
-            (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
     }
 }

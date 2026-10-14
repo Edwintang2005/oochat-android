@@ -48,6 +48,7 @@ fun controlCenterSupported(): Boolean =
  * and no WebChromeClient is set, so permission requests are refused).
  *
  * @param onStopped The WebView's renderer died; this WebView is unusable and must leave composition.
+ * @param onUnavailable The message channel could not be set up, so the app could never connect.
  */
 @Composable
 fun ControlCenterWebView(
@@ -56,7 +57,9 @@ fun ControlCenterWebView(
     actions: ControlCenterActions,
     onNavigationBlocked: () -> Unit,
     onStopped: () -> Unit,
-    modifier: Modifier = Modifier
+    onUnavailable: () -> Unit,
+    modifier: Modifier = Modifier,
+    addMessageListener: (WebView, WebViewCompat.WebMessageListener) -> Unit = ::addPageListener
 ) {
     val scope = rememberCoroutineScope()
     val surface = MaterialTheme.colorScheme.surface
@@ -64,6 +67,7 @@ fun ControlCenterWebView(
     val currentSnapshot by rememberUpdatedState(snapshot)
     val currentBlocked by rememberUpdatedState(onNavigationBlocked)
     val currentStopped by rememberUpdatedState(onStopped)
+    val currentUnavailable by rememberUpdatedState(onUnavailable)
     val view = remember { ViewRefs() }
     val page = remember(app) {
         ControlCenterPage(
@@ -101,17 +105,16 @@ fun ControlCenterWebView(
                     }
                 )
                 runCatching {
-                    WebViewCompat.addWebMessageListener(
-                        this,
-                        ControlCenterPage.NATIVE_OBJECT,
-                        setOf(ControlCenterPage.PAGE_ORIGIN)
-                    ) { _, message, sourceOrigin, isMainFrame, proxy ->
+                    addMessageListener(this) { _, message, sourceOrigin, isMainFrame, proxy ->
                         if (isMainFrame && ControlCenterPage.isPageOrigin(sourceOrigin.toString())) {
                             view.proxy = proxy
                             message.data?.let { currentPage.onPageMessage(it) }
                         }
                     }
-                }.onFailure { FileLogger.e(LogTags.CONTROL_CENTER, "Message listener unavailable: ${it.message}") }
+                }.onFailure {
+                    FileLogger.e(LogTags.CONTROL_CENTER, "Message listener unavailable: ${it.message}")
+                    currentUnavailable()
+                }
             }
         },
         update = { webView ->
@@ -131,6 +134,10 @@ fun ControlCenterWebView(
         }
     )
 }
+
+/** Injects [ControlCenterPage.NATIVE_OBJECT] into our page's origin only. */
+internal fun addPageListener(webView: WebView, listener: WebViewCompat.WebMessageListener) =
+    WebViewCompat.addWebMessageListener(webView, ControlCenterPage.NATIVE_OBJECT, setOf(ControlCenterPage.PAGE_ORIGIN), listener)
 
 private class ViewRefs {
     var webView: WebView? = null

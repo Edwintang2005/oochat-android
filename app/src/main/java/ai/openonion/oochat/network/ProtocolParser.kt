@@ -25,6 +25,7 @@ import ai.openonion.oochat.domain.model.stableAssistantId
 import ai.openonion.oochat.util.FileLogger
 import ai.openonion.oochat.util.LogSanitizer
 import ai.openonion.oochat.util.LogTags
+import ai.openonion.oochat.util.stringField
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -810,9 +811,6 @@ object ProtocolParser {
             uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null &&
             ControlCenterApp.originOf(url) != null
     }
-
-    private fun JsonObject.stringField(key: String): String? =
-        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 
     /** `code` of the ERROR frame a host sends when a running turn refuses runtime input. */
     const val RUNTIME_INPUT_REJECTED = "RUNTIME_INPUT_REJECTED"
