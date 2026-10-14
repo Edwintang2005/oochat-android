@@ -9,6 +9,7 @@ import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ControlCenterApp
 import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
@@ -96,6 +97,9 @@ class ConnectToAgentUseCase(
 
     override val dashboardHtml: StateFlow<String?>
         get() = getOrCreateRepository().dashboardHtml
+
+    override val controlCenterApp: StateFlow<ControlCenterApp?>
+        get() = getOrCreateRepository().controlCenterApp
 
     override val plan: StateFlow<List<PlanEntry>>
         get() = getOrCreateRepository().plan

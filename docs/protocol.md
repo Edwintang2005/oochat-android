@@ -54,6 +54,8 @@ The authoritative ConnectOnion OIP implementation reference is the
 | `CONNECTED` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | `AGENT_PROFILE` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
 | `DASHBOARD_SNAPSHOT` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `CONTROL_CENTER_APP` | Partial | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt); the descriptor is checked and kept, and the bridge is built and tested, but the app is not shown yet (W16AAPPLE-29) |
+| `CONTROL_CENTER_STATE` | Partial by design | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt); the status and error are logged, and the administrator's history and update schedule are not used |
 | `llm_call` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
 | `llm_result` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
 | `thinking` | Supported | [`StreamingFramesSpecTest`](../app/src/test/java/ai/openonion/oochat/network/StreamingFramesSpecTest.kt) |
@@ -480,6 +482,8 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `PING` | — | Emits `Ping`; `AgentConnection` sends `PONG`. |
 | `AGENT_PROFILE` | `session_id`, `name`, `address`, `model`, `tools`, `skills`, `balance_usd` | Emits `AgentProfileReceived` with the agent's connection profile, tools, skills, and optional balance. |
 | `DASHBOARD_SNAPSHOT` | `html` | Emits `DashboardSnapshotReceived` for a non-blank dashboard within the size limit; oversized or blank content is ignored. |
+| `CONTROL_CENTER_APP` | `app.schema`, `app.sdk_version`, `app.revision`, `app.url`, `app.capabilities`, `app.review.status` | Emits `ControlCenterAppReceived`. The app is kept only when it is approved, speaks bridge version 1, is pinned to a `sha256:` revision and is served over `https` with no credentials, query or fragment; anything else, or `app: null`, reads as no app. See [Control Center](#control-center). |
+| `CONTROL_CENTER_STATE` | `state.status`, `state.error.code`, `state.error.message` | Emits `ControlCenterStateReceived`, which is logged: it is what explains an app that is missing. |
 | `CONNECTED` | `session_id`, `status`, `server_newer`, `session`, `session_modes` | Marks the connection ready and persists the supplied session. `status` and `server_newer` reach the chat screen, which acts on them once: see [CONNECTED status](#connected-status). `status` also sets the top bar's status line, and `session_modes` makes the Host the authority for the mode: see [Session status and mode](#session-status-and-mode). |
 | `llm_call` | `id`, `model` | Creates a running `ChatItem.Turn` / thinking item. |
 | `llm_result` | `id`, `status`, `model`, `duration_ms` | Updates the matching thinking item to done or error. |
@@ -775,7 +779,8 @@ session) sends no `last_msg_id`.
 Host writes straight to the socket instead of appending to its log: `CONNECTED`,
 `OUTPUT`, `ERROR`, `PING`, `AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`,
 `SESSION_STATUS`, `RUNTIME_INPUT_ACK` (whose `id` is a UUID the Host mints for the
-queued input, not a log entry), `ONBOARD_REQUIRED` and `ONBOARD_SUCCESS`
+queued input, not a log entry), `ONBOARD_REQUIRED`, `ONBOARD_SUCCESS`,
+`CONTROL_CENTER_APP` and `CONTROL_CENTER_STATE`
 (`HOST_FRAME_TYPES` in `ProtocolParser`). The Host stamps an `id` on every entry in its log, so this
 follows new event types (`turn_result`, `provider_message`, and so on)
 without a list to maintain, whether or not the client decodes them;
@@ -812,7 +817,7 @@ every status of a `compact` or an `eval`, so comparing ids would drop real
 updates. (`tool_call` and `tool_result` share a `tool_id`, but each frame has its
 own `id`.) Three kinds of frame have no key and
 are never dropped: the snapshots the Host re-sends on every `CONNECT`
-(`AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`); `session_sync`, whose replay carries the
+(`AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`, `CONTROL_CENTER_APP`, `CONTROL_CENTER_STATE`); `session_sync`, whose replay carries the
 session as it is now and so never equals the original, and which is already safe
 to receive twice (a reply's id comes from its content); and frames the client
 does not decode. A dropped repeat also leaves the cursor where it was. The
@@ -1121,6 +1126,67 @@ running), `ApprovalModeTest` (no tap reaches an unattended mode on either
 catalogue), `SessionActivityTest`, `ChatViewModelTest` (cycling and exit on a
 1.7+ Host; each status line), `ServerErrorTextTest`, `TranscriptItemCodecTest`,
 `ChatTopBarComposeTest` and `ApprovalModeControlsComposeTest`.
+
+## Control Center
+
+The Host offers two Control Centers. `DASHBOARD_SNAPSHOT` is what connectonion now
+calls the legacy one: agent-written HTML, rendered in a sealed page whose buttons
+run skills (see `DashboardDocument`). The current one is a **published app**: a
+reviewed, immutable website the Host names in `CONTROL_CENTER_APP`, which runs in
+an iframe beside the chat and talks to it over a private `MessagePort`. When the
+agent has one, it takes the legacy page's place. Upstream references:
+connectonion `docs/network/control-center.md` and `websocket-protocol.md`
+(`CONTROL_CENTER_APP`), the parent side `createControlCenterHost` in
+connectonion-react `src/control-center.ts`, and the app side
+`connectonion/cli/assets/control-center/sdk.js`.
+
+**The descriptor.** `ProtocolParser.controlCenterAppOf` keeps an `app` only when it
+is what the Host's own runtime activates: schema `connectonion.control-app/1`,
+`sdk_version` `"1"` (the bridge version this client speaks), `review.status`
+`approved`, a `revision` of `sha256:` and 64 lowercase hex characters, and an
+`https` URL with a host and no credentials, query or fragment. Anything else, and
+`app: null`, reads as no app, so a withdrawn or refused app never outlives the
+frame that replaced it. `ConnectionRepository.controlCenterApp` holds it, reset on
+every `connect()` with `dashboardHtml`.
+
+**The bridge.** `ui/controlcenter/ControlCenterHost` is the chat's side, a port of
+`createControlCenterHost`, message for message. Every message both ways carries
+`version: 1`, the app's `revision` and a fresh per-load `epoch`; one that does not
+match all three, or is over 2 MiB, is ignored, which is what stops a stale port.
+The host sends a `snapshot` (numbered 1) as soon as it exists, then each change as
+the next numbered `event`, and answers `resnapshot` with the current state. The
+app's requests:
+
+| `action` | Becomes | Checked first |
+| --- | --- | --- |
+| `send_message` | The user's next message, as typed | 1 to 10,000 characters after trimming |
+| `run_skill` | `/skill args`, arguments collapsed onto one line | A published skill's name; arguments absent, or a string of at most 2,000 characters |
+
+Every request also needs a well-formed `id` used once in this load, a connected
+agent, an object `payload`, and `conversation` `current` (the default) or `new`; at
+most 16 wait at once and 512 per load. A refusal is a `response` with
+`ok: false` and `error.code` `action_rejected`; `cancel` stops the wait and no
+reply is sent.
+
+**Actions** (`ChatViewModel.controlCenterActions`) run only while the status line
+is idle: queued behind a running turn, the answer would be that turn's. The
+message goes through the ordinary send path, so it is a visible, saved user
+turn, and the reply (`result.sessionId`, the conversation's session) comes when
+that turn's `OUTPUT` arrives. A failed send, an agent `ERROR` or a dropped
+connection end it with a refusal instead. `conversation: "new"` is refused for
+now. Cancelling only stops the wait: the message has gone, and its turn runs on
+in the chat.
+
+**The snapshot** (`ChatViewModel.controlCenterSnapshot`) carries the agent's
+address, the session, its published skills (at most 2,000, names cut to 64
+characters and descriptions to 256), the status (`working`, `waiting` or
+`idle`, read off the chat's own status line) and the connection (`connected`,
+`reconnecting`, or `disconnected`, which includes a first connect still in
+progress). Chat items and their live updates are W16AAPPLE-30.
+
+**Not done yet** (W16AAPPLE-29): showing the app. That needs a parent page at an
+`https` origin in a WebView, the handshake (`ready`, then `connect` with the port),
+and the choice between the app and the legacy page on the agent's Home.
 
 ## HTTP exception
 

@@ -10,6 +10,7 @@ import ai.openonion.oochat.domain.model.AgentSkill
 import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.CompactStatus
+import ai.openonion.oochat.domain.model.ControlCenterApp
 import ai.openonion.oochat.domain.model.EvalStatus
 import ai.openonion.oochat.domain.model.HostModeState
 import ai.openonion.oochat.domain.model.IntentStatus
@@ -49,7 +50,8 @@ object ProtocolParser {
      */
     private val HOST_FRAME_TYPES = setOf(
         "PING", "CONNECTED", "AGENT_PROFILE", "DASHBOARD_SNAPSHOT", "ONBOARD_REQUIRED",
-        "ONBOARD_SUCCESS", "OUTPUT", "ERROR", "SESSION_STATUS", "RUNTIME_INPUT_ACK"
+        "ONBOARD_SUCCESS", "OUTPUT", "ERROR", "SESSION_STATUS", "RUNTIME_INPUT_ACK",
+        "CONTROL_CENTER_APP", "CONTROL_CENTER_STATE"
     )
 
 
@@ -151,6 +153,31 @@ object ProtocolParser {
                         ParseResult(event = ConnectionEvent.Unknown)
                     }
                     else -> ParseResult(event = ConnectionEvent.DashboardSnapshotReceived(html))
+                }
+            }
+
+            // Sent after CONNECTED and whenever the Host's review state changes;
+            // `app` is null while nothing is published. A refused descriptor also
+            // reads as no app, so an older one is not left on screen.
+            "CONTROL_CENTER_APP" -> ParseResult(
+                event = ConnectionEvent.ControlCenterAppReceived(controlCenterAppOf(event.app))
+            )
+
+            // Only `status` and `error` are read; the rest is for administrators.
+            "CONTROL_CENTER_STATE" -> {
+                val state = event.state as? JsonObject
+                val status = state?.stringField("status")
+                if (status == null) {
+                    ParseResult(event = ConnectionEvent.Unknown)
+                } else {
+                    val error = state["error"] as? JsonObject
+                    ParseResult(
+                        event = ConnectionEvent.ControlCenterStateReceived(
+                            status = status,
+                            errorCode = error?.stringField("code"),
+                            errorMessage = error?.stringField("message")
+                        )
+                    )
                 }
             }
 
@@ -732,6 +759,48 @@ object ProtocolParser {
      */
     const val MAX_DASHBOARD_HTML_CHARS = 2 * 1024 * 1024
 
+    const val CONTROL_APP_SCHEMA = "connectonion.control-app/1"
+
+    const val CONTROL_CENTER_BRIDGE_VERSION = "1"
+
+    private val CONTROL_CENTER_REVISION = Regex("^sha256:[a-f0-9]{64}$")
+
+    /**
+     * The app a `CONTROL_CENTER_APP` descriptor names, or null. The checks match what the
+     * Host guarantees before activating a revision (control_center/runtime.py), so only a
+     * hand-written or tampered descriptor fails them.
+     */
+    internal fun controlCenterAppOf(element: JsonElement?): ControlCenterApp? {
+        val app = element as? JsonObject ?: return null
+        val url = app.stringField("url")
+        val revision = app.stringField("revision")
+        val refused = when {
+            app.stringField("schema") != CONTROL_APP_SCHEMA -> "unknown schema"
+            app.stringField("sdk_version") != CONTROL_CENTER_BRIDGE_VERSION -> "unsupported bridge version"
+            (app["review"] as? JsonObject)?.stringField("status") != "approved" -> "not approved"
+            revision == null || !CONTROL_CENTER_REVISION.matches(revision) -> "malformed revision"
+            url == null || !isPinnedHttpsUrl(url) -> "not a plain https address"
+            else -> null
+        }
+        if (refused != null) {
+            FileLogger.w(LogTags.PROTOCOL, "CONTROL_CENTER_APP refused: $refused")
+            return null
+        }
+        val capabilities = (app["capabilities"] as? JsonArray).orEmpty()
+            .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+        return ControlCenterApp(url = url!!, revision = revision!!, capabilities = capabilities)
+    }
+
+    /** No credentials, query or fragment: the fragment is added by the bridge. */
+    private fun isPinnedHttpsUrl(url: String): Boolean {
+        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+        return uri.scheme == "https" && !uri.host.isNullOrBlank() &&
+            uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null
+    }
+
+    private fun JsonObject.stringField(key: String): String? =
+        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
     /** `code` of the ERROR frame a host sends when a running turn refuses runtime input. */
     const val RUNTIME_INPUT_REJECTED = "RUNTIME_INPUT_REJECTED"
 
@@ -984,6 +1053,16 @@ sealed class ConnectionEvent {
      * there is no history to keep.
      */
     data class DashboardSnapshotReceived(val html: String) : ConnectionEvent()
+
+    /** `CONTROL_CENTER_APP`: null when there is none or it was refused. Each replaces the last. */
+    data class ControlCenterAppReceived(val app: ControlCenterApp?) : ConnectionEvent()
+
+    /** `CONTROL_CENTER_STATE`: the Host's review status for the app. Logged, not shown. */
+    data class ControlCenterStateReceived(
+        val status: String,
+        val errorCode: String?,
+        val errorMessage: String?
+    ) : ConnectionEvent()
     /**
      * Server's reply to [AgentConnection.querySessionStatus] — whether a
      * previously-started session is still running after a reconnect.

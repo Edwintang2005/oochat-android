@@ -18,6 +18,7 @@ import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ChatListFlags
 import ai.openonion.oochat.domain.model.ChatSession
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ControlCenterApp
 import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.PlanEntry
@@ -45,6 +46,11 @@ import ai.openonion.oochat.network.offlineSustainedFor
 import ai.openonion.oochat.ui.chat.components.VoiceInputPhase
 import ai.openonion.oochat.ui.chat.components.VoiceInputState
 import ai.openonion.oochat.ui.common.launchScoped
+import ai.openonion.oochat.ui.controlcenter.ControlCenterActionRejected
+import ai.openonion.oochat.ui.controlcenter.ControlCenterActions
+import ai.openonion.oochat.ui.controlcenter.ControlCenterConversation
+import ai.openonion.oochat.ui.controlcenter.ControlCenterSnapshot
+import ai.openonion.oochat.ui.controlcenter.controlCenterSkillMessage
 import ai.openonion.oochat.ui.navigation.DrawerAgentSection
 import ai.openonion.oochat.ui.navigation.DrawerEntry
 import ai.openonion.oochat.util.FileLogger
@@ -61,15 +67,20 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -328,6 +339,9 @@ open class ChatViewModel @JvmOverloads constructor(
     // nothing on the wire says "this agent has no dashboard". Untrusted
     // agent-authored HTML; see ConnectionRepository.dashboardHtml.
     val dashboardHtml: StateFlow<String?> = connectUseCase.dashboardHtml
+
+    // See ConnectionRepository.controlCenterApp.
+    val controlCenterApp: StateFlow<ControlCenterApp?> = connectUseCase.controlCenterApp
 
     // The agent's current Todo List for this conversation, rendered as a
     // panel above the transcript; see ConnectionRepository.plan.
@@ -591,6 +605,15 @@ open class ChatViewModel @JvmOverloads constructor(
     private val serverTurnActive = MutableStateFlow(false)
 
     /**
+     * How each turn ended, emitted wherever [serverTurnActive] is cleared by the agent or the
+     * socket. A StateFlow collector can miss a turn that starts and ends quickly; a subscriber
+     * to this cannot. Declared above [init] for the same reason as [serverTurnActive].
+     */
+    private val turnEnds = MutableSharedFlow<TurnEnd>(extraBufferCapacity = 8)
+
+    private enum class TurnEnd { OUTPUT, ERROR, CONNECTION_LOST }
+
+    /**
      * The top bar's status line: running, waiting for you, idle, or session not found. See
      * [SessionActivity.of] for how this screen's own knowledge and the Host's last word
      * ([ConnectToAgentUseCaseContract.hostSessionStatus]: CONNECTED's status and each
@@ -613,6 +636,40 @@ open class ChatViewModel @JvmOverloads constructor(
             host = host
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * What the Control Center app is told about the chat. The session id is read when the
+     * connection, status or profile changes. Declared below [sessionActivity], which it reads.
+     */
+    val controlCenterSnapshot: StateFlow<ControlCenterSnapshot> = combine(
+        connectionState,
+        sessionActivity,
+        agentProfile
+    ) { state, activity, profile ->
+        controlCenterSnapshotOf(state, activity, profile)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        controlCenterSnapshotOf(connectionState.value, null, agentProfile.value)
+    )
+
+    private fun controlCenterSnapshotOf(
+        state: ConnectionState,
+        activity: SessionActivity?,
+        profile: AgentLiveProfile?
+    ): ControlCenterSnapshot {
+        val address = (state as? ConnectionState.Connected)?.address ?: _targetAgentAddress
+        return ControlCenterSnapshot.of(
+            sessionId = controlCenterSessionId(address),
+            agentAddress = address,
+            activity = activity,
+            connection = state,
+            skills = profile?.skills.orEmpty()
+        )
+    }
+
+    private fun controlCenterSessionId(address: String): String? =
+        conversationHistory.conversationId ?: address.takeIf { it.isNotBlank() }?.let(connectUseCase::liveSessionIdFor)
 
     /**
      * The messages handed to the connection while the socket was down. The connection parks them in
@@ -767,6 +824,7 @@ open class ChatViewModel @JvmOverloads constructor(
                         // into a turn the server is still running, which the
                         // server merges; leaving it shut hangs the composer.
                         serverTurnActive.value = false
+                        turnEnds.tryEmit(TurnEnd.CONNECTION_LOST)
                         // No reply to a mid-turn send can arrive on a dead
                         // socket, and whether the host queued it is unknown.
                         // Say it did not go, and let the user resend it.
@@ -858,6 +916,7 @@ open class ChatViewModel @JvmOverloads constructor(
                         event is ChatEvent.ConnectionErrorOccurred
                     ) {
                         serverTurnActive.value = false
+                        turnEnds.tryEmit(if (event is ChatEvent.OutputReceived) TurnEnd.OUTPUT else TurnEnd.ERROR)
                     }
                     when (event) {
                         is ChatEvent.RuntimeInputAcknowledged ->
@@ -1704,6 +1763,58 @@ open class ChatViewModel @JvmOverloads constructor(
      */
     fun retryFailedTurn(content: String, images: List<String>? = null, files: List<String>? = null) {
         sendMessage(content, images, files, echoUserMessage = false, waitForRunningTurn = false)
+    }
+
+    /** Requests from the Control Center app, already checked by ControlCenterHost. */
+    val controlCenterActions: ControlCenterActions = object : ControlCenterActions {
+        override suspend fun sendMessage(message: String, conversation: ControlCenterConversation) =
+            runControlCenterTurn(message, conversation)
+
+        override suspend fun runSkill(skill: String, args: String?, conversation: ControlCenterConversation) =
+            runControlCenterTurn(controlCenterSkillMessage(skill, args), conversation)
+    }
+
+    /**
+     * Sends [content] as a normal user message and returns the session once its turn ends.
+     * Only starts while idle, since a queued message's answer would belong to the running turn.
+     * Cancelling stops the wait, not the turn.
+     */
+    private suspend fun runControlCenterTurn(content: String, conversation: ControlCenterConversation): String {
+        if (conversation != ControlCenterConversation.CURRENT) {
+            throw ControlCenterActionRejected("Starting a new chat from the Control Center is not supported yet")
+        }
+        when (sessionActivity.value) {
+            SessionActivity.IDLE, SessionActivity.NOT_FOUND -> Unit
+            SessionActivity.RUNNING, SessionActivity.AWAITING_USER ->
+                throw ControlCenterActionRejected("The agent is busy. Try again when its current turn has finished")
+            null -> throw ControlCenterActionRejected("Agent connection is not ready")
+        }
+        val messageId = java.util.UUID.randomUUID().toString()
+        val end = coroutineScope {
+            // Subscribe before sending so a turn that ends at once is not missed.
+            val subscribed = CompletableDeferred<Unit>()
+            val ended = async {
+                merge(
+                    turnEnds.onSubscription { subscribed.complete(Unit) },
+                    // A failed send starts no turn, so nothing else would end the wait.
+                    _uiState.map { ui -> ui.chatItems.any { it is ChatItem.User && it.id == messageId && it.state == UserMessageState.FAILED } }
+                        .filter { it }
+                        .map { null }
+                ).first()
+            }
+            subscribed.await()
+            FileLogger.i(LogTags.CHAT_VM, "Control Center action: ${LogSanitizer.contentSummary(content)}")
+            sendMessage(content, messageId = messageId)
+            ended.await()
+        }
+        return when (end) {
+            TurnEnd.OUTPUT -> controlCenterSessionId(_targetAgentAddress)
+                ?: throw ControlCenterActionRejected("The turn finished, but this chat has no session yet")
+            TurnEnd.ERROR -> throw ControlCenterActionRejected("The agent stopped with an error. See the chat")
+            TurnEnd.CONNECTION_LOST ->
+                throw ControlCenterActionRejected("The connection dropped before the turn finished. Check the chat before retrying")
+            null -> throw ControlCenterActionRejected("The message did not reach the agent")
+        }
     }
 
     fun sendMessage(

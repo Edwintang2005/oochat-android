@@ -46,9 +46,16 @@ import ai.openonion.oochat.network.SpeechRecognitionService
 import ai.openonion.oochat.network.VoiceTranscriptionService
 import ai.openonion.oochat.ui.chat.components.VoiceInputPhase
 import ai.openonion.oochat.ui.chat.components.failedUserMessages
+import ai.openonion.oochat.ui.controlcenter.ControlCenterActionRejected
+import ai.openonion.oochat.ui.controlcenter.ControlCenterAgentStatus
+import ai.openonion.oochat.ui.controlcenter.ControlCenterConnection
+import ai.openonion.oochat.ui.controlcenter.ControlCenterConversation
+import ai.openonion.oochat.ui.controlcenter.ControlCenterSkill
+import ai.openonion.oochat.ui.controlcenter.controlCenterSkillMessage
 import android.app.Application
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -5690,6 +5697,166 @@ class ChatViewModelTest {
      * this as a valid address and returns synchronously without any
      * HTTP call, so tests don't need to stub network IO.
      */
+    // --- Control Center actions (W16AAPPLE-29) ---
+
+    private fun TestScope.connectedForControlCenter(): String {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        return address
+    }
+
+    private fun TestScope.controlCenterSend(
+        message: String,
+        conversation: ControlCenterConversation = ControlCenterConversation.CURRENT
+    ) = backgroundScope.async { runCatching { vm.controlCenterActions.sendMessage(message, conversation) } }
+
+    private fun Result<String>.refusal(): String? = (exceptionOrNull() as? ControlCenterActionRejected)?.message
+
+    @Test
+    fun `a Control Center message is an ordinary visible turn, answered once that turn ends`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+
+        val action = controlCenterSend("summarise today")
+        testScheduler.runCurrent()
+
+        assertEquals("summarise today", (vm.uiState.value.chatItems.single() as ChatItem.User).content)
+        assertEquals(listOf("summarise today"), connectUseCase.sentMessages.map { it.content })
+        assertFalse("answered before its turn ended", action.isCompleted)
+
+        connectUseCase.emit(ChatEvent.OutputReceived("Here is today.", null))
+        testScheduler.runCurrent()
+
+        val session = messageRepo.snapshot().single { it.content == "summarise today" }.sessionId
+        assertEquals(session, action.await().getOrThrow())
+    }
+
+    @Test
+    fun `a Control Center skill runs as the slash command the user could have typed`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+
+        backgroundScope.async { vm.controlCenterActions.runSkill("meeting-prep", " 2pm\n  sync ", ControlCenterConversation.CURRENT) }
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("/meeting-prep 2pm sync"), connectUseCase.sentMessages.map { it.content })
+        assertEquals("/daily-brief", controlCenterSkillMessage("daily-brief", null))
+        assertEquals("/daily-brief", controlCenterSkillMessage("daily-brief", "  "))
+    }
+
+    @Test
+    fun `nothing is sent for the Control Center while the agent is busy`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        connectUseCase.emit(ChatEvent.ChatItemReceived(ChatItem.Thinking(id = "t1", status = ThinkingStatus.RUNNING)))
+        testScheduler.runCurrent()
+
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        assertEquals("The agent is busy. Try again when its current turn has finished", action.await().refusal())
+        assertTrue(connectUseCase.sentMessages.isEmpty())
+    }
+
+    @Test
+    fun `nothing is sent for the Control Center before the connection is ready`() = runTest(testDispatcher) {
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        assertEquals("Agent connection is not ready", action.await().refusal())
+        assertTrue(connectUseCase.sentMessages.isEmpty())
+    }
+
+    @Test
+    fun `a Control Center action for a new chat is refused for now`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+
+        val action = controlCenterSend("hi", ControlCenterConversation.NEW)
+        testScheduler.runCurrent()
+
+        assertEquals("Starting a new chat from the Control Center is not supported yet", action.await().refusal())
+        assertTrue(connectUseCase.sentMessages.isEmpty())
+    }
+
+    @Test
+    fun `a Control Center message that fails to send is reported as not delivered`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        connectUseCase.failNextSend = true
+
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        assertEquals("The message did not reach the agent", action.await().refusal())
+    }
+
+    @Test
+    fun `a connection lost mid-turn is not reported to the Control Center as success`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        connectUseCase.forceState(ConnectionState.Reconnecting)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            "The connection dropped before the turn finished. Check the chat before retrying",
+            action.await().refusal()
+        )
+    }
+
+    @Test
+    fun `an agent error ends the Control Center action with a refusal`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        connectUseCase.emit(ChatEvent.ConnectionErrorOccurred("Insufficient ConnectOnion Credits"))
+        testScheduler.runCurrent()
+
+        assertEquals("The agent stopped with an error. See the chat", action.await().refusal())
+    }
+
+    @Test
+    fun `cancelling a Control Center action only stops the wait`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        action.cancel()
+        connectUseCase.emit(ChatEvent.OutputReceived("done", null))
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("hi"), connectUseCase.sentMessages.map { it.content })
+        assertEquals("hi", (vm.uiState.value.chatItems.first() as ChatItem.User).content)
+        assertTrue(action.isCancelled)
+    }
+
+    @Test
+    fun `the Control Center snapshot follows the chat`() = runTest(testDispatcher) {
+        val address = connectedForControlCenter()
+        connectUseCase._agentProfile.value = ai.openonion.oochat.domain.model.AgentLiveProfile(
+            sessionId = null, name = "agent", address = address, model = "m",
+            skills = listOf(ai.openonion.oochat.domain.model.AgentSkill("daily-brief", "Today's brief"))
+        )
+        testScheduler.runCurrent()
+
+        val idle = vm.controlCenterSnapshot.value
+        assertEquals(address, idle.agentAddress)
+        assertEquals(ControlCenterConnection.CONNECTED, idle.connectionState)
+        assertEquals(ControlCenterAgentStatus.IDLE, idle.status)
+        assertEquals(listOf(ControlCenterSkill("daily-brief", "Today's brief")), idle.skills)
+
+        controlCenterSend("hi")
+        testScheduler.runCurrent()
+        assertEquals(ControlCenterAgentStatus.WORKING, vm.controlCenterSnapshot.value.status)
+
+        connectUseCase.emit(ChatEvent.OutputReceived("done", null))
+        testScheduler.runCurrent()
+        val session = messageRepo.snapshot().single { it.content == "hi" }.sessionId
+        assertEquals(ControlCenterAgentStatus.IDLE, vm.controlCenterSnapshot.value.status)
+        assertEquals(session, vm.controlCenterSnapshot.value.sessionId)
+    }
+
     private fun validHexAddress(nibble: Int = 0xA): String =
         "0x" + nibble.toString(16).repeat(40)
 

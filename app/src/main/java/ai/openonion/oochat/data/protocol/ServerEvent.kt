@@ -163,7 +163,11 @@ data class ServerEvent(
     // descriptor missing one we do must not drop the frame that explains
     // why the connection failed.
     val protocol: JsonElement? = null,
-    val retryable: JsonElement? = null
+    val retryable: JsonElement? = null,
+    // CONTROL_CENTER_APP's `app` and CONTROL_CENTER_STATE's `state`. JsonElements
+    // for the same reason as `protocol`: an unexpected shape must not drop the frame.
+    val app: JsonElement? = null,
+    val state: JsonElement? = null
 ) {
     /** True only for an explicit boolean `true`; anything else is "not retryable". */
     val isRetryable: Boolean get() = (retryable as? JsonPrimitive)?.booleanOrNull == true
