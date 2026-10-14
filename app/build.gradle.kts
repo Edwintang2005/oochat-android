@@ -183,6 +183,9 @@ dependencies {
     // Navigation
     implementation("androidx.navigation:navigation-compose:2.9.8")
 
+    // Control Center app host: assets at an https origin, and a message channel only our page can use
+    implementation("androidx.webkit:webkit:1.14.0")
+
     // Networking
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")

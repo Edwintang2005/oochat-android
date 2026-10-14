@@ -15,7 +15,24 @@ data class ControlCenterApp(
     val revision: String,
     /** Browser features the app declared. None are granted yet. */
     val capabilities: List<String> = emptyList()
-)
+) {
+    companion object {
+        private val ORIGIN = Regex("^https://[a-z0-9.-]+(:[0-9]{1,5})?$")
+
+        /**
+         * `https://host[:port]`, lower-case and without the default port, as `event.origin`
+         * reads; null when [url] has no origin the parent page can pin its frame to.
+         */
+        fun originOf(url: String): String? {
+            val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return null
+            val host = uri.host?.lowercase() ?: return null
+            val port = if (uri.port == -1 || uri.port == 443) "" else ":${uri.port}"
+            return "https://$host$port".takeIf { uri.scheme == "https" && ORIGIN.matches(it) }
+        }
+
+        fun isOrigin(text: String): Boolean = ORIGIN.matches(text)
+    }
+}
 
 /** Shared default for fakes. */
 val NO_CONTROL_CENTER_APP: StateFlow<ControlCenterApp?> =

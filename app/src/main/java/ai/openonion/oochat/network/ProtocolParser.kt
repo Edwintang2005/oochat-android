@@ -800,11 +800,15 @@ object ProtocolParser {
         return ControlCenterApp(url = url!!, revision = revision!!, capabilities = capabilities.orEmpty().filterNotNull())
     }
 
-    /** No credentials, query or fragment: the fragment is added by the bridge. */
+    /**
+     * No credentials, query or fragment (the fragment is added by the bridge), and an origin
+     * the parent page can pin its frame to.
+     */
     private fun isPinnedHttpsUrl(url: String): Boolean {
         val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
         return uri.scheme == "https" && !uri.host.isNullOrBlank() &&
-            uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null
+            uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null &&
+            ControlCenterApp.originOf(url) != null
     }
 
     private fun JsonObject.stringField(key: String): String? =

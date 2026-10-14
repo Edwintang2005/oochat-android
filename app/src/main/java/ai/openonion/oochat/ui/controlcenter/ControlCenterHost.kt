@@ -50,6 +50,12 @@ fun controlCenterSkillMessage(skill: String, args: String?): String {
     return if (line.isEmpty()) "/$skill" else "/$skill $line"
 }
 
+/**
+ * How an action is cancelled when the app sends `cancel`, so the chat can tell it from the
+ * page simply closing: the first stops the turn, the second leaves it running in the chat.
+ */
+class ControlCenterCancelled : CancellationException("Cancelled by the Control Center app")
+
 /** Sent to the app as the message of an `action_rejected` response. */
 class ControlCenterActionRejected(message: String) : Exception(message)
 
@@ -90,7 +96,7 @@ class ControlCenterHost(
         if (!isScoped(value)) return
         when (value.stringField("type")) {
             PREFIX + "resnapshot" -> sendSnapshot()
-            PREFIX + "cancel" -> value.stringField("id")?.let { pending.remove(it)?.cancel() }
+            PREFIX + "cancel" -> value.stringField("id")?.let { pending.remove(it)?.cancel(ControlCenterCancelled()) }
             PREFIX + "request" -> onRequest(value)
         }
     }

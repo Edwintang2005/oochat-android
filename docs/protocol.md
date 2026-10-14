@@ -54,7 +54,7 @@ The authoritative ConnectOnion OIP implementation reference is the
 | `CONNECTED` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | `AGENT_PROFILE` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
 | `DASHBOARD_SNAPSHOT` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
-| `CONTROL_CENTER_APP` | Partial | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt); the descriptor is checked and kept, and the bridge is built and tested, but the app is not shown yet (W16AAPPLE-29) |
+| `CONTROL_CENTER_APP` | Partial | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt); [`ControlCenterPageTest`](../app/src/test/java/ai/openonion/oochat/ui/controlcenter/ControlCenterPageTest.kt), [`ControlCenterHostTest`](../app/src/test/java/ai/openonion/oochat/ui/controlcenter/ControlCenterHostTest.kt), [`ControlCenterWebViewTest`](../app/src/test/java/ai/openonion/oochat/ui/controlcenter/ControlCenterWebViewTest.kt); the app is shown on the agent's Home, but it is given no device capabilities and `conversation: "new"` is refused |
 | `CONTROL_CENTER_STATE` | Partial by design | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt); the status and error are logged, and the administrator's history and update schedule are not used |
 | `llm_call` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
 | `llm_result` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
@@ -1191,8 +1191,11 @@ turn that message starts (not merely the next `OUTPUT`) and answers with
 `result.sessionId`, the session that turn ran in, even if the user has switched
 conversation meanwhile. A failed send, an agent `ERROR`, Stop in the chat or a
 dropped connection end it with a refusal instead. `conversation: "new"` is refused
-for now. As in the React SDK, cancelling an action (the app gave up, or the page
-closed) interrupts the turn it started.
+for now. As in the React SDK, the app cancelling an action (it gave up, or timed
+out) interrupts the turn it started, as soon as it starts if its message is still
+being sent. Unlike the web O Chat, where the app sits beside the chat, here it
+replaces the chat on screen, so the page closing (the user going back to the chat
+to watch) only stops the wait and leaves the turn running.
 
 **The snapshot** (`ChatViewModel.controlCenterSnapshot`) carries the agent's
 address, the session, its published skills (at most 2,000, names cut to 64
@@ -1203,9 +1206,42 @@ own status line, so `working`, `waiting` or `idle`) and the connection (`connect
 `reconnecting`, or `disconnected`, which includes a first connect still in
 progress). Chat items and their live updates are W16AAPPLE-30.
 
-**Not done yet** (W16AAPPLE-29): showing the app. That needs a parent page at an
-`https` origin in a WebView, the handshake (`ready`, then `connect` with the port),
-and the choice between the app and the legacy page on the agent's Home.
+**The screen.** The chat's Home button opens `ControlCenterScreen` when the agent
+has an app and the device's WebView supports message listeners, and the legacy
+page otherwise. An agent with an app and no legacy page always gets the screen,
+which then says the WebView is too old. An app address with no origin the frame
+can be pinned to (an IPv6 literal, say) is refused when the frame is parsed. The WebView loads our parent page at
+`https://appassets.androidplatform.net/control-center/host.html`, served by
+`WebViewAssetLoader`; any other path on that origin is a 404, never a network
+request. `ControlCenterPage.hostDocument` builds it with a CSP whose `frame-src`
+is the app's origin alone, and it frames the app, sandboxed with
+`allow-scripts allow-same-origin allow-forms`, at `app.url` plus `#co-parent=<our origin>&co-revision=<revision>`.
+`assets/control-center/host.js` answers the app's `ready` (from the app's origin
+and revision only) and relays the `MessagePort` to `ControlCenterPage`, which
+sends `connect` with a fresh epoch and runs a `ControlCenterHost` for that app
+document. A `ready` within 3 seconds of a connect is the app repeating itself; a
+later one is a reloaded app, which gets a new epoch and port.
+
+The page talks to native code through `ochatNative`, which
+`WebViewCompat.addWebMessageListener` injects only into the parent page's
+origin, and only main-frame messages from that origin are read, so the app
+cannot reach it. The main frame may show only the parent page: the sandbox stops
+the app navigating it, `shouldOverrideUrlLoading` refuses other links, and
+`onPageStarted` catches what that is not asked about (a form POST) and reloads
+the parent page. WebView does not ask about https navigations in the iframe, so
+there the CSP is what refuses another origin; `host.js` reports the violation,
+and native shows the same "navigation away is blocked" bar as the legacy page and
+reloads the app once. Nothing is opened in a browser. Frames the app embeds
+follow the app's own policy and keep its sandbox. The iframe gets no `allow`
+attribute and no WebChromeClient is set, so camera, microphone, location,
+clipboard-read and fullscreen requests are refused; popups and downloads are
+sandboxed out. Unlike the legacy page, the app keeps scripts, storage and network
+for its own origin, as it has in the web O Chat.
+
+If the WebView's renderer dies (a crash, or Android reclaiming its memory), the
+screen says the Control Center stopped and offers Reload rather than letting
+O Chat close with it, and does not reload by itself, so a crashing app cannot
+loop. While O Chat is in the background the WebView and its timers are paused.
 
 ## HTTP exception
 

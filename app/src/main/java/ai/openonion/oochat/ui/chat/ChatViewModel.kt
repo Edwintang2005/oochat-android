@@ -48,6 +48,7 @@ import ai.openonion.oochat.ui.chat.components.VoiceInputState
 import ai.openonion.oochat.ui.common.launchScoped
 import ai.openonion.oochat.ui.controlcenter.ControlCenterActionRejected
 import ai.openonion.oochat.ui.controlcenter.ControlCenterActions
+import ai.openonion.oochat.ui.controlcenter.ControlCenterCancelled
 import ai.openonion.oochat.ui.controlcenter.ControlCenterConversation
 import ai.openonion.oochat.ui.controlcenter.ControlCenterSnapshot
 import ai.openonion.oochat.ui.controlcenter.controlCenterSkillMessage
@@ -624,6 +625,12 @@ open class ChatViewModel @JvmOverloads constructor(
 
     /** A Control Center action is between its idle check and the end of its turn. */
     private val controlCenterTurnInFlight = MutableStateFlow(false)
+
+    /** Set when the message goes out, so a cancel sees a start its action has not collected yet. */
+    private var lastStartedMessageId: String? = null
+
+    /** A Control Center message the app cancelled while it was still being sent. */
+    private var interruptWhenStarted: String? = null
 
     private fun turnEnded(how: TurnEnd) {
         if (how != TurnEnd.INTERRUPTED) interruptPending.value = false
@@ -1799,8 +1806,9 @@ open class ChatViewModel @JvmOverloads constructor(
     /**
      * Sends [content] as a normal user message and returns the session once its turn ends.
      * Only one runs at a time, and only while idle, since a queued message's answer would
-     * belong to the running turn. Cancelling interrupts the turn it started, as in the React
-     * SDK, where an app owns only the idle turn it starts.
+     * belong to the running turn. The app cancelling interrupts the turn it started (once it
+     * starts, if its message is still being sent), as in the React SDK; the page closing (the
+     * user going back to the chat) does not.
      */
     private suspend fun runControlCenterTurn(content: String, conversation: ControlCenterConversation): String {
         if (conversation != ControlCenterConversation.CURRENT) {
@@ -1864,7 +1872,9 @@ open class ChatViewModel @JvmOverloads constructor(
                 TurnEnd.NOT_SENT -> throw ControlCenterActionRejected("The message did not reach the agent")
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
-            if (started && !ended) interrupt()
+            if (e is ControlCenterCancelled && !ended) {
+                if (started || lastStartedMessageId == messageId) interrupt() else interruptWhenStarted = messageId
+            }
             throw e
         } finally {
             controlCenterTurnInFlight.value = false
@@ -2169,7 +2179,12 @@ open class ChatViewModel @JvmOverloads constructor(
             // for the host's answer: if that answer is the turn's OUTPUT, it clears this,
             // and setting it after the wait would resurrect a turn that already ended.
             serverTurnActive.value = true
+            lastStartedMessageId = userId
             turnEvents.tryEmit(TurnEvent.Started(userId))
+            if (interruptWhenStarted == userId) {
+                interruptWhenStarted = null
+                interrupt()
+            }
             if (pending == null) {
                 if (offline) outboxedMessageIds += userId
                 // Off the tail once it lands, so anything the new turn emits

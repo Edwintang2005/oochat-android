@@ -48,6 +48,7 @@ import ai.openonion.oochat.ui.chat.components.VoiceInputPhase
 import ai.openonion.oochat.ui.chat.components.failedUserMessages
 import ai.openonion.oochat.ui.controlcenter.ControlCenterActionRejected
 import ai.openonion.oochat.ui.controlcenter.ControlCenterAgentStatus
+import ai.openonion.oochat.ui.controlcenter.ControlCenterCancelled
 import ai.openonion.oochat.ui.controlcenter.ControlCenterConnection
 import ai.openonion.oochat.ui.controlcenter.ControlCenterConversation
 import ai.openonion.oochat.ui.controlcenter.ControlCenterSkill
@@ -5813,17 +5814,69 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun `cancelling a Control Center action interrupts the turn it started`() = runTest(testDispatcher) {
+    fun `the app cancelling a Control Center action interrupts the turn it started`() = runTest(testDispatcher) {
         // As in the React SDK: an app owns the idle turn it starts.
         connectedForControlCenter()
         val action = controlCenterSend("hi")
         testScheduler.runCurrent()
 
-        action.cancel()
+        action.cancel(ControlCenterCancelled())
         testScheduler.runCurrent()
 
         assertEquals(listOf("hi"), connectUseCase.sentMessages.map { it.content })
         assertEquals(1, connectUseCase.interruptInvocations)
+    }
+
+    @Test
+    fun `the app cancelling while its message is still being sent interrupts the turn once it starts`() = runTest(testDispatcher) {
+        // The app's own timeout cancels too, and can land before the slow send returns.
+        connectedForControlCenter()
+        val gate = CompletableDeferred<Unit>()
+        connectUseCase.sendGate = gate
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        action.cancel(ControlCenterCancelled())
+        testScheduler.runCurrent()
+        assertEquals("interrupted before anything was sent", 0, connectUseCase.interruptInvocations)
+
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("hi"), connectUseCase.sentMessages.map { it.content })
+        assertEquals(1, connectUseCase.interruptInvocations)
+    }
+
+    @Test
+    fun `leaving the Control Center screen does not stop the turn`() = runTest(testDispatcher) {
+        // The user going back to the chat to watch the turn closes the page; that must not end it.
+        connectedForControlCenter()
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+        assertEquals(listOf("hi"), connectUseCase.sentMessages.map { it.content })
+        assertEquals(SessionActivity.RUNNING, vm.sessionActivity.value)
+
+        action.cancel()
+        testScheduler.runCurrent()
+
+        assertEquals(0, connectUseCase.interruptInvocations)
+        assertEquals(SessionActivity.RUNNING, vm.sessionActivity.value)
+    }
+
+    @Test
+    fun `leaving the Control Center screen while its message is being sent does not stop the turn`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        val gate = CompletableDeferred<Unit>()
+        connectUseCase.sendGate = gate
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        action.cancel()
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("hi"), connectUseCase.sentMessages.map { it.content })
+        assertEquals(0, connectUseCase.interruptInvocations)
     }
 
     @Test

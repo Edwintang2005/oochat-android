@@ -37,6 +37,7 @@ class ControlCenterHostTest {
         val calls = mutableListOf<List<Any?>>()
         val results = ArrayDeque<CompletableDeferred<String>>()
         var cancelled = 0
+        var cancelledWith: Throwable? = null
         var refuseWith: Exception? = null
 
         private suspend fun call(record: List<Any?>): String {
@@ -47,6 +48,7 @@ class ControlCenterHostTest {
                 return result.await()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 cancelled++
+                cancelledWith = e
                 throw e
             }
         }
@@ -376,6 +378,7 @@ class ControlCenterHostTest {
         runCurrent()
 
         assertEquals(1, actions.cancelled)
+        assertTrue("the chat must be able to tell an app cancel apart", actions.cancelledWith is ControlCenterCancelled)
         assertTrue(responses().isEmpty())
     }
 
@@ -392,6 +395,7 @@ class ControlCenterHostTest {
         host.publish(snapshot())
 
         assertEquals(1, actions.cancelled)
+        assertFalse("closing the page is not the app cancelling", actions.cancelledWith is ControlCenterCancelled)
         assertTrue(posted.isEmpty())
     }
 

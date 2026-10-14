@@ -344,6 +344,7 @@ class ProtocolParserTest {
             "no host" to appFrame("url" to "\"https:///index.html\""),
             "not a URL" to appFrame("url" to "\"https://apps example.net/\""),
             "a script URL" to appFrame("url" to "\"javascript:alert(1)\""),
+            "an IPv6 host the frame's origin cannot be pinned to" to appFrame("url" to "\"https://[::1]/index.html\""),
             "a short revision" to appFrame("revision" to "\"sha256:abc\""),
             "an uppercase revision" to appFrame("revision" to "\"sha256:${"A".repeat(64)}\""),
             "another hash" to appFrame("revision" to "\"sha512:${"a".repeat(64)}\""),
