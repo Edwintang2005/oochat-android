@@ -7,6 +7,7 @@ import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
@@ -32,7 +33,10 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowLooper
 
-/** The WebView's lifecycle and client, on Robolectric's WebView (which runs no page). */
+/**
+ * The WebView's lifecycle and client, on Robolectric's WebView, which runs no page. The page and
+ * the app's handshake run in the instrumented ControlCenterBridgeTest.
+ */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -177,6 +181,34 @@ class ControlCenterWebViewTest {
         assertEquals(404, client.shouldInterceptRequest(webView(), request(base + "other.html"))!!.statusCode)
         assertEquals(404, client.shouldInterceptRequest(webView(), request(ControlCenterPage.PAGE_ORIGIN + "/x"))!!.statusCode)
         assertNull("the app's own requests are its own", client.shouldInterceptRequest(webView(), request(app.url)))
+    }
+
+    @Test
+    fun `a test's app server is asked only for addresses outside our origin`() {
+        val asked = mutableListOf<String>()
+        composeRule.setContent {
+            ControlCenterWebView(
+                app,
+                snapshot,
+                actions,
+                onNavigationBlocked = {},
+                onStopped = {},
+                onUnavailable = {},
+                addMessageListener = listens,
+                interceptAppRequest = { url ->
+                    asked += url.toString()
+                    WebResourceResponse("text/html", "utf-8", "fake app".byteInputStream())
+                }
+            )
+        }
+        composeRule.waitForIdle()
+        val client = client()
+        val base = ControlCenterPage.PAGE_ORIGIN + ControlCenterPage.PAGE_PATH
+
+        assertEquals("fake app", client.shouldInterceptRequest(webView(), request(app.url))!!.data.bufferedReader().readText())
+        assertTrue(client.shouldInterceptRequest(webView(), request(base + "host.html"))!!.data.bufferedReader().readText().contains("frame-src"))
+        assertEquals(404, client.shouldInterceptRequest(webView(), request(base + "other.html"))!!.statusCode)
+        assertEquals("it could stand in for our own page", listOf(app.url), asked)
     }
 
     @Test

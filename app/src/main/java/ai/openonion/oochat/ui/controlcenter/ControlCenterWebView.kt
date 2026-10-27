@@ -49,6 +49,8 @@ fun controlCenterSupported(): Boolean =
  *
  * @param onStopped The WebView's renderer died; this WebView is unusable and must leave composition.
  * @param onUnavailable The message channel could not be set up, so the app could never connect.
+ * @param interceptAppRequest For instrumented tests: serves addresses outside our page's origin,
+ *   so a fake app can load at an https origin with no network. Null lets a request through.
  */
 @Composable
 fun ControlCenterWebView(
@@ -59,7 +61,8 @@ fun ControlCenterWebView(
     onStopped: () -> Unit,
     onUnavailable: () -> Unit,
     modifier: Modifier = Modifier,
-    addMessageListener: (WebView, WebViewCompat.WebMessageListener) -> Unit = ::addPageListener
+    addMessageListener: (WebView, WebViewCompat.WebMessageListener) -> Unit = ::addPageListener,
+    interceptAppRequest: (Uri) -> WebResourceResponse? = { null }
 ) {
     val scope = rememberCoroutineScope()
     val surface = MaterialTheme.colorScheme.surface
@@ -98,6 +101,7 @@ fun ControlCenterWebView(
                     loader,
                     page = { currentPage },
                     onBlocked = { currentBlocked() },
+                    interceptAppRequest = interceptAppRequest,
                     onRendererGone = {
                         view.proxy = null
                         currentPage.dispose()
@@ -224,13 +228,14 @@ private class AppClient(
     private val loader: WebViewAssetLoader,
     private val page: () -> ControlCenterPage,
     private val onBlocked: () -> Unit,
+    private val interceptAppRequest: (Uri) -> WebResourceResponse?,
     private val onRendererGone: () -> Unit
 ) : WebViewClient() {
     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
         val url = request?.url ?: return null
         // Our origin never reaches the network, even for a path nothing serves.
         return loader.shouldInterceptRequest(url)
-            ?: notFound().takeIf { ControlCenterPage.isPageOrigin(url.toString()) }
+            ?: if (ControlCenterPage.isPageOrigin(url.toString())) notFound() else interceptAppRequest(url)
     }
 
     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
