@@ -282,8 +282,9 @@ class ProcessDeathResumeTest {
         second.vm.connectToAgent(agent)
         pumpUntil("the relaunch to CONNECT") { host.connects.size == 2 }
 
+        assertEquals(conversation, second.vm.activeSessionId.value)
         assertEquals(
-            "the previous conversation's local history must be visible immediately after relaunch",
+            "the previous conversation's local history must be visible before the Host answers",
             1,
             second.items.count { it is ChatItem.User && it.content == question }
         )
