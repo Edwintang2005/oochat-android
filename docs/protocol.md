@@ -211,8 +211,9 @@ descriptor is not part of the signed payload.
 
 #### Incompatible protocol version
 
-When the Host refuses the descriptor, the client shows one error and does not
-reconnect on its own. Retrying would send the same descriptor and be refused
+When the Host refuses the descriptor, or accepts the `CONNECT` but advertises
+another version in its `CONNECTED` (W16AAPPLE-73), the client shows one error
+and does not reconnect on its own. Retrying would send the same descriptor and be refused
 the same way, so each attempt would cost battery and add another copy of the
 error.
 
@@ -224,7 +225,14 @@ error.
    peer-controlled and end up in `app.log` and in the error text, so anything
    other than a short token (letters, digits, `.`, `_`, `+`, `-`, at most 32
    characters) also reads as null. Every other `ERROR`, including ones with a
-   string `code`, stays a `ConnectionError`.
+   string `code`, stays a `ConnectionError`. A `CONNECTED` whose `protocol`
+   descriptor fails `OipProtocol.supports()` becomes the same event, and its
+   session is not taken on. The check matches connectonion-react's
+   `supportsOip()`: a missing or null descriptor is accepted (a Host from before
+   descriptors), and otherwise `name` and `version` must be exactly ours; other
+   fields, such as `websocket_path` and `extensions`, are ignored. The app never
+   reads as connected, so messages queued while connecting are not sent to that
+   Host.
 2. `AgentConnection` marks the cycle as rejected, cancels any scheduled
    reconnect, and closes the socket itself. The Host leaves the socket open
    after its `ERROR`, and a later drop would otherwise start the reconnect
@@ -249,8 +257,8 @@ error.
    "Connection failed", and keeps its Reconnect action: nothing recovers on its
    own, and once the app or the agent is updated, that is the user's way back.
 
-Covered by `ProtocolParserVersionRejectionTest`, by the W16AAPPLE-12 section of
-`AgentConnectionRobolectricTest`, and by `ConnectionRepositoryImplTest`,
+Covered by `ProtocolParserVersionRejectionTest`, by the W16AAPPLE-12 and
+W16AAPPLE-73 sections of `AgentConnectionRobolectricTest`, and by `ConnectionRepositoryImplTest`,
 `ConnectToAgentUseCaseTest`, `ServerErrorTextTest`, `ChatViewModelTest`, and `ConnectionBannerTest`.
 
 When reconnecting, `ConnectionRepositoryImpl` restores the saved
@@ -484,7 +492,7 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `DASHBOARD_SNAPSHOT` | `html` | Emits `DashboardSnapshotReceived` for a non-blank dashboard within the size limit; oversized or blank content is ignored. |
 | `CONTROL_CENTER_APP` | `app.schema`, `app.sdk_version`, `app.revision`, `app.url`, `app.capabilities`, `app.review.status` | Emits `ControlCenterAppReceived`. The app is kept only when it is approved, speaks bridge version 1, is pinned to a `sha256:` revision and is served over `https` with no credentials, query or fragment; anything else, or `app: null`, reads as no app. See [Control Center](#control-center). |
 | `CONTROL_CENTER_STATE` | `state.status`, `state.error.code`, `state.error.message` | Emits `ControlCenterStateReceived`, which is logged: it is what explains an app that is missing. |
-| `CONNECTED` | `session_id`, `status`, `server_newer`, `session`, `session_modes` | Marks the connection ready and persists the supplied session. `status` and `server_newer` reach the chat screen, which acts on them once: see [CONNECTED status](#connected-status). `status` also sets the top bar's status line, and `session_modes` makes the Host the authority for the mode: see [Session status and mode](#session-status-and-mode). |
+| `CONNECTED` | `session_id`, `status`, `server_newer`, `session`, `session_modes`, `protocol` | A `protocol` descriptor naming another OIP version emits `ProtocolRejected` instead (see [Incompatible protocol version](#incompatible-protocol-version)). Otherwise, marks the connection ready and persists the supplied session. `status` and `server_newer` reach the chat screen, which acts on them once: see [CONNECTED status](#connected-status). `status` also sets the top bar's status line, and `session_modes` makes the Host the authority for the mode: see [Session status and mode](#session-status-and-mode). |
 | `llm_call` | `id`, `model` | Creates a running `ChatItem.Turn` / thinking item. |
 | `llm_result` | `id`, `status`, `model`, `duration_ms` | Updates the matching thinking item to done or error. |
 | `thinking` | `id`, `content`, `kind`, `model` | With `content`, the agent's reasoning: a `ChatItem.Thinking` under the frame's `id` with `kind` set (`intent`, `reflect`, or `reasoning` when absent), rendered as a collapsible "Thought" rather than as a reply. Without `content`, completed thinking metadata on a `ChatItem.Turn`. See [Streaming frames](#streaming-frames). |

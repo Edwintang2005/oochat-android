@@ -1,7 +1,11 @@
 package ai.openonion.oochat.data.protocol
 
+import ai.openonion.oochat.util.stringField
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 
 /**
  * The OIP protocol descriptor: which version of the ConnectOnion browser
@@ -49,4 +53,16 @@ object OipProtocol {
         minVersion = MIN_VERSION,
         maxVersion = MAX_VERSION
     )
+
+    /**
+     * Whether a Host's descriptor (in CONNECTED) names this client's version, decided as the
+     * Host's `supports_oip()` and connectonion-react's `supportsOip()` do: only [NAME] and
+     * [VERSION] are compared, and a missing or null descriptor is a Host from before descriptors,
+     * accepted during the compatibility window.
+     */
+    fun supports(descriptor: JsonElement?): Boolean {
+        if (descriptor == null || descriptor is JsonNull) return true
+        val fields = descriptor as? JsonObject ?: return false
+        return fields.stringField("name") == NAME && fields.stringField("version") == VERSION
+    }
 }
