@@ -171,10 +171,9 @@ class ConnectToAgentUseCase(
      * the Connected state within [connectionTimeoutMs] — or the agent
      * gates on ONBOARD_REQUIRED (see below).
      *
-     * Returns false early (no 30s wait) when the server rejects the
-     * attempt with a "Session is already attached" error — that's the
-     * signal to drop the persisted session and try again with
-     * sessionId=null.
+     * Returns false as soon as the state becomes an Error, without waiting
+     * out the timeout; [connect] then decides whether a second attempt is
+     * worth making.
      */
     private suspend fun tryConnectOnce(
         address: String,
@@ -207,10 +206,8 @@ class ConnectToAgentUseCase(
             val stateDeferred = async {
                 repo.connect(address, conversationId, directUrl)
                 withTimeoutOrNull(connectionTimeoutMs) {
-                    // Wait until state leaves Connecting/Reconnecting. Surface
-                    // a "stale session" error as a fast-fail so the outer
-                    // connect() can drop the persisted sessionId and retry
-                    // without waiting the full 30s.
+                    // Wait until state leaves Connecting/Reconnecting. An Error,
+                    // a stale-session one included, ends the wait at once.
                     // Reaching CONNECTED is the verdict, not still being on it:
                     // a drop straight after is the connection's own reconnect to
                     // handle, and a second attempt would start over without
@@ -218,15 +215,6 @@ class ConnectToAgentUseCase(
                     while (!repo.hasConnectedThisAttempt &&
                            (repo.connectionState.value is ConnectionState.Connecting ||
                             repo.connectionState.value is ConnectionState.Reconnecting)) {
-                        val err = (repo.connectionState.value as? ConnectionState.Error)?.message
-                        if (err != null && isStaleSessionError(err)) {
-                            FileLogger.w(
-                                "ConnectUseCase",
-                                "Fast-fail on stale-session error after <30s: $err"
-                            )
-                            repo.disconnect()
-                            return@withTimeoutOrNull false
-                        }
                         delay(100)
                     }
                     repo.hasConnectedThisAttempt || repo.connectionState.value is ConnectionState.Connected
@@ -251,9 +239,6 @@ class ConnectToAgentUseCase(
             }
         }
     }
-
-    private fun isStaleSessionError(message: String): Boolean =
-        StaleSessionDetector.isStaleSessionError(message)
 
     override suspend fun sendMessage(content: String, agentAddress: String, images: List<String>?, files: List<OutgoingFileAttachment>?) {
         getOrCreateRepository().sendMessage(content, agentAddress, images, files)

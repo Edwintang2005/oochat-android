@@ -211,6 +211,8 @@ override suspend fun disconnect() {
         assertTrue(connected)
         assertEquals(2, fakeRepository.connectCount)
         assertEquals(1, fakeRepository.resetCount)
+        // The error ends attempt 1 at once; it does not sit out the 30 s timeout.
+        assertTrue("took ${testScheduler.currentTime} ms", testScheduler.currentTime < 1_000L)
     }
 
     // ── Definitive verdict vs. transient failure ──────────────────────
