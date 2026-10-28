@@ -2513,6 +2513,54 @@ class AgentConnectionRobolectricTest {
         conn.teardown()
     }
 
+    // -- W16AAPPLE-73: a CONNECTED naming another OIP version fails the same way --
+
+    private val connectedOnAnotherVersion =
+        """{"type":"CONNECTED","session_id":"sess-1",""" +
+            """"protocol":{"name":"oip","version":"0.2","min_version":"0.2","max_version":"0.2","websocket_path":"/ws"}}"""
+
+    @Test
+    fun `a CONNECTED naming another OIP version closes the socket, reports once, and never reconnects`() = runTest {
+        val conn = connectionOnVirtualClock()
+        val seen = recordEvents(conn)
+        conn.connect("0xAGENT")
+        val ws = factory.lastWebSocket!!
+        val listener = factory.lastListener!!
+        listener.onOpen(ws, fakeResponse())
+
+        listener.onMessage(ws, connectedOnAnotherVersion)
+
+        assertEquals("the client must close the socket the Host would keep open", 1000, ws.closeCode)
+        assertEquals(listOf(ConnectionEvent.ProtocolRejected(hostProtocol = "oip/0.2")), seen.filterIsInstance<ConnectionEvent.ProtocolRejected>())
+        assertTrue("it must never read as connected: $seen", seen.none { it is ConnectionEvent.Connected })
+        assertFalse(conn.isConnected())
+
+        listener.onClosed(ws, 1006, "abnormal closure")
+        conn.retryNow()
+        advanceTimeBy(10 * 60_000L)
+
+        assertEquals("no automatic reconnect after the rejection", 1, factory.socketCount)
+        assertTrue(
+            "nothing may follow that reads as a retry or replaces the reason: $seen",
+            seen.none { it is ConnectionEvent.Reconnecting || it is ConnectionEvent.Disconnected || it is ConnectionEvent.ConnectionError }
+        )
+        conn.teardown()
+    }
+
+    @Test
+    fun `messages queued while connecting are not sent to a Host on another OIP version`() {
+        // It would misread them, and the user could not tell what it did with them.
+        connection.connect("0xAGENT")
+        connection.sendMessage("queued while connecting", "0xAGENT")
+
+        factory.lastListener!!.onMessage(factory.lastWebSocket!!, connectedOnAnotherVersion)
+
+        assertTrue(
+            "a queued message reached an incompatible Host: ${factory.lastWebSocket!!.sentMessages}",
+            factory.lastWebSocket!!.sentMessages.none { it.contains("queued while connecting") }
+        )
+    }
+
     /**
      * Forwards to [inner], but first runs [onNextDispatch] once from inside
      * `dispatch` — i.e. inside `launch`, before it has returned the Job its

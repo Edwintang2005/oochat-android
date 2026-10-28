@@ -99,18 +99,27 @@ object ProtocolParser {
                 shouldSendPong = true
             )
 
-            "CONNECTED" -> ParseResult(
-                event = ConnectionEvent.Connected(
-                    address = "", // Will be filled by caller
-                    sessionId = event.sessionId,
-                    session = event.session,
-                    status = ServerSessionStatus.fromWire(event.status),
-                    serverNewer = event.serverNewer == true,
-                    modes = decodeSessionModes(event.sessionModes)
-                ),
-                updateSession = event.session,
-                updateSessionId = event.sessionId
-            )
+            // A Host that accepted our CONNECT but speaks another OIP version would have its frames
+            // misread, so it is refused like the -32010 ERROR, and its session is not taken on.
+            // A descriptor refused for its shape (no name, a numeric version) can still describe
+            // as our own version; the error must not say the Host speaks what the app speaks.
+            "CONNECTED" -> if (!OipProtocol.supports(event.protocol)) {
+                val hostProtocol = describeProtocol(event.protocol)?.takeIf { it != "${OipProtocol.NAME}/${OipProtocol.VERSION}" }
+                ParseResult(event = ConnectionEvent.ProtocolRejected(hostProtocol = hostProtocol))
+            } else {
+                ParseResult(
+                    event = ConnectionEvent.Connected(
+                        address = "", // Will be filled by caller
+                        sessionId = event.sessionId,
+                        session = event.session,
+                        status = ServerSessionStatus.fromWire(event.status),
+                        serverNewer = event.serverNewer == true,
+                        modes = decodeSessionModes(event.sessionModes)
+                    ),
+                    updateSession = event.session,
+                    updateSessionId = event.sessionId
+                )
+            }
 
             // Sent once, right after CONNECT clears the trust gate (see
             // ws_router/connect.py's handle_connect, ~line 147) — the

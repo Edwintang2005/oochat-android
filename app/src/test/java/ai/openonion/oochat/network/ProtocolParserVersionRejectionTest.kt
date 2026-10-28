@@ -1,6 +1,10 @@
 package ai.openonion.oochat.network
 
+import ai.openonion.oochat.data.protocol.OipProtocol
+import kotlinx.serialization.json.JsonNull
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -8,7 +12,8 @@ import org.junit.Test
  * sends it:
  * `{"type":"ERROR","code":-32010,"message":"Unsupported OIP protocol","retryable":false,"protocol":{...}}`
  * parses to its own [ConnectionEvent.ProtocolRejected], while every other
- * ERROR keeps its [ConnectionEvent.ConnectionError] path.
+ * ERROR keeps its [ConnectionEvent.ConnectionError] path. W16AAPPLE-73: so
+ * does a CONNECTED whose descriptor names another version.
  */
 class ProtocolParserVersionRejectionTest {
 
@@ -123,5 +128,73 @@ class ProtocolParserVersionRejectionTest {
         val result = parse("""{"type":"ERROR","message":"Invalid invite code"}""")
 
         assertEquals(ConnectionEvent.ConnectionError("Invalid invite code"), result.event)
+    }
+
+    // W16AAPPLE-73: the descriptor in CONNECTED, checked as connectonion-react's supportsOip() does.
+
+    private fun connected(protocol: String?) =
+        parse("""{"type":"CONNECTED","session_id":"sess-1"""" + (protocol?.let { ""","protocol":$it""" } ?: "") + "}")
+
+    @Test
+    fun `a CONNECTED naming our version is accepted, whatever else its descriptor carries`() {
+        // The shape connectonion 1.9.3rc25 sends (ws_router/connect.py, oip_descriptor).
+        val result = connected(
+            """{"name":"oip","version":"0.1","min_version":"0.1","max_version":"0.1",""" +
+                """"websocket_path":"/ws","extensions":{"session-sync":"0.1"}}"""
+        )
+
+        assertTrue(result.event is ConnectionEvent.Connected)
+        assertEquals("sess-1", result.updateSessionId)
+    }
+
+    @Test
+    fun `a CONNECTED without a descriptor is still accepted during the compatibility window`() {
+        assertTrue(connected(null).event is ConnectionEvent.Connected)
+        assertTrue(connected("null").event is ConnectionEvent.Connected)
+    }
+
+    @Test
+    fun `a CONNECTED naming another version is a protocol rejection, and its session is not taken on`() {
+        val result = connected("""{"name":"oip","version":"0.2","min_version":"0.2","max_version":"0.2"}""")
+
+        assertEquals(ConnectionEvent.ProtocolRejected(hostProtocol = "oip/0.2"), result.event)
+        assertNull(result.updateSessionId)
+        assertNull(result.updateSession)
+    }
+
+    @Test
+    fun `a CONNECTED naming another protocol is a protocol rejection`() {
+        assertEquals(
+            ConnectionEvent.ProtocolRejected(hostProtocol = "acp/0.1"),
+            connected("""{"name":"acp","version":"0.1"}""").event
+        )
+    }
+
+    @Test
+    fun `a CONNECTED descriptor that cannot be read as ours is a protocol rejection`() {
+        // As supportsOip(): only an object whose name and version are exactly ours passes.
+        listOf(
+            """{"name":"oip"}""",
+            """{"name":"oip","version":0.1}""",
+            """{"version":"0.1"}""",
+            """"oip/0.1"""",
+            "[]"
+        ).forEach { protocol ->
+            assertTrue(protocol, connected(protocol).event is ConnectionEvent.ProtocolRejected)
+        }
+    }
+
+    @Test
+    fun `a refused descriptor that reads like our own version is reported as unknown`() {
+        // Otherwise the error would say the Host speaks oip/0.1 and so does the app.
+        listOf("""{"version":"0.1"}""", """{"name":"oip","version":0.1}""").forEach { protocol ->
+            assertEquals(protocol, ConnectionEvent.ProtocolRejected(hostProtocol = null), connected(protocol).event)
+        }
+    }
+
+    @Test
+    fun `a JSON null descriptor counts as missing`() {
+        // The parser already reads a null field as missing; the check agrees for any other caller.
+        assertTrue(OipProtocol.supports(JsonNull))
     }
 }
