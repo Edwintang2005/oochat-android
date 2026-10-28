@@ -71,6 +71,8 @@ class DashboardDocumentTest {
     fun `the CSP locks down every fetch class an agent could use to phone home`() {
         val csp = DashboardDocument.cspMeta(nonce)
         assertTrue(csp.contains("default-src 'none'"))   // covers connect/frame/script fallbacks
+        assertTrue(csp.contains("form-action 'none'"))  // no POST navigation around WebViewClient
+        assertTrue(csp.contains("base-uri 'none'"))     // agent HTML cannot rewrite URL resolution
         assertTrue(csp.contains("style-src 'unsafe-inline'"))
         assertTrue(csp.contains("img-src data:"))        // no remote pixels
         assertTrue(csp.contains("font-src data:"))
