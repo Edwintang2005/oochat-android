@@ -54,6 +54,9 @@ ksp {
 android {
     namespace = "ai.openonion.oochat"
     compileSdk = 36
+    // The version the CI image (cirruslabs/android-sdk:36) ships. AGP's default, 35.0.0, made
+    // every CI job download it, and that download once hung until the runner's 10-minute cap.
+    buildToolsVersion = "36.0.0"
 
     defaultConfig {
         applicationId = "ai.openonion.oochat"
