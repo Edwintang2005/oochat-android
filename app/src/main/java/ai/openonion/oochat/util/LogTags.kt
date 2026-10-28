@@ -13,6 +13,7 @@ object LogTags {
     const val CHAT_VM = "ChatVM"
     const val CONNECT_USE_CASE = "ConnectUseCase"
     const val CONN_REPO = "ConnRepo"
+    const val CONTROL_CENTER = "ControlCenter"
     const val CONV_HISTORY = "ConvHistory"
     const val DASHBOARD = "Dashboard"
     const val FILE_STORE = "FileStore"

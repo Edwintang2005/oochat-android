@@ -11,6 +11,7 @@ import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ChatItem
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ControlCenterApp
 import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.HostModeState
@@ -206,6 +207,9 @@ class ConnectionRepositoryImpl(
     // agent's allowlist.
     private val _dashboardHtml = MutableStateFlow<String?>(null)
     override val dashboardHtml: StateFlow<String?> = _dashboardHtml.asStateFlow()
+
+    private val _controlCenterApp = MutableStateFlow<ControlCenterApp?>(null)
+    override val controlCenterApp: StateFlow<ControlCenterApp?> = _controlCenterApp.asStateFlow()
 
     // Server-session state like the mode chip, with the same resets: cleared
     // on every connect and conversation switch, so one conversation's Todo
@@ -410,6 +414,17 @@ class ConnectionRepositoryImpl(
                         FileLogger.i(LogTags.CONN_REPO, "→ DashboardSnapshot: ${event.html.length} chars")
                         _dashboardHtml.value = event.html
                     }
+                    is ConnectionEvent.ControlCenterAppReceived -> {
+                        FileLogger.i(LogTags.CONN_REPO, "ControlCenterApp: ${if (event.app != null) "published" else "none"}")
+                        _controlCenterApp.value = event.app
+                    }
+                    is ConnectionEvent.ControlCenterStateReceived -> {
+                        FileLogger.i(
+                            LogTags.CONN_REPO,
+                            "ControlCenterState: ${event.status}" +
+                                (event.errorCode?.let { " ($it: ${event.errorMessage.orEmpty()})" } ?: "")
+                        )
+                    }
                     is ConnectionEvent.SessionStatusReceived -> {
                         // Shown only when it is about the session on screen. The Host echoes the
                         // id it was asked about, so a reply to a query sent before a conversation
@@ -597,6 +612,7 @@ class ConnectionRepositoryImpl(
                 // point the previous agent's Home at the new agent's
                 // allowlist.
                 _dashboardHtml.value = null
+                _controlCenterApp.value = null
                 _plan.value = emptyList()
 
                 runCatchingCancellable {

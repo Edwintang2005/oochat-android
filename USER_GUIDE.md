@@ -124,6 +124,14 @@ wrote the agent. It is displayed in a locked-down view: it cannot reach the
 network, cannot store anything, and cannot navigate anywhere. If no icon
 appears, this agent has not sent one.
 
+Some agents publish a full **Control Center** instead: a reviewed web app that
+can show live information and act for you. The same icon opens it. Anything it
+does for you, such as sending a message or running a skill, appears in the chat
+as a message from you, so you can always see it. It cannot use your camera,
+microphone or location, read your clipboard, or open other sites. Going back to
+the chat while it is working leaves the work running. If it stops unexpectedly,
+the screen says so; tap **Reload** to start it again.
+
 ---
 
 ## 6. Deciding what the agent may do

@@ -296,6 +296,119 @@ class ProtocolParserTest {
         assertTrue(ev is ConnectionEvent.DashboardSnapshotReceived)
     }
 
+    // --- CONTROL_CENTER_APP / CONTROL_CENTER_STATE (W16AAPPLE-29) ---
+
+    private val revision = "sha256:" + "a".repeat(64)
+
+    /** The descriptor control_center/runtime.py activates, with [overrides] applied. */
+    private fun appFrame(vararg overrides: Pair<String, String>): String {
+        val fields = linkedMapOf(
+            "schema" to "\"connectonion.control-app/1\"",
+            "sdk_version" to "\"1\"",
+            "revision" to "\"$revision\"",
+            "url" to "\"https://r-9f86d081.apps.example.net/index.html\"",
+            "capabilities" to """["clipboard-write","fullscreen"]""",
+            "review" to """{"status":"approved","review_id":"r1","reviewed_at":"2026-10-14T00:00:00+00:00","policy":"p1"}"""
+        )
+        overrides.forEach { (key, value) -> fields[key] = value }
+        val app = fields.entries.joinToString(",", "{", "}") { (k, v) -> "\"$k\":$v" }
+        return """{"type":"CONTROL_CENTER_APP","session_id":"s1","app":$app}"""
+    }
+
+    private fun parsedApp(frame: String) =
+        (parse(frame).event as ConnectionEvent.ControlCenterAppReceived).app
+
+    @Test
+    fun `an approved CONTROL_CENTER_APP is read with its address, revision and capabilities`() {
+        val app = parsedApp(appFrame())
+
+        assertEquals("https://r-9f86d081.apps.example.net/index.html", app?.url)
+        assertEquals(revision, app?.revision)
+        assertEquals(listOf("clipboard-write", "fullscreen"), app?.capabilities)
+    }
+
+    @Test
+    fun `CONTROL_CENTER_APP with a null app means none is published`() {
+        assertNull(parsedApp("""{"type":"CONTROL_CENTER_APP","session_id":"s1","app":null}"""))
+        assertNull(parsedApp("""{"type":"CONTROL_CENTER_APP","session_id":"s1"}"""))
+    }
+
+    @Test
+    fun `a descriptor that could not be loaded safely reads as no app`() {
+        // None of these is something the Host's runtime would activate.
+        val refused = mapOf(
+            "plain http" to appFrame("url" to "\"http://apps.example.net/index.html\""),
+            "a query" to appFrame("url" to "\"https://apps.example.net/index.html?v=2\""),
+            "a fragment" to appFrame("url" to "\"https://apps.example.net/index.html#x\""),
+            "credentials" to appFrame("url" to "\"https://user:pw@apps.example.net/index.html\""),
+            "no host" to appFrame("url" to "\"https:///index.html\""),
+            "not a URL" to appFrame("url" to "\"https://apps example.net/\""),
+            "a script URL" to appFrame("url" to "\"javascript:alert(1)\""),
+            "an IPv6 host the frame's origin cannot be pinned to" to appFrame("url" to "\"https://[::1]/index.html\""),
+            "a short revision" to appFrame("revision" to "\"sha256:abc\""),
+            "an uppercase revision" to appFrame("revision" to "\"sha256:${"A".repeat(64)}\""),
+            "another hash" to appFrame("revision" to "\"sha512:${"a".repeat(64)}\""),
+            "a blocked review" to appFrame("review" to """{"status":"blocked"}"""),
+            "no review" to appFrame("review" to "null"),
+            "an unknown schema" to appFrame("schema" to "\"connectonion.control-app/2\""),
+            "another bridge version" to appFrame("sdk_version" to "\"2\""),
+            "a numeric bridge version" to appFrame("sdk_version" to "1"),
+            "an app that is not an object" to """{"type":"CONTROL_CENTER_APP","app":"https://apps.example.net/"}"""
+        )
+
+        refused.forEach { (why, frame) -> assertNull(why, parsedApp(frame)) }
+    }
+
+    @Test
+    fun `an app may only declare the capabilities the React SDK allows`() {
+        // They become the iframe's permissions, so React refuses the whole descriptor otherwise.
+        assertEquals(
+            listOf("camera", "microphone", "geolocation", "clipboard-read"),
+            parsedApp(appFrame("capabilities" to """["camera","microphone","geolocation","clipboard-read"]"""))?.capabilities
+        )
+        assertEquals(emptyList<String>(), parsedApp(appFrame("capabilities" to "[]"))?.capabilities)
+        listOf(
+            """["camera *; payment"]""",
+            """["usb"]""",
+            """["camera",3]""",
+            "null",
+            "\"camera\""
+        ).forEach { assertNull(it, parsedApp(appFrame("capabilities" to it))) }
+    }
+
+    @Test
+    fun `an app that declares no capabilities has none`() {
+        val frame = appFrame().replace(""","capabilities":["clipboard-write","fullscreen"]""", "")
+
+        assertEquals(emptyList<String>(), parsedApp(frame)?.capabilities)
+    }
+
+    @Test
+    fun `CONTROL_CENTER_STATE carries the status and the reason an update failed`() {
+        val frame = """{"type":"CONTROL_CENTER_STATE","session_id":"s1","state":{"schema":1,"active":null,
+            |"history":[],"status":"blocked","error":{"code":"source_changed","message":"Build changed during review"},
+            |"updates":{}}}""".trimMargin().replace("\n", "")
+
+        assertEquals(
+            ConnectionEvent.ControlCenterStateReceived("blocked", "source_changed", "Build changed during review"),
+            parse(frame).event
+        )
+    }
+
+    @Test
+    fun `CONTROL_CENTER_STATE with no error has no reason`() {
+        assertEquals(
+            ConnectionEvent.ControlCenterStateReceived("approved", null, null),
+            parse("""{"type":"CONTROL_CENTER_STATE","state":{"status":"approved","error":null}}""").event
+        )
+    }
+
+    @Test
+    fun `CONTROL_CENTER_STATE without a status is dropped`() {
+        assertEquals(ConnectionEvent.Unknown, parse("""{"type":"CONTROL_CENTER_STATE","state":{"error":null}}""").event)
+        assertEquals(ConnectionEvent.Unknown, parse("""{"type":"CONTROL_CENTER_STATE","state":"approved"}""").event)
+    }
+
     // ── tool_call ────────────────────────────────────────────────────
 
     @Test
@@ -740,7 +853,9 @@ class ProtocolParserTest {
             """{"type":"OUTPUT","id":"h1","result":"done"}""",
             """{"type":"ERROR","id":"h1","message":"nope"}""",
             """{"type":"SESSION_STATUS","id":"h1","session_id":"s1","status":"running"}""",
-            """{"type":"RUNTIME_INPUT_ACK","id":"h1","session_id":"s1"}"""
+            """{"type":"RUNTIME_INPUT_ACK","id":"h1","session_id":"s1"}""",
+            """{"type":"CONTROL_CENTER_APP","id":"h1","session_id":"s1","app":null}""",
+            """{"type":"CONTROL_CENTER_STATE","id":"h1","session_id":"s1","state":{"status":"empty"}}"""
         )
 
         frames.forEach { frame -> assertNull(frame, parse(frame).msgId) }

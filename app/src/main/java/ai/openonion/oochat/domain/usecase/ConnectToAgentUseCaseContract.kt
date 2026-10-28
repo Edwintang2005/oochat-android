@@ -4,9 +4,11 @@ import ai.openonion.oochat.domain.model.AgentLiveProfile
 import ai.openonion.oochat.domain.model.ApprovalMode
 import ai.openonion.oochat.domain.model.ChatEvent
 import ai.openonion.oochat.domain.model.ConnectionState
+import ai.openonion.oochat.domain.model.ControlCenterApp
 import ai.openonion.oochat.domain.model.ExecOutcome
 import ai.openonion.oochat.domain.model.ExecRequest
 import ai.openonion.oochat.domain.model.LEGACY_SESSION_MODES
+import ai.openonion.oochat.domain.model.NO_CONTROL_CENTER_APP
 import ai.openonion.oochat.domain.model.NO_PLAN
 import ai.openonion.oochat.domain.model.OutgoingFileAttachment
 import ai.openonion.oochat.domain.model.PlanEntry
@@ -73,6 +75,9 @@ interface ConnectToAgentUseCaseContract {
      * [ai.openonion.oochat.data.repository.ConnectionRepository.dashboardHtml].
      */
     val dashboardHtml: StateFlow<String?>
+
+    /** See [ai.openonion.oochat.data.repository.ConnectionRepository.controlCenterApp]. */
+    val controlCenterApp: StateFlow<ControlCenterApp?> get() = NO_CONTROL_CENTER_APP
 
     /**
      * The agent's current Todo List — see

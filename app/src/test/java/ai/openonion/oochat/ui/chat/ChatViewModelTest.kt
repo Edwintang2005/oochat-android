@@ -46,9 +46,17 @@ import ai.openonion.oochat.network.SpeechRecognitionService
 import ai.openonion.oochat.network.VoiceTranscriptionService
 import ai.openonion.oochat.ui.chat.components.VoiceInputPhase
 import ai.openonion.oochat.ui.chat.components.failedUserMessages
+import ai.openonion.oochat.ui.controlcenter.ControlCenterActionRejected
+import ai.openonion.oochat.ui.controlcenter.ControlCenterAgentStatus
+import ai.openonion.oochat.ui.controlcenter.ControlCenterCancelled
+import ai.openonion.oochat.ui.controlcenter.ControlCenterConnection
+import ai.openonion.oochat.ui.controlcenter.ControlCenterConversation
+import ai.openonion.oochat.ui.controlcenter.ControlCenterSkill
+import ai.openonion.oochat.ui.controlcenter.controlCenterSkillMessage
 import android.app.Application
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -185,7 +193,10 @@ class ChatViewModelTest {
         var sentMessages = mutableListOf<SentMessage>()
         /** Set to make the next send throw, the way a refused socket write does. */
         var failNextSend = false
+        /** Set to hold sends open until it completes, the way a slow socket write would. */
+        var sendGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         override suspend fun sendMessage(content: String, agentAddress: String, images: List<String>?, files: List<ai.openonion.oochat.domain.model.OutgoingFileAttachment>?) {
+            sendGate?.await()
             interactions += "send:$content"
             if (failNextSend) {
                 failNextSend = false
@@ -5681,6 +5692,367 @@ class ChatViewModelTest {
                 it.sessionId == session.id && it.content == "answered while you were away"
             }
         )
+    }
+
+    // --- Control Center actions (W16AAPPLE-29) ---
+
+    private fun TestScope.connectedForControlCenter(): String {
+        val address = validHexAddress()
+        vm.connectToAgent(address)
+        testScheduler.runCurrent()
+        connectUseCase.markConnected(address)
+        testScheduler.runCurrent()
+        return address
+    }
+
+    private fun TestScope.controlCenterSend(
+        message: String,
+        conversation: ControlCenterConversation = ControlCenterConversation.CURRENT
+    ) = backgroundScope.async { runCatching { vm.controlCenterActions.sendMessage(message, conversation) } }
+
+    private fun Result<String>.refusal(): String? = (exceptionOrNull() as? ControlCenterActionRejected)?.message
+
+    @Test
+    fun `a Control Center message is an ordinary visible turn, answered once that turn ends`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+
+        val action = controlCenterSend("summarise today")
+        testScheduler.runCurrent()
+
+        assertEquals("summarise today", (vm.uiState.value.chatItems.single() as ChatItem.User).content)
+        assertEquals(listOf("summarise today"), connectUseCase.sentMessages.map { it.content })
+        assertFalse("answered before its turn ended", action.isCompleted)
+
+        connectUseCase.emit(ChatEvent.OutputReceived("Here is today.", null))
+        testScheduler.runCurrent()
+
+        val session = messageRepo.snapshot().single { it.content == "summarise today" }.sessionId
+        assertEquals(session, action.await().getOrThrow())
+    }
+
+    @Test
+    fun `a Control Center skill runs as the slash command the user could have typed`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+
+        backgroundScope.async { vm.controlCenterActions.runSkill("meeting-prep", " 2pm\n  sync ", ControlCenterConversation.CURRENT) }
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("/meeting-prep 2pm sync"), connectUseCase.sentMessages.map { it.content })
+        assertEquals("/daily-brief", controlCenterSkillMessage("daily-brief", null))
+        assertEquals("/daily-brief", controlCenterSkillMessage("daily-brief", "  "))
+    }
+
+    @Test
+    fun `nothing is sent for the Control Center while the agent is busy`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        connectUseCase.emit(ChatEvent.ChatItemReceived(ChatItem.Thinking(id = "t1", status = ThinkingStatus.RUNNING)))
+        testScheduler.runCurrent()
+
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        assertEquals("The agent is busy. Try again when its current turn has finished", action.await().refusal())
+        assertTrue(connectUseCase.sentMessages.isEmpty())
+    }
+
+    @Test
+    fun `nothing is sent for the Control Center before the connection is ready`() = runTest(testDispatcher) {
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        assertEquals("Agent connection is not ready", action.await().refusal())
+        assertTrue(connectUseCase.sentMessages.isEmpty())
+    }
+
+    @Test
+    fun `a Control Center action for a new chat is refused for now`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+
+        val action = controlCenterSend("hi", ControlCenterConversation.NEW)
+        testScheduler.runCurrent()
+
+        assertEquals("Starting a new chat from the Control Center is not supported yet", action.await().refusal())
+        assertTrue(connectUseCase.sentMessages.isEmpty())
+    }
+
+    @Test
+    fun `a Control Center message that fails to send is reported as not delivered`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        connectUseCase.failNextSend = true
+
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        assertEquals("The message did not reach the agent", action.await().refusal())
+    }
+
+    @Test
+    fun `a connection lost mid-turn is not reported to the Control Center as success`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        connectUseCase.forceState(ConnectionState.Reconnecting)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            "The connection dropped before the turn finished. Check the chat before retrying",
+            action.await().refusal()
+        )
+    }
+
+    @Test
+    fun `an agent error ends the Control Center action with a refusal`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        connectUseCase.emit(ChatEvent.ConnectionErrorOccurred("Insufficient ConnectOnion Credits"))
+        testScheduler.runCurrent()
+
+        assertEquals("The agent stopped with an error. See the chat", action.await().refusal())
+    }
+
+    @Test
+    fun `the app cancelling a Control Center action interrupts the turn it started`() = runTest(testDispatcher) {
+        // As in the React SDK: an app owns the idle turn it starts.
+        connectedForControlCenter()
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        action.cancel(ControlCenterCancelled())
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("hi"), connectUseCase.sentMessages.map { it.content })
+        assertEquals(1, connectUseCase.interruptInvocations)
+    }
+
+    @Test
+    fun `the app cancelling while its message is still being sent interrupts the turn once it starts`() = runTest(testDispatcher) {
+        // The app's own timeout cancels too, and can land before the slow send returns.
+        connectedForControlCenter()
+        val gate = CompletableDeferred<Unit>()
+        connectUseCase.sendGate = gate
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        action.cancel(ControlCenterCancelled())
+        testScheduler.runCurrent()
+        assertEquals("interrupted before anything was sent", 0, connectUseCase.interruptInvocations)
+
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("hi"), connectUseCase.sentMessages.map { it.content })
+        assertEquals(1, connectUseCase.interruptInvocations)
+    }
+
+    @Test
+    fun `a cancelled action's message still being sent keeps the agent busy until it resolves`() = runTest(testDispatcher) {
+        // Otherwise a second action could be answered by the first turn's closing reply.
+        connectedForControlCenter()
+        val gate = CompletableDeferred<Unit>()
+        connectUseCase.sendGate = gate
+        val first = controlCenterSend("first")
+        testScheduler.runCurrent()
+        first.cancel(ControlCenterCancelled())
+        testScheduler.runCurrent()
+
+        val second = controlCenterSend("second")
+        testScheduler.runCurrent()
+        assertEquals("The agent is busy. Try again when its current turn has finished", second.await().refusal())
+
+        connectUseCase.failNextSend = true
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+        connectUseCase.sendGate = null
+
+        controlCenterSend("third")
+        testScheduler.runCurrent()
+        assertEquals(listOf("third"), connectUseCase.sentMessages.map { it.content })
+    }
+
+    @Test
+    fun `the Control Center snapshot names the conversation on screen after a switch`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        vm.sendMessage("in A")
+        testScheduler.runCurrent()
+        connectUseCase.emit(ChatEvent.OutputReceived("answer A", null))
+        testScheduler.runCurrent()
+        val a = vm.activeSessionId.value!!
+        vm.startNewSession()
+        testScheduler.runCurrent()
+        vm.sendMessage("in B")
+        testScheduler.runCurrent()
+        connectUseCase.emit(ChatEvent.OutputReceived("answer B", null))
+        testScheduler.runCurrent()
+        assertNotEquals(a, vm.controlCenterSnapshot.value.sessionId)
+
+        vm.switchToSession(a)
+        testScheduler.runCurrent()
+
+        assertEquals(a, vm.controlCenterSnapshot.value.sessionId)
+    }
+
+    @Test
+    fun `leaving the Control Center screen does not stop the turn`() = runTest(testDispatcher) {
+        // The user going back to the chat to watch the turn closes the page; that must not end it.
+        connectedForControlCenter()
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+        assertEquals(listOf("hi"), connectUseCase.sentMessages.map { it.content })
+        assertEquals(SessionActivity.RUNNING, vm.sessionActivity.value)
+
+        action.cancel()
+        testScheduler.runCurrent()
+
+        assertEquals(0, connectUseCase.interruptInvocations)
+        assertEquals(SessionActivity.RUNNING, vm.sessionActivity.value)
+    }
+
+    @Test
+    fun `leaving the Control Center screen while its message is being sent does not stop the turn`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        val gate = CompletableDeferred<Unit>()
+        connectUseCase.sendGate = gate
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        action.cancel()
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("hi"), connectUseCase.sentMessages.map { it.content })
+        assertEquals(0, connectUseCase.interruptInvocations)
+    }
+
+    @Test
+    fun `only one Control Center action runs at a time`() = runTest(testDispatcher) {
+        // Held before its turn starts, so the agent still reads as idle.
+        connectedForControlCenter()
+        connectUseCase.sendGate = kotlinx.coroutines.CompletableDeferred()
+        controlCenterSend("first")
+        testScheduler.runCurrent()
+
+        val second = controlCenterSend("second")
+        testScheduler.runCurrent()
+
+        assertEquals(SessionActivity.IDLE, vm.sessionActivity.value)
+        assertEquals("The agent is busy. Try again when its current turn has finished", second.await().refusal())
+    }
+
+    @Test
+    fun `Stop ends a waiting Control Center action, and the next waits for the stopped turn to close`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        val first = controlCenterSend("first")
+        testScheduler.runCurrent()
+
+        vm.interrupt()
+        testScheduler.runCurrent()
+        val tooSoon = controlCenterSend("second")
+        testScheduler.runCurrent()
+
+        assertEquals("The turn was stopped in the chat", first.await().refusal())
+        // The stopped turn's closing OUTPUT has not arrived; it would answer this one.
+        assertEquals("The agent is busy. Try again when its current turn has finished", tooSoon.await().refusal())
+
+        connectUseCase.emit(ChatEvent.OutputReceived("Stopped.", null))
+        testScheduler.runCurrent()
+        controlCenterSend("third")
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("first", "third"), connectUseCase.sentMessages.map { it.content })
+    }
+
+    @Test
+    fun `a Control Center action is not answered by a turn it did not start`() = runTest(testDispatcher) {
+        // A message typed in the chat is still on its way out when the app's request arrives,
+        // so the agent still reads as idle; the first OUTPUT is the typed message's.
+        connectedForControlCenter()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        connectUseCase.sendGate = gate
+        vm.sendMessage("typed")
+        testScheduler.runCurrent()
+        val action = controlCenterSend("from app")
+        testScheduler.runCurrent()
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+
+        connectUseCase.emit(ChatEvent.OutputReceived("answer to typed", null))
+        testScheduler.runCurrent()
+
+        assertFalse("answered by the typed message's turn", action.isCompleted)
+        assertEquals(listOf("typed", "from app"), connectUseCase.sentMessages.map { it.content })
+
+        connectUseCase.emit(ChatEvent.OutputReceived("answer to the app", null))
+        testScheduler.runCurrent()
+
+        assertTrue(action.await().isSuccess)
+    }
+
+    @Test
+    fun `a reply that lands after a conversation switch still answers the Control Center action`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        val action = controlCenterSend("asked in A")
+        testScheduler.runCurrent()
+        val sessionA = vm.activeSessionId.value!!
+
+        vm.startNewSession()
+        testScheduler.runCurrent()
+        connectUseCase.emit(ChatEvent.OutputReceived("answer for A", null))
+        testScheduler.runCurrent()
+
+        assertEquals("the session the turn ran in", sessionA, action.await().getOrThrow())
+    }
+
+    @Test
+    fun `a Control Center action needs an agent to send to`() = runTest(testDispatcher) {
+        connectUseCase.markConnected()
+        testScheduler.runCurrent()
+
+        val action = controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        assertEquals("Agent connection is not ready", action.await().refusal())
+        assertTrue(connectUseCase.sentMessages.isEmpty())
+    }
+
+    @Test
+    fun `the Control Center snapshot is busy from the moment an action is accepted`() = runTest(testDispatcher) {
+        connectedForControlCenter()
+        connectUseCase.sendGate = kotlinx.coroutines.CompletableDeferred()
+
+        controlCenterSend("hi")
+        testScheduler.runCurrent()
+
+        assertEquals(SessionActivity.IDLE, vm.sessionActivity.value)
+        assertEquals(ControlCenterAgentStatus.WORKING, vm.controlCenterSnapshot.value.status)
+    }
+
+    @Test
+    fun `the Control Center snapshot follows the chat`() = runTest(testDispatcher) {
+        val address = connectedForControlCenter()
+        connectUseCase._agentProfile.value = ai.openonion.oochat.domain.model.AgentLiveProfile(
+            sessionId = null, name = "agent", address = address, model = "m",
+            skills = listOf(ai.openonion.oochat.domain.model.AgentSkill("daily-brief", "Today's brief"))
+        )
+        testScheduler.runCurrent()
+
+        val idle = vm.controlCenterSnapshot.value
+        assertEquals(address, idle.agentAddress)
+        assertEquals(ControlCenterConnection.CONNECTED, idle.connectionState)
+        assertEquals(ControlCenterAgentStatus.IDLE, idle.status)
+        assertEquals(listOf(ControlCenterSkill("daily-brief", "Today's brief")), idle.skills)
+
+        controlCenterSend("hi")
+        testScheduler.runCurrent()
+        assertEquals(ControlCenterAgentStatus.WORKING, vm.controlCenterSnapshot.value.status)
+
+        connectUseCase.emit(ChatEvent.OutputReceived("done", null))
+        testScheduler.runCurrent()
+        val session = messageRepo.snapshot().single { it.content == "hi" }.sessionId
+        assertEquals(ControlCenterAgentStatus.IDLE, vm.controlCenterSnapshot.value.status)
+        assertEquals(session, vm.controlCenterSnapshot.value.sessionId)
     }
 
     // ── Helpers ────────────────────────────────────────────────────────

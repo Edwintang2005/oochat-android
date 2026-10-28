@@ -7,6 +7,7 @@ import ai.openonion.oochat.ui.agent.AgentListScreenWrapper
 import ai.openonion.oochat.ui.chat.ChatScreen
 import ai.openonion.oochat.ui.components.ConfirmationSheet
 import ai.openonion.oochat.ui.components.DangerConfirmActions
+import ai.openonion.oochat.ui.controlcenter.ControlCenterScreenWrapper
 import ai.openonion.oochat.ui.dashboard.DashboardScreenWrapper
 import ai.openonion.oochat.ui.loading.LoadingScreen
 import ai.openonion.oochat.ui.logs.LogsScreen
@@ -60,6 +61,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val LOGS = "logs"
     const val DASHBOARD = "dashboard"
+    const val CONTROL_CENTER = "control_center"
 
     /** SavedStateHandle key used to hand a picked agent address back from AGENT_DISCOVERY. */
     const val RESULT_SELECTED_AGENT_ADDRESS = "selected_agent_address"
@@ -214,6 +216,9 @@ fun NavigationGraph(
                 onNavigateToDashboard = {
                     navController.navigate(Routes.DASHBOARD)
                 },
+                onNavigateToControlCenter = {
+                    navController.navigate(Routes.CONTROL_CENTER)
+                },
                 onNavigateToAgentChat = navigateToAgentChat
             )
 
@@ -292,6 +297,9 @@ fun NavigationGraph(
                 },
                 onNavigateToDashboard = {
                     navController.navigate(Routes.DASHBOARD)
+                },
+                onNavigateToControlCenter = {
+                    navController.navigate(Routes.CONTROL_CENTER)
                 },
                 onNavigateToAgentChat = navigateToAgentChat
             )
@@ -433,6 +441,18 @@ fun NavigationGraph(
                 }
             )
         }
+
+        // The agent's Home when it has a Control Center app. Reached the same way as DASHBOARD.
+        composable(Routes.CONTROL_CENTER) {
+            ControlCenterScreenWrapper(
+                chatViewModelStoreOwner = CHAT_ROUTES.firstNotNullOfOrNull { route ->
+                    runCatching { navController.getBackStackEntry(route) }.getOrNull()
+                },
+                onNavigateBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
     }
 }
 
@@ -457,7 +477,8 @@ private val DRILL_DOWN_ROUTES = listOf(
     Routes.AGENT_DISCOVERY,
     Routes.SETTINGS,
     Routes.LOGS,
-    Routes.DASHBOARD
+    Routes.DASHBOARD,
+    Routes.CONTROL_CENTER
 )
 
 private fun NavBackStackEntry.isDrillDown(): Boolean =

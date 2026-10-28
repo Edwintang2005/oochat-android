@@ -54,6 +54,8 @@ The authoritative ConnectOnion OIP implementation reference is the
 | `CONNECTED` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`AgentConnectionRobolectricTest`](../app/src/test/java/ai/openonion/oochat/network/AgentConnectionRobolectricTest.kt) |
 | `AGENT_PROFILE` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
 | `DASHBOARD_SNAPSHOT` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
+| `CONTROL_CENTER_APP` | Partial | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt), [`ConnectionRepositoryImplTest`](../app/src/test/java/ai/openonion/oochat/data/repository/ConnectionRepositoryImplTest.kt); [`ControlCenterPageTest`](../app/src/test/java/ai/openonion/oochat/ui/controlcenter/ControlCenterPageTest.kt), [`ControlCenterHostTest`](../app/src/test/java/ai/openonion/oochat/ui/controlcenter/ControlCenterHostTest.kt), [`ControlCenterWebViewTest`](../app/src/test/java/ai/openonion/oochat/ui/controlcenter/ControlCenterWebViewTest.kt), and on a device [`ControlCenterBridgeTest`](../app/src/androidTest/java/ai/openonion/oochat/ui/controlcenter/ControlCenterBridgeTest.kt); the app is shown on the agent's Home, but it is given no device capabilities and `conversation: "new"` is refused |
+| `CONTROL_CENTER_STATE` | Partial by design | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt); the status and error are logged, and the administrator's history and update schedule are not used |
 | `llm_call` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
 | `llm_result` | Supported | [`ProtocolParserTest`](../app/src/test/java/ai/openonion/oochat/network/ProtocolParserTest.kt) |
 | `thinking` | Supported | [`StreamingFramesSpecTest`](../app/src/test/java/ai/openonion/oochat/network/StreamingFramesSpecTest.kt) |
@@ -480,6 +482,8 @@ types are returned as `ConnectionEvent.Unknown` and do not alter the chat.
 | `PING` | — | Emits `Ping`; `AgentConnection` sends `PONG`. |
 | `AGENT_PROFILE` | `session_id`, `name`, `address`, `model`, `tools`, `skills`, `balance_usd` | Emits `AgentProfileReceived` with the agent's connection profile, tools, skills, and optional balance. |
 | `DASHBOARD_SNAPSHOT` | `html` | Emits `DashboardSnapshotReceived` for a non-blank dashboard within the size limit; oversized or blank content is ignored. |
+| `CONTROL_CENTER_APP` | `app.schema`, `app.sdk_version`, `app.revision`, `app.url`, `app.capabilities`, `app.review.status` | Emits `ControlCenterAppReceived`. The app is kept only when it is approved, speaks bridge version 1, is pinned to a `sha256:` revision and is served over `https` with no credentials, query or fragment; anything else, or `app: null`, reads as no app. See [Control Center](#control-center). |
+| `CONTROL_CENTER_STATE` | `state.status`, `state.error.code`, `state.error.message` | Emits `ControlCenterStateReceived`, which is logged: it is what explains an app that is missing. |
 | `CONNECTED` | `session_id`, `status`, `server_newer`, `session`, `session_modes` | Marks the connection ready and persists the supplied session. `status` and `server_newer` reach the chat screen, which acts on them once: see [CONNECTED status](#connected-status). `status` also sets the top bar's status line, and `session_modes` makes the Host the authority for the mode: see [Session status and mode](#session-status-and-mode). |
 | `llm_call` | `id`, `model` | Creates a running `ChatItem.Turn` / thinking item. |
 | `llm_result` | `id`, `status`, `model`, `duration_ms` | Updates the matching thinking item to done or error. |
@@ -775,7 +779,8 @@ session) sends no `last_msg_id`.
 Host writes straight to the socket instead of appending to its log: `CONNECTED`,
 `OUTPUT`, `ERROR`, `PING`, `AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`,
 `SESSION_STATUS`, `RUNTIME_INPUT_ACK` (whose `id` is a UUID the Host mints for the
-queued input, not a log entry), `ONBOARD_REQUIRED` and `ONBOARD_SUCCESS`
+queued input, not a log entry), `ONBOARD_REQUIRED`, `ONBOARD_SUCCESS`,
+`CONTROL_CENTER_APP` and `CONTROL_CENTER_STATE`
 (`HOST_FRAME_TYPES` in `ProtocolParser`). The Host stamps an `id` on every entry in its log, so this
 follows new event types (`turn_result`, `provider_message`, and so on)
 without a list to maintain, whether or not the client decodes them;
@@ -812,7 +817,7 @@ every status of a `compact` or an `eval`, so comparing ids would drop real
 updates. (`tool_call` and `tool_result` share a `tool_id`, but each frame has its
 own `id`.) Three kinds of frame have no key and
 are never dropped: the snapshots the Host re-sends on every `CONNECT`
-(`AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`); `session_sync`, whose replay carries the
+(`AGENT_PROFILE`, `DASHBOARD_SNAPSHOT`, `CONTROL_CENTER_APP`, `CONTROL_CENTER_STATE`); `session_sync`, whose replay carries the
 session as it is now and so never equals the original, and which is already safe
 to receive twice (a reply's id comes from its content); and frames the client
 does not decode. A dropped repeat also leaves the cursor where it was. The
@@ -1121,6 +1126,122 @@ running), `ApprovalModeTest` (no tap reaches an unattended mode on either
 catalogue), `SessionActivityTest`, `ChatViewModelTest` (cycling and exit on a
 1.7+ Host; each status line), `ServerErrorTextTest`, `TranscriptItemCodecTest`,
 `ChatTopBarComposeTest` and `ApprovalModeControlsComposeTest`.
+
+## Control Center
+
+The Host offers two Control Centers. `DASHBOARD_SNAPSHOT` is what connectonion now
+calls the legacy one: agent-written HTML, rendered in a sealed page whose buttons
+run skills (see `DashboardDocument`). The current one is a **published app**: a
+reviewed, immutable website the Host names in `CONTROL_CENTER_APP`, which runs in
+an iframe beside the chat and talks to it over a private `MessagePort`. When the
+agent has one, it takes the legacy page's place. Upstream references:
+connectonion `docs/network/control-center.md` and `websocket-protocol.md`
+(`CONTROL_CENTER_APP`), the parent side `createControlCenterHost` in
+connectonion-react `src/control-center.ts`, and the app side
+`connectonion/cli/assets/control-center/sdk.js`.
+
+**The descriptor.** `ProtocolParser.controlCenterAppOf` keeps an `app` only when it
+is what the Host's own runtime activates: schema `connectonion.control-app/1`,
+`sdk_version` `"1"` (the bridge version this client speaks), `review.status`
+`approved`, a `revision` of `sha256:` and 64 lowercase hex characters, an
+`https` URL with a host and no credentials, query or fragment, and `capabilities`
+(if present) drawn only from `camera`, `microphone`, `geolocation`,
+`clipboard-read`, `clipboard-write` and `fullscreen`, as the React SDK requires,
+since they become the iframe's permissions. Anything else, and `app: null`, reads
+as no app. `ConnectionRepository.controlCenterApp` holds it, reset on every
+`connect()` with `dashboardHtml`.
+
+Where this differs from the React SDK, on purpose:
+
+- A refused `CONTROL_CENTER_APP` clears the app; React keeps the last valid one
+  and clears it only from `CONTROL_CENTER_STATE`. The Host always sends the two
+  together, so the result is the same from a conforming Host, and a refused one
+  never leaves an older app on screen.
+- React drops both frames unless their `session_id` is the current session's.
+  This client does not check it: the relay stamps its own `session_id` on frames
+  it forwards, so the check could drop real frames in relay mode.
+- `java.net.URI` is stricter than the Host's `urlsplit` (an underscore in a host
+  name, for example, gives no host), so such an app reads as none. This fails safe.
+
+**The bridge.** `ui/controlcenter/ControlCenterHost` is the chat's side, a port of
+`createControlCenterHost`, message for message. Every message both ways carries
+`version: 1`, the app's `revision` and a fresh per-load `epoch`; one that does not
+match all three is ignored, which is what stops a stale port. Messages arrive as
+JSON text and are dropped unparsed when over 2 MiB or nested more than 32 deep.
+The host sends a `snapshot` (numbered 1) as soon as it exists, then each change as
+the next numbered `event`, and answers `resnapshot` with the current state. A
+snapshot that would be over 2 MiB is sent without its skills and chat items. The
+app's requests:
+
+| `action` | Becomes | Checked first |
+| --- | --- | --- |
+| `send_message` | The user's next message, as typed | 1 to 10,000 characters after trimming |
+| `run_skill` | `/skill args`, arguments collapsed onto one line | A published skill's name; arguments absent, or a string of at most 2,000 characters |
+
+Every request also needs a well-formed `id` used once in this load, a connected
+agent, an object `payload`, and `conversation` `current` (the default) or `new`; at
+most 16 wait at once and 512 per load. A refusal is a `response` with
+`ok: false` and `error.code` `action_rejected`. A cancelled request gets no reply.
+
+**Actions** (`ChatViewModel.controlCenterActions`) run one at a time, and only
+while the status line is idle and no stopped turn is still closing: queued behind
+a running turn, the answer would be that turn's. The message goes through the
+ordinary send path, so it is a visible, saved user turn. The action waits for the
+turn that message starts (not merely the next `OUTPUT`) and answers with
+`result.sessionId`, the session that turn ran in, even if the user has switched
+conversation meanwhile. A failed send, an agent `ERROR`, Stop in the chat or a
+dropped connection end it with a refusal instead. `conversation: "new"` is refused
+for now. As in the React SDK, the app cancelling an action (it gave up, or timed
+out) interrupts the turn it started, as soon as it starts if its message is still
+being sent. Unlike the web O Chat, where the app sits beside the chat, here it
+replaces the chat on screen, so the page closing (the user going back to the chat
+to watch) only stops the wait and leaves the turn running.
+
+**The snapshot** (`ChatViewModel.controlCenterSnapshot`) carries the agent's
+address, the session, its published skills (at most 2,000, names cut to 64
+characters and descriptions to 256, and at most 512 KiB of JSON; dropping skills
+does not set `truncated`, which is about chat items), the status (`working`
+while an action or a stopped turn is in progress, otherwise read off the chat's
+own status line, so `working`, `waiting` or `idle`) and the connection (`connected`,
+`reconnecting`, or `disconnected`, which includes a first connect still in
+progress). Chat items and their live updates are W16AAPPLE-30.
+
+**The screen.** The chat's Home button opens `ControlCenterScreen` when the agent
+has an app and the device's WebView supports message listeners, and the legacy
+page otherwise. An agent with an app and no legacy page always gets the screen,
+which then says the WebView is too old. An app address with no origin the frame
+can be pinned to (an IPv6 literal, say) is refused when the frame is parsed. The WebView loads our parent page at
+`https://appassets.androidplatform.net/control-center/host.html`, served by
+`WebViewAssetLoader`; any other path on that origin is a 404, never a network
+request. `ControlCenterPage.hostDocument` builds it with a CSP whose `frame-src`
+is the app's origin alone, and it frames the app, sandboxed with
+`allow-scripts allow-same-origin allow-forms`, at `app.url` plus `#co-parent=<our origin>&co-revision=<revision>`.
+`assets/control-center/host.js` answers the app's `ready` (from the app's origin
+and revision only) and relays the `MessagePort` to `ControlCenterPage`, which
+sends `connect` with a fresh epoch and runs a `ControlCenterHost` for that app
+document. A `ready` within 3 seconds of a connect is the app repeating itself; a
+later one is a reloaded app, which gets a new epoch and port.
+
+The page talks to native code through `ochatNative`, which
+`WebViewCompat.addWebMessageListener` injects only into the parent page's
+origin, and only main-frame messages from that origin are read, so the app
+cannot reach it. The main frame may show only the parent page: the sandbox stops
+the app navigating it, `shouldOverrideUrlLoading` refuses other links, and
+`onPageStarted` catches what that is not asked about (a form POST) and reloads
+the parent page. WebView does not ask about https navigations in the iframe, so
+there the CSP is what refuses another origin; `host.js` reports the violation,
+and native shows the same "navigation away is blocked" bar as the legacy page and
+reloads the app once. Nothing is opened in a browser. Frames the app embeds
+follow the app's own policy and keep its sandbox. The iframe gets no `allow`
+attribute and no WebChromeClient is set, so camera, microphone, location,
+clipboard-read and fullscreen requests are refused; popups and downloads are
+sandboxed out. Unlike the legacy page, the app keeps scripts, storage and network
+for its own origin, as it has in the web O Chat.
+
+If the WebView's renderer dies (a crash, or Android reclaiming its memory), the
+screen says the Control Center stopped and offers Reload rather than letting
+O Chat close with it, and does not reload by itself, so a crashing app cannot
+loop. While O Chat is in the background the WebView and its timers are paused.
 
 ## HTTP exception
 

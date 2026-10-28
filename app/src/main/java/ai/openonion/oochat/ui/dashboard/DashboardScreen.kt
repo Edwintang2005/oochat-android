@@ -185,7 +185,7 @@ internal fun DashboardScreenContent(
  * not to read.
  */
 @Composable
-private fun ChatAwaitsUserBar(onNavigateBack: () -> Unit) {
+internal fun ChatAwaitsUserBar(onNavigateBack: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -222,7 +222,7 @@ private fun ChatAwaitsUserBar(onNavigateBack: () -> Unit) {
  * link. The page stays visible underneath.
  */
 @Composable
-private fun NavigationBlockedBar(onDismiss: () -> Unit) {
+internal fun NavigationBlockedBar(onDismiss: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()

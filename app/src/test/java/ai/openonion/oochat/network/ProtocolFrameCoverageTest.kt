@@ -24,6 +24,16 @@ class ProtocolFrameCoverageTest {
         FrameFixture("CONNECTED", """{"type":"CONNECTED","status":"connected"}""", ConnectionEvent.Connected::class),
         FrameFixture("AGENT_PROFILE", """{"type":"AGENT_PROFILE","name":"agent","model":"model"}""", ConnectionEvent.AgentProfileReceived::class),
         FrameFixture("DASHBOARD_SNAPSHOT", """{"type":"DASHBOARD_SNAPSHOT","html":"<p>Home</p>"}""", ConnectionEvent.DashboardSnapshotReceived::class),
+        FrameFixture(
+            "CONTROL_CENTER_APP",
+            """{"type":"CONTROL_CENTER_APP","session_id":"session-1","app":null}""",
+            ConnectionEvent.ControlCenterAppReceived::class
+        ),
+        FrameFixture(
+            "CONTROL_CENTER_STATE",
+            """{"type":"CONTROL_CENTER_STATE","session_id":"session-1","state":{"status":"empty","error":null}}""",
+            ConnectionEvent.ControlCenterStateReceived::class
+        ),
         FrameFixture("llm_call", """{"type":"llm_call","id":"llm-1","model":"model"}""", ConnectionEvent.ChatItemReceived::class),
         FrameFixture("llm_result", """{"type":"llm_result","id":"llm-1","status":"success"}""", ConnectionEvent.ChatItemUpdated::class),
         FrameFixture("thinking", """{"type":"thinking","id":"thought-1","content":"Planning"}""", ConnectionEvent.ChatItemReceived::class),

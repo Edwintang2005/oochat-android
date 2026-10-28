@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Fake Control Center app</title></head>
+<body>
+<script>
+// The app's side of the bridge, written out by hand so ControlCenterBridgeTest checks the parent
+// page against the protocol rather than against the SDK. Each step is reported by requesting
+// /report?step=...&detail=..., which the test serves; it cannot read this cross-origin frame.
+(function () {
+  var PREFIX = 'connectonion.control-center/';
+  var hash = new URLSearchParams(location.hash.slice(1));
+  var parentOrigin = hash.get('co-parent');
+  // At /wrong-revision.html the app asks for another revision, which the page must ignore.
+  var revision = location.pathname === '/wrong-revision.html' ? 'sha256:' + '0'.repeat(64) : hash.get('co-revision');
+  var connected = false;
+  var requested = false;
+
+  function report(step, detail) {
+    fetch('/report?step=' + encodeURIComponent(step) + '&detail=' + encodeURIComponent(detail || ''));
+  }
+
+  function ready() {
+    if (!connected) window.parent.postMessage({ type: PREFIX + 'ready', version: 1, revision: revision }, parentOrigin);
+  }
+
+  window.addEventListener('message', function (event) {
+    var connect = event.data;
+    if (connected || !connect || connect.type !== PREFIX + 'connect') return;
+    report('connect', JSON.stringify({
+      fromParent: event.source === window.parent,
+      origin: event.origin,
+      version: connect.version,
+      revision: connect.revision,
+      epoch: connect.epoch,
+      ports: event.ports.length
+    }));
+    if (event.source !== window.parent || event.origin !== parentOrigin || connect.version !== 1 ||
+        connect.revision !== revision || event.ports.length !== 1) return;
+    connected = true;
+    var port = event.ports[0];
+    var scope = { version: 1, revision: revision, epoch: connect.epoch };
+    port.onmessage = function (e) {
+      var message = e.data;
+      if (!message || message.version !== 1 || message.revision !== revision || message.epoch !== connect.epoch) return;
+      if (message.type === PREFIX + 'snapshot' && !requested) {
+        requested = true;
+        port.postMessage(Object.assign({
+          type: PREFIX + 'request',
+          id: 'request-1',
+          action: 'send_message',
+          payload: { message: 'hi from app', conversation: 'current' }
+        }, scope));
+        report('requested');
+      } else if (message.type === PREFIX + 'response' && message.id === 'request-1') {
+        report('response', JSON.stringify({ ok: message.ok, sessionId: message.result && message.result.sessionId }));
+      }
+    };
+  });
+
+  report('ready', revision);
+  ready();
+  setInterval(ready, 250);
+})();
+</script>
+</body>
+</html>

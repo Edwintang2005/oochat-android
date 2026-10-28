@@ -770,6 +770,50 @@ class ConnectionRepositoryImplTest {
         assertEquals(null, repository.dashboardHtml.value)
     }
 
+    // --- CONTROL_CENTER_APP (W16AAPPLE-29) ---
+
+    private val controlCenterRevision = "sha256:" + "b".repeat(64)
+
+    private fun controlCenterFrame(app: String) =
+        """{"type":"CONTROL_CENTER_APP","session_id":"s1","app":$app}"""
+
+    private val publishedApp =
+        """{"schema":"connectonion.control-app/1","sdk_version":"1","revision":"$controlCenterRevision",
+          |"url":"https://r-1.apps.example.net/index.html","capabilities":[],"review":{"status":"approved"}}"""
+            .trimMargin().replace("\n", "")
+
+    @Test
+    fun `a CONTROL_CENTER_APP frame publishes the agent's app`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+
+        awaitUntil(retry = { simulateFrame(controlCenterFrame(publishedApp)) }) { repository.controlCenterApp.value != null }
+
+        assertEquals(controlCenterRevision, repository.controlCenterApp.value?.revision)
+    }
+
+    @Test
+    fun `an app the Host withdraws is withdrawn here too`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+        awaitUntil(retry = { simulateFrame(controlCenterFrame(publishedApp)) }) { repository.controlCenterApp.value != null }
+
+        awaitUntil(retry = { simulateFrame(controlCenterFrame("null")) }) { repository.controlCenterApp.value == null }
+
+        assertNull(repository.controlCenterApp.value)
+    }
+
+    @Test
+    fun `reconnecting clears the previous agent's Control Center app`() = runTest(testDispatcher) {
+        repository.connect("0xAGENT")
+        awaitUntil(retry = { simulateConnected() }) { repository.connectionState.value is ConnectionState.Connected }
+        awaitUntil(retry = { simulateFrame(controlCenterFrame(publishedApp)) }) { repository.controlCenterApp.value != null }
+
+        repository.connect("0xAGENT2")
+
+        assertNull(repository.controlCenterApp.value)
+    }
+
     // ── plan (W16AAPPLE-17) ──────────────────────────────────────────
 
     private fun planFrame(vararg statuses: String) =

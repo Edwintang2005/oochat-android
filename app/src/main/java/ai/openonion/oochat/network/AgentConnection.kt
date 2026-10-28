@@ -1687,6 +1687,14 @@ class AgentConnection(
                     FileLogger.i(LogTags.AGENT_CONN, "DASHBOARD_SNAPSHOT ✓ ${event.html.length} chars")
                     _events.tryEmit(event)
                 }
+                is ConnectionEvent.ControlCenterAppReceived -> {
+                    FileLogger.i(LogTags.AGENT_CONN, "CONTROL_CENTER_APP ${event.app?.revision?.take(19) ?: "none"}")
+                    _events.tryEmit(event)
+                }
+                is ConnectionEvent.ControlCenterStateReceived -> {
+                    FileLogger.i(LogTags.AGENT_CONN, "CONTROL_CENTER_STATE ${event.status}")
+                    _events.tryEmit(event)
+                }
                 is ConnectionEvent.SessionStatusReceived -> {
                     FileLogger.i(LogTags.AGENT_CONN, "SESSION_STATUS ← ${event.status}")
                     _events.tryEmit(event)
