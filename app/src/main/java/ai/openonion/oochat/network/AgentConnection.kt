@@ -1176,15 +1176,15 @@ class AgentConnection(
 
     /**
      * Recover from the server rejecting a CONNECT with "Session is
-     * already attached to another connection" — the same heuristic
-     * [StaleSessionDetector] already backs for [ConnectToAgentUseCase]'s
-     * explicit-connect retry ([ConnectToAgentUseCase.tryConnectOnce]).
-     * That use-case-level recovery only runs on the *first* connect
-     * attempt of a session, while it's still racing the 30s timeout —
-     * it has no way to see a rejection that arrives after this class's
+     * already attached to another connection" ([StaleSessionDetector]).
+     * This is the only recovery for it: [ConnectToAgentUseCase] retries a
+     * failed connect on the same session without clearing it
+     * (W16AAPPLE-84), and the rejection can also arrive after this class's
      * own auto-reconnect ladder (attemptReconnect/openWebSocket) has
-     * already re-opened the socket and resent CONNECT on its own,
-     * outside any use-case call. Confirmed against a real device: the
+     * re-opened the socket, outside any use-case call. Current Hosts
+     * (connectonion 1.9.3) never send it, as ws_router/connect.py gives
+     * another caller's session a new id instead; this stays for older
+     * ones. Confirmed against a real device: the
      * reconnect ladder climbs correctly, the socket opens, CONNECT is
      * rejected as stale — and then nothing recovers it, because this
      * server keeps the socket open after ERROR (see
@@ -1632,12 +1632,9 @@ class AgentConnection(
                         // card; emitting a second ConnectionError would show
                         // the same failure in the generic chat error UI.
                     } else if (!staleSessionRecoveryAttempted && StaleSessionDetector.isStaleSessionError(event.message)) {
-                        // See recoverFromStaleSession's doc: the same
-                        // "session already attached" rejection
-                        // ConnectToAgentUseCase recovers from on an
-                        // explicit first connect, but arriving here from
-                        // this class's own auto-reconnect ladder instead
-                        // — a layer that use case never sees.
+                        // See recoverFromStaleSession's doc: an older Host's
+                        // "session already attached" rejection, recovered
+                        // here once whichever path sent the CONNECT.
                         recoverFromStaleSession()
                     } else if (answersConnect && socketIsReconnect) {
                         // A reconnect refused, rather than a business error on

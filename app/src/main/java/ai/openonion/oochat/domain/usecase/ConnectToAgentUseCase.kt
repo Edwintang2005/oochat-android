@@ -143,15 +143,12 @@ class ConnectToAgentUseCase(
             return false
         }
 
-        // Fallback: drop the persisted session and try once more with
-        // sessionId=null, so the server creates a fresh session. The
-        // wasted 30s timeout on the first attempt is the cost of
-        // auto-recovering from a stale session; the second attempt
-        // either connects (success) or fails fast (no real network
-        // issue, so we don't wait the full timeout again — reset()
-        // closes the WS immediately).
-        FileLogger.w(LogTags.CONNECT_USE_CASE, "First attempt failed; clearing session and retrying")
-        reset()
+        // Anything else may be transient, so one more try on the same session.
+        // Nothing is cleared first: the Host never refuses a CONNECT over its
+        // session id (ws_router/connect.py resumes it, starts one under that
+        // id, or reports a new id in CONNECTED), and reset() would also throw
+        // away the messages queued while offline (W16AAPPLE-84).
+        FileLogger.w(LogTags.CONNECT_USE_CASE, "First attempt failed; retrying on the same session")
 
         return tryConnectOnce(effectiveAddress, conversationId, effectiveDirectUrl, attempt = 2)
     }
