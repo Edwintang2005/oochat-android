@@ -3,14 +3,15 @@ package ai.openonion.oochat.domain.usecase
 /**
  * Heuristic for "the server rejected because of a stale session".
  *
- * The current server response is
+ * Older Hosts answered
  *   `{"type":"ERROR","error":"Session is already attached to another connection"}`
  * — match on the substring so we don't break on minor wording
  * changes, but stay tight enough to avoid false positives on
- * unrelated errors.
+ * unrelated errors. Current ones (connectonion 1.9.3) never refuse a
+ * CONNECT over its session id.
  *
- * Lives in its own top-level object so the use case can call it
- * internally and the test can exercise it without standing up a
+ * Lives in its own top-level object so AgentConnection and ChatViewModel
+ * share it and the test can exercise it without standing up a
  * KeyManager / SessionStore.
  */
 internal object StaleSessionDetector {

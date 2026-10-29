@@ -52,6 +52,7 @@ class ConnectToAgentUseCaseTest {
         val connectedAddresses = mutableListOf<String>()
         /** One behavior per successive connect() call, applied after setting state to Connecting. Last entry repeats if calls exceed the list. */
         val connectBehaviors = mutableListOf<() -> Unit>()
+        val connectedConversations = mutableListOf<String?>()
 
         val switchedConversations = mutableListOf<String?>()
         override suspend fun switchConversation(conversationId: String?) { switchedConversations += conversationId }
@@ -60,6 +61,7 @@ class ConnectToAgentUseCaseTest {
         override suspend fun connect(agentAddress: String, conversationId: String?, directUrl: String?) {
             connectCount++
             connectedAddresses += agentAddress
+            connectedConversations += conversationId
             hasConnectedThisAttempt = false
             state.value = ConnectionState.Connecting
             val behavior = connectBehaviors.getOrNull(connectCount - 1) ?: connectBehaviors.lastOrNull()
@@ -197,6 +199,7 @@ override suspend fun disconnect() {
 
     @Test
     fun `connect fast-fails a stale-session error on attempt 1 then retries and succeeds on attempt 2`() = runTest(testDispatcher) {
+        // Recovering the session itself is AgentConnection's job (recoverFromStaleSession).
         val useCase = newUseCase()
         fakeRepository.connectBehaviors.add {
             fakeRepository.state.value =
@@ -210,7 +213,7 @@ override suspend fun disconnect() {
 
         assertTrue(connected)
         assertEquals(2, fakeRepository.connectCount)
-        assertEquals(1, fakeRepository.resetCount)
+        assertEquals(0, fakeRepository.resetCount)
         // The error ends attempt 1 at once; it does not sit out the 30 s timeout.
         assertTrue("took ${testScheduler.currentTime} ms", testScheduler.currentTime < 1_000L)
     }
@@ -286,7 +289,26 @@ override suspend fun disconnect() {
 
         assertFalse(connected)
         assertEquals(2, fakeRepository.connectCount)
-        assertEquals(1, fakeRepository.resetCount)
+        assertEquals(0, fakeRepository.resetCount)
+    }
+
+    @Test
+    fun `the second attempt reuses the conversation's session and clears nothing`() = runTest(testDispatcher) {
+        // W16AAPPLE-84: reset() deleted the stored session and the messages queued
+        // offline, for a retry that then sent the same session id anyway.
+        val useCase = newUseCase()
+        fakeRepository.connectBehaviors.add {
+            fakeRepository.state.value = ConnectionState.Error(message = "Network unreachable")
+        }
+        fakeRepository.connectBehaviors.add {
+            fakeRepository.state.value = ConnectionState.Connected(address = validAddress)
+        }
+
+        val connected = useCase.connect(validAddress, conversationId = "conv-1", directUrl = null)
+
+        assertTrue(connected)
+        assertEquals(listOf<String?>("conv-1", "conv-1"), fakeRepository.connectedConversations)
+        assertEquals("nothing may be cleared between attempts", 0, fakeRepository.resetCount)
     }
 
     // ── Onboard-required short-circuit ─────────────────────────────────
