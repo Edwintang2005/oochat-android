@@ -124,7 +124,10 @@ class ServerTranscriptDeliveryTest {
     }
 
     @After
-    fun tearDown() = scope.cancel()
+    fun tearDown() = runBlocking {
+        repository.disconnect()
+        scope.cancel()
+    }
 
     /** A CONNECTED whose body carries one assistant reply for [sessionId]. */
     private fun connectedWith(sessionId: String, reply: String) =
@@ -246,7 +249,12 @@ class ServerTranscriptDeliveryTest {
          */
         const val REPLAY_BUDGET_MS = 2_000L
 
-        /** Deadlock guard for [awaitUntil]; never reached while the code is correct. */
-        const val AWAIT_TIMEOUT_MS = 10_000L
+        /**
+         * Deadlock guard for [awaitUntil], not an expected delivery time. CI's
+         * shared two-core runner can leave real Dispatchers.IO work waiting
+         * behind the rest of the suite even though delivery normally takes
+         * milliseconds.
+         */
+        const val AWAIT_TIMEOUT_MS = 30_000L
     }
 }
